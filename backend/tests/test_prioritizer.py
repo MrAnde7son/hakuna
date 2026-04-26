@@ -534,3 +534,48 @@ class TestComputeAssetRiskScore:
         score = compute_asset_risk_score(findings)
         assert isinstance(score, float)
         assert score == round(score, 2)
+
+
+# ── _generate_remediation_steps ──────────────────────────────────────────────
+
+from services.prioritizer import _generate_remediation_steps
+
+
+class TestRemediationSteps:
+    def test_verification_step_is_scanner_agnostic(self):
+        """Should not mention Nessus — scanner-neutral copy only."""
+        finding = {"plugin_name": "Anything", "severity": 2, "cves": []}
+        steps = _generate_remediation_steps(finding)
+        assert "Nessus" not in steps
+        assert "re-running a scan" in steps
+
+    def test_no_generic_compensating_controls_platitude(self):
+        """The vague 'compensating controls' fallback was removed."""
+        finding = {"plugin_name": "Anything", "severity": 4, "cves": []}
+        steps = _generate_remediation_steps(finding)
+        assert "compensating controls" not in steps.lower()
+
+    def test_cwe_sql_injection_guidance(self):
+        finding = {
+            "plugin_name": "SQL Injection",
+            "severity": 4,
+            "cves": [],
+            "cwe_ids": ["CWE-89"],
+        }
+        steps = _generate_remediation_steps(finding)
+        assert "parameterized queries" in steps
+
+    def test_cwe_xss_guidance(self):
+        finding = {
+            "plugin_name": "Reflected XSS",
+            "severity": 3,
+            "cwe_ids": ["CWE-79"],
+        }
+        steps = _generate_remediation_steps(finding)
+        assert "Content-Security-Policy" in steps
+
+    def test_falls_back_to_plugin_name_when_no_cwe(self):
+        """Plugin-name keyword heuristic works when cwe_ids is empty."""
+        finding = {"plugin_name": "SQL Injection in /login", "severity": 4}
+        steps = _generate_remediation_steps(finding)
+        assert "parameterized queries" in steps

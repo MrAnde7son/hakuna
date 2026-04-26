@@ -4,6 +4,8 @@ NORMALIZED_SCHEMA = {
     "asset": [
         {"name": "source_id", "type": "string", "required": True, "group": "asset", "description": "Original ID in the source tool"},
         {"name": "source_system", "type": "string", "required": True, "group": "asset", "description": "Source system identifier"},
+        {"name": "asset_type", "type": "string", "required": False, "group": "asset",
+         "description": "Asset type — any string; host/web_app/cloud_instance/api_endpoint/identity/container_image/code_repo/k8s_workload, ai_agent, mcp_server, or any customer-defined type. Defaults to 'host'."},
         {"name": "hostname", "type": "string", "required": False, "group": "asset", "description": "Asset hostname"},
         {"name": "ip_address", "type": "string", "required": False, "group": "asset", "description": "IP address"},
         {"name": "fqdn", "type": "string", "required": False, "group": "asset", "description": "Fully qualified domain name"},
@@ -14,6 +16,12 @@ NORMALIZED_SCHEMA = {
         {"name": "tags", "type": "string[]", "required": False, "group": "asset", "description": "Tags"},
         {"name": "criticality", "type": "integer", "required": False, "group": "asset", "description": "Criticality rating 1-5"},
         {"name": "last_seen", "type": "datetime", "required": False, "group": "asset", "description": "Last seen timestamp"},
+        {"name": "asset_identity", "type": "json", "required": False, "group": "asset",
+         "description": "Type-specific identity keys used for dedup (dot-notation supported, e.g. asset_identity.url, asset_identity.instance_id, asset_identity.agent_id)."},
+        {"name": "asset_attributes", "type": "json", "required": False, "group": "asset",
+         "description": "Type-specific metadata overflow for non-identity fields (dot-notation supported, e.g. asset_attributes.model_provider, asset_attributes.mcp_servers_connected)."},
+        {"name": "custom_fields", "type": "json", "required": False, "group": "asset",
+         "description": "User-defined fields declared via CustomFieldDefinition (dot-notation supported)."},
     ],
     "finding": [
         {"name": "source_id", "type": "string", "required": True, "group": "finding", "description": "Original ID in the source tool"},

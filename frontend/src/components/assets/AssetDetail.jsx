@@ -81,6 +81,27 @@ function StatusDot({ active }) {
   )
 }
 
+function prettifyKey(key) {
+  if (!key) return ''
+  return String(key).replace(/[_.-]+/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+}
+
+function renderJsonValue(value) {
+  if (value == null || value === '') return null
+  if (Array.isArray(value)) {
+    if (value.length === 0) return null
+    if (value.every(v => v == null || typeof v !== 'object')) {
+      return value.filter(v => v != null && v !== '').join(', ')
+    }
+    return <pre style={{ margin: 0, fontSize: 12, whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{JSON.stringify(value, null, 2)}</pre>
+  }
+  if (typeof value === 'object') {
+    return <pre style={{ margin: 0, fontSize: 12, whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{JSON.stringify(value, null, 2)}</pre>
+  }
+  if (typeof value === 'boolean') return value ? 'Yes' : 'No'
+  return String(value)
+}
+
 function KeyVal({ label, children, mono }) {
   if (children == null || children === '') return null
   return (
@@ -182,6 +203,33 @@ const TABS = [
 ]
 
 
+function TypeSpecificAttributesSection({ asset }) {
+  const { t } = useTranslation()
+  const identity = asset?.asset_identity && typeof asset.asset_identity === 'object' ? asset.asset_identity : {}
+  const attributes = asset?.asset_attributes && typeof asset.asset_attributes === 'object' ? asset.asset_attributes : {}
+  // Identity keys already surfaced in the Network & Identity section for host-type
+  // assets — skip those to avoid duplication.
+  const hostHandled = new Set(['ip', 'hostname', 'fqdn', 'netbios_name', 'mac_address', 'os', 'display_name'])
+  const identityEntries = Object.entries(identity).filter(([k, v]) => {
+    if (asset?.asset_type === 'host' && hostHandled.has(k)) return false
+    return v != null && v !== ''
+  })
+  const attributeEntries = Object.entries(attributes).filter(([, v]) => v != null && v !== '')
+  if (identityEntries.length === 0 && attributeEntries.length === 0) return null
+  const typeLabel = getAssetTypeLabel(asset?.asset_type)
+  return (
+    <Section title={t('assetDetail.typeAttributes', { type: typeLabel, defaultValue: `${typeLabel} attributes` })} icon={Package}>
+      {identityEntries.map(([k, v]) => (
+        <KeyVal key={`id-${k}`} label={prettifyKey(k)}>{renderJsonValue(v)}</KeyVal>
+      ))}
+      {attributeEntries.map(([k, v]) => (
+        <KeyVal key={`attr-${k}`} label={prettifyKey(k)}>{renderJsonValue(v)}</KeyVal>
+      ))}
+    </Section>
+  )
+}
+
+
 // ─── Overview Tab ─────────────────────────────────────────
 function OverviewTab({ asset, blastRadius, onReload, riskComponents, assetRiskWeights }) {
   const { t } = useTranslation()
@@ -249,6 +297,11 @@ function OverviewTab({ asset, blastRadius, onReload, riskComponents, assetRiskWe
           <KeyVal label={t('assetDetail.credentialedScan')}>{asset.is_credentialed ? 'Yes' : 'No'}</KeyVal>
         )}
       </Section>
+
+      {/* Type-specific attributes (asset_identity + asset_attributes).
+          Renders generically for any asset_type — including customer-defined
+          types ingested via the integration builder (ai_agent, mcp_server, …). */}
+      <TypeSpecificAttributesSection asset={asset} />
 
       {/* Ownership */}
       <Section title={t('assetDetail.ownership')} icon={Users}>

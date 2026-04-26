@@ -340,6 +340,10 @@ async def cancel_scan(
         remote_ok, remote_err = (False, None)
         if hakuna_org_id and run_id:
             remote_ok, remote_err = await cancel_easm_scan(hakuna_org_id, run_id)
+        # scan.status is the source of truth for the UI's "is this still
+        # polling?" check; raw_metadata.status alone left the row stuck on
+        # "running" after a user-initiated cancel.
+        scan.status = "cancelled"
         scan.raw_metadata = {
             **meta,
             "status": "cancelled",

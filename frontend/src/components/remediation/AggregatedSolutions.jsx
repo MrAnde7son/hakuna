@@ -9,7 +9,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Card, PageHeader, Spinner, EmptyState, SeverityBadge, EffortBadge, Select, FilterBar, ErrorBanner, SkeletonCard } from '../shared/ui.jsx'
 
-const ROOT_CAUSE_KEYS = ['eol_software', 'deprecated_protocol', 'outdated_version', 'misconfiguration', 'missing_patch']
+const ROOT_CAUSE_KEYS = ['eol_software', 'deprecated_protocol', 'outdated_version', 'misconfiguration', 'missing_patch', 'vuln_class']
 
 const ROOT_CAUSE_COLORS = {
   eol_software: 'var(--critical)',
@@ -17,6 +17,7 @@ const ROOT_CAUSE_COLORS = {
   outdated_version: 'var(--medium)',
   misconfiguration: 'var(--violet)',
   missing_patch: 'var(--primary)',
+  vuln_class: 'var(--critical)',
 }
 
 const ACTION_ICONS = {
@@ -26,6 +27,7 @@ const ACTION_ICONS = {
   remediate_config: '🔧',
   apply_patch: '🩹',
   bulk_patch: '📦',
+  fix_code_defect: '🛠️',
 }
 
 function RootCauseBadge({ type }) {

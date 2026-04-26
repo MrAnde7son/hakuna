@@ -595,6 +595,7 @@ async def _run_nuclei_scan_async(
         "duration_seconds": round(time.monotonic() - start, 2),
         "status": status,
         "routing_info": routing_info,
+        "authenticated": bool(credentials),
     }
     if plan_skip_reason:
         result_payload["plan_skip_reason"] = plan_skip_reason
@@ -1059,6 +1060,7 @@ async def _run_nuclei_adhoc_async(
             "findings": findings,
             "asset_id": str(asset_id) if asset_id else None,
             "stages_run": stages_run,
+            "authenticated": bool(credentials),
         }
         # Mirror run_nuclei_scan: when nothing was loaded, surface stderr so
         # the backend can triage template path / -dast / auth issues without

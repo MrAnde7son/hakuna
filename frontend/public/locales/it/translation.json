@@ -85,6 +85,7 @@
     "owner": "Proprietario",
     "effort": "Impegno",
     "cve": "CVE",
+    "cwe": "CWE",
     "rootCause": "Causa principale",
     "search": "Cerca risultati...",
     "noResults": "Nessun risultato corrisponde ai tuoi criteri",

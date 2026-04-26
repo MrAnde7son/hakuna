@@ -12,8 +12,8 @@ Field namespaces:
                 medium_count, low_count, info_count
     Findings:   finding.severity, finding.cvss3, finding.vpr,
                 finding.exploit, finding.zero_day, finding.has_cve,
-                finding.missing_patches, finding.plugin_family,
-                finding.plugin_name, finding.cve, finding.effort, finding.owner,
+                finding.has_cwe, finding.missing_patches, finding.plugin_family,
+                finding.plugin_name, finding.cve, finding.cwe, finding.effort, finding.owner,
                 finding.sla_status, finding.sla_days_remaining, finding.sla_due_date
     Inventory:  inventory.is_internet_facing, inventory.is_domain_controller,
                 inventory.domain_admin_present, inventory.admin_logged_in,
@@ -180,6 +180,8 @@ CONDITION_CATALOG = [
             {"field": "finding.description",     "label": "Description",        "ops": ["contains", "not_contains", "regex"], "value_type": "string", "placeholder": "buffer overflow"},
             {"field": "finding.solution",        "label": "Solution",           "ops": ["contains", "not_contains", "regex"], "value_type": "string", "placeholder": "Upgrade to"},
             {"field": "finding.cve",             "label": "CVE",    "ops": ["contains", "eq"],                "value_type": "string", "placeholder": "CVE-2021-44228"},
+            {"field": "finding.cwe",             "label": "CWE",    "ops": ["contains", "eq", "contains_any", "contains_all"], "value_type": "string", "placeholder": "CWE-79"},
+            {"field": "finding.has_cwe",         "label": "Has CWE",            "ops": ["is_true", "is_false"],           "value_type": "none"},
             {
                 "field": "finding.sla_status", "label": "SLA Status",
                 "ops": ["eq", "neq"],
@@ -724,7 +726,18 @@ def register_numeric_op(name: str, handler: callable) -> None:
 
 def _str_op(asset_val: str, op: str, value: str) -> bool:
     av = asset_val.lower()
-    v  = str(value or "").lower()
+    # in / not_in accept a list (or comma-separated string) of allowed values.
+    # Compliance YAMLs lean on these heavily for "workflow_status in [resolved,
+    # false_positive]" style guardrails — handle here so the comparison stays
+    # case-insensitive end-to-end without callers having to lowercase.
+    if op in ("in", "not_in"):
+        if isinstance(value, (list, tuple, set)):
+            choices = {str(x).lower() for x in value if x is not None}
+        else:
+            choices = {s.strip().lower() for s in str(value or "").split(",") if s.strip()}
+        present = av in choices
+        return present if op == "in" else not present
+    v = str(value or "").lower()
     # Check raw-value operators first (regex, cidr, custom)
     if op in _STRING_RAW_OPS:
         return _STRING_RAW_OPS[op](asset_val, str(value or ""))
@@ -735,6 +748,19 @@ def _str_op(asset_val: str, op: str, value: str) -> bool:
 
 
 def _num_op(asset_num: float, op: str, value) -> bool:
+    if op in ("in", "not_in"):
+        if isinstance(value, (list, tuple, set)):
+            raw_choices = list(value)
+        else:
+            raw_choices = [s.strip() for s in str(value or "").split(",") if s.strip()]
+        choices: set[float] = set()
+        for c in raw_choices:
+            try:
+                choices.add(float(c))
+            except (TypeError, ValueError):
+                continue
+        present = asset_num in choices
+        return present if op == "in" else not present
     try:
         v = float(value)
     except (TypeError, ValueError):
@@ -917,12 +943,28 @@ def _eval_finding_row(cond: dict, finding) -> bool:
         if op == "eq":       return any(v in cves for v in vals)
         if op == "contains": return any(v in c for v in vals for c in cves)
         return False
+    if sub == "has_cwe":
+        result = len(getattr(finding, "cwe_ids", None) or []) > 0
+        return result if op == "is_true" else not result
+    if sub == "cwe":
+        cwes = [c.upper() for c in (getattr(finding, "cwe_ids", None) or [])]
+        if isinstance(value, (list, tuple, set)):
+            vals = [str(v).strip().upper() for v in value if str(v).strip()]
+        else:
+            vals = [v.strip().upper() for v in str(value or "").split(",") if v.strip()]
+        if op in ("eq", "contains_any"):
+            return any(v in cwes for v in vals)
+        if op == "contains":
+            return any(v in c for v in vals for c in cwes)
+        if op == "contains_all":
+            return all(v in cwes for v in vals)
+        return False
     if sub == "effort":
         return _str_op(finding.effort_level or "", op, value)
     if sub == "owner":
         return _str_op(finding.owner_suggestion or "", op, value)
     if sub == "sla_status":
-        return _str_op(finding.sla_status or "", op, str(value or ""))
+        return _str_op(finding.sla_status or "", op, value)
     if sub == "sla_days_remaining":
         from datetime import date
         if not finding.sla_due_date:
@@ -943,16 +985,16 @@ def _eval_finding_row(cond: dict, finding) -> bool:
     if sub == "epss_score":
         return _num_op(float(finding.epss_score or 0), op, value)
     if sub == "vulnerability_state":
-        return _str_op(finding.vulnerability_state or "", op, str(value or ""))
+        return _str_op(finding.vulnerability_state or "", op, value)
     if sub == "exploit_maturity":
-        return _str_op(finding.exploit_maturity or "", op, str(value or ""))
+        return _str_op(finding.exploit_maturity or "", op, value)
     if sub == "is_regression":
         result = bool(finding.is_regression)
         return result if op == "is_true" else not result
     if sub == "times_seen":
         return _num_op(float(finding.times_seen or 1), op, value)
     if sub == "workflow_status":
-        return _str_op(finding.workflow_status or "open", op, str(value or ""))
+        return _str_op(finding.workflow_status or "open", op, value)
     if sub == "has_exception":
         result = finding.exception_id is not None
         return result if op == "is_true" else not result

@@ -194,6 +194,8 @@ def _migrate_add_columns():
             ("user_edited_fields", "JSON"),
             ("source_systems", "JSON"),
             ("custom_fields", "JSON"),
+            ("cwe_ids", "JSON"),
+            ("cwe_names", "JSON"),
         ],
         "threat_cves": [
             ("cvss4_score", "FLOAT"),

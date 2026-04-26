@@ -33,7 +33,7 @@ ALL_PERMISSION_KEYS = [
     "page_dashboard", "page_assets", "page_findings", "page_reports",
     "page_inventory", "page_campaigns", "page_remediation", "page_agents",
     "page_tags", "page_upload", "page_settings", "page_threat_intel",
-    "page_workflows", "page_siem",
+    "page_workflows", "page_siem", "page_compliance",
 ]
 
 # Action permissions that require a page permission to actually be usable:

@@ -544,13 +544,18 @@ def test_emit_finding_writes_finding_row(db_session, audit_asset):
     assert finding.asset_id == audit_asset.id
     assert finding.source_type == "wmi_audit"
     assert finding.plugin_id == "hakuna_wmi_audit_identity_weak_password_policy"
-    assert finding.plugin_family == "WMI Audit"
+    # plugin_family is sourced from the closed registry in agents/tools/emit_finding.py
+    # so compliance mappings can rely on a stable taxonomy across protocols.
+    assert finding.plugin_family == "Audit: Windows"
     assert finding.severity == 3
     assert finding.severity_label == "High"
+    # compliance_evaluable is set per-emission based on whether CVE/CWE was supplied;
+    # this test omits both, so the flag is False (still persisted, just not evaluable).
     assert finding.custom_fields == {
         "finding_type": "weak_password_policy",
         "mission": "identity",
         "protocol": "wmi",
+        "compliance_evaluable": False,
     }
     # Evidence is rendered as plugin_output text + agent_run_id stamped in.
     assert "min_length: 8" in (finding.plugin_output or "")

@@ -525,6 +525,8 @@ def _finding_to_dict(f: Finding, db: Session, include_full: bool = False, asset:
         "cvss4_score": f.cvss4_score,
         "vpr_score": f.vpr_score,
         "cves": f.cves or [],
+        "cwe_ids": f.cwe_ids or [],
+        "cwe_names": f.cwe_names or [],
         "synopsis": f.synopsis,
         "port": f.port,
         "protocol": f.protocol,
@@ -652,6 +654,35 @@ def _finding_to_dict(f: Finding, db: Session, include_full: bool = False, asset:
                     "finding_count": agg.finding_count,
                     "effort_level": agg.effort_level,
                 }
+        # Compliance reverse-lookup — which controls does this finding fail?
+        # Read-side extension; existing callers ignore unknown keys.
+        try:
+            from models.models import (
+                ComplianceControl as _CC,
+                ComplianceFindingStatus as _CFS,
+                ComplianceFramework as _CF,
+            )
+            comp_rows = (
+                db.query(_CFS, _CC, _CF)
+                .join(_CC, _CC.id == _CFS.control_id)
+                .join(_CF, _CF.id == _CC.framework_id)
+                .filter(_CFS.finding_id == f.id)
+                .all()
+            )
+            base["satisfies_controls"] = [
+                {
+                    "framework_slug": fw.slug,
+                    "framework_name": fw.name,
+                    "control_id": ctrl.id,
+                    "control_ref": ctrl.ref,
+                    "control_title": ctrl.title,
+                    "verdict": status.verdict,
+                }
+                for status, ctrl, fw in comp_rows
+            ]
+        except Exception:
+            # Compliance tables may be unmigrated in old envs — never fail the finding response.
+            base["satisfies_controls"] = []
         # Include technical debt info if this finding's exception is a tech debt
         if f.exception_id:
             exc = db.query(FindingException).filter(FindingException.id == f.exception_id).first()

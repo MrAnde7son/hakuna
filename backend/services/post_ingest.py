@@ -65,6 +65,15 @@ def finalize_batch(
         db, "Global exceptions (batch)", lambda: _apply_global_exceptions(db, scan_id)
     )
 
+    # Compliance evaluator — runs after exceptions so verdict can reflect
+    # exception_id; runs before threat-intel so any KEV-driven rule that
+    # fires this batch will re-fire on the next finalize once enrichment
+    # adds is_kev=True (idempotent upsert keeps that re-fire cheap).
+    results["compliance"] = _step(
+        db, "Compliance evaluator (batch)",
+        lambda: _run_compliance_eval(db, scan_id, org_id, new_finding_ids=new_finding_ids),
+    )
+
     # Threat intel + TTP enrichment — local to findings in this scan
     results["threat_intel"] = _step(
         db, "Threat intel enrichment (batch)", lambda: _enrich_threat_intel(db, scan_id)
@@ -162,6 +171,14 @@ def finalize_scan(
     # 4. Global exceptions
     results["exceptions"] = _step(
         db, "Global exceptions", lambda: _apply_global_exceptions(db, scan_id)
+    )
+
+    # 4b. Compliance evaluator — full-scan mode (new_finding_ids=None)
+    # wipes prior compliance_finding_status rows for findings in this scan
+    # so unmatched/resolved findings don't leave stale "failing" entries.
+    results["compliance"] = _step(
+        db, "Compliance evaluator",
+        lambda: _run_compliance_eval(db, scan_id, org_id, new_finding_ids=None),
     )
 
     # 5b. Solution aggregation
@@ -428,6 +445,27 @@ def _apply_global_exceptions(db, scan_id):
         logger.info("Applied %d global exceptions", applied)
         db.flush()
     return applied
+
+
+def _run_compliance_eval(db, scan_id, org_id, *, new_finding_ids=None):
+    """Wrapper around services.compliance_evaluator.evaluate so the
+    post-ingest pipeline can call it with the same lambda signature as
+    every other step. Non-fatal on import or runtime errors — compliance
+    state is best-effort, never gates ingestion.
+    """
+    from services.compliance_evaluator import evaluate as _eval
+    result = _eval(
+        db,
+        scan_id=scan_id,
+        new_finding_ids=new_finding_ids,
+        org_id=org_id,
+    )
+    if result.get("evaluated"):
+        logger.info(
+            "Compliance eval: %d rule matches across %d controls",
+            result["evaluated"], result.get("controls_touched", 0),
+        )
+    return result
 
 
 

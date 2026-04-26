@@ -4,6 +4,7 @@ import { useAuth } from '../../contexts/AuthContext.jsx'
 import { authChangePassword, getBillingPlans, getBillingUsage, createCheckoutSession, createPortalSession } from '../../api.js'
 import { KeyRound, CreditCard, Star, Check, AlertTriangle } from 'lucide-react'
 import { useToast } from '../shared/ui.jsx'
+import { capture } from '../../utils/analytics.js'
 
 const formatTokens = (n) =>
   n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` :
@@ -100,6 +101,12 @@ function SubscriptionSection() {
     setLoading(true)
     try {
       const priceId = billingCycle === 'annual' ? proPlan.price_id_annual : proPlan.price_id_monthly
+      capture('upgrade_clicked', {
+        source: 'pricing_page',
+        cycle: billingCycle,
+        target_tier: 'pro',
+        price_id: priceId,
+      })
       const data = await createCheckoutSession({
         price_id: priceId,
         success_url: window.location.origin + '/profile?success=1',

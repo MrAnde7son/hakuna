@@ -377,6 +377,28 @@ FAMILY_MAP: Dict[str, List[dict]] = {
 }
 
 
+# Nuclei tag → TTP. Tags come from info.tags on Nuclei templates and are
+# persisted on Finding.custom_fields["nuclei_tags"] at ingest time. They're
+# the only high-signal TTP hint for non-CVE templates (default-login,
+# misconfig, exposed-panel, takeover) where keyword matching on
+# plugin_name/synopsis alone fails.
+NUCLEI_TAG_MAP: Dict[str, List[dict]] = {
+    "rce":           [{"technique_id": "T1190",     "name": "Exploit Public-Facing Application", "tactic": "initial-access"}],
+    "sqli":          [{"technique_id": "T1190",     "name": "Exploit Public-Facing Application", "tactic": "initial-access"}],
+    "xxe":           [{"technique_id": "T1190",     "name": "Exploit Public-Facing Application", "tactic": "initial-access"}],
+    "ssrf":          [{"technique_id": "T1190",     "name": "Exploit Public-Facing Application", "tactic": "initial-access"}],
+    "log4j":         [{"technique_id": "T1190",     "name": "Exploit Public-Facing Application", "tactic": "initial-access"}],
+    "xss":           [{"technique_id": "T1059.007", "name": "Command and Scripting Interpreter: JavaScript", "tactic": "execution"}],
+    "lfi":           [{"technique_id": "T1083",     "name": "File and Directory Discovery", "tactic": "discovery"}],
+    "default-login": [{"technique_id": "T1078",     "name": "Valid Accounts", "tactic": "initial-access"}],
+    "brute-force":   [{"technique_id": "T1110",     "name": "Brute Force", "tactic": "credential-access"}],
+    "takeover":      [{"technique_id": "T1583.001", "name": "Acquire Infrastructure: Domains", "tactic": "resource-development"}],
+    "exposure":      [{"technique_id": "T1082",     "name": "System Information Discovery", "tactic": "discovery"}],
+    "misconfig":     [{"technique_id": "T1592",     "name": "Gather Victim Host Information", "tactic": "reconnaissance"}],
+    "exposed-panel": [{"technique_id": "T1190",     "name": "Exploit Public-Facing Application", "tactic": "initial-access"}],
+}
+
+
 # ──────────────────────────────────────────────────────────
 # Core matching logic
 # ──────────────────────────────────────────────────────────
@@ -387,6 +409,7 @@ def match_finding(
     plugin_family: str,
     synopsis: str,
     description: str,
+    tags: List[str] | None = None,
 ) -> List[dict]:
     """
     Return a deduplicated list of matched TTP dicts for a single finding.
@@ -430,6 +453,16 @@ def match_finding(
         for ttp in FAMILY_MAP[fam]:
             _add(ttp, "plugin_family")
 
+    # 4. Nuclei tag-based match (for non-CVE templates where keyword+family miss).
+    for tag in (tags or []):
+        if not isinstance(tag, str):
+            continue
+        mapped = NUCLEI_TAG_MAP.get(tag.lower())
+        if not mapped:
+            continue
+        for ttp in mapped:
+            _add(ttp, "nuclei_tag")
+
     return results
 
 
@@ -450,12 +483,21 @@ def match_findings_to_ttps(db, scan_id: int = None) -> dict:
     skipped = 0
 
     for f in findings:
+        # Nuclei tags are persisted on custom_fields by the VM importer so
+        # the TTP matcher can use them without touching the raw scan result.
+        nuclei_tags = []
+        if isinstance(f.custom_fields, dict):
+            raw_tags = f.custom_fields.get("nuclei_tags") or []
+            if isinstance(raw_tags, list):
+                nuclei_tags = [t for t in raw_tags if isinstance(t, str)]
+
         ttps = match_finding(
             plugin_id=f.plugin_id or "",
             plugin_name=f.plugin_name or "",
             plugin_family=f.plugin_family or "",
             synopsis=f.synopsis or "",
             description=f.description or "",
+            tags=nuclei_tags,
         )
         if ttps:
             f.matched_ttps = ttps

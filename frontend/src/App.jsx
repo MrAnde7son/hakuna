@@ -50,6 +50,7 @@ import {
   AlertTriangle,
   Plug,
   Network,
+  ShieldCheck,
 } from 'lucide-react'
 import { SUPPORTED_LANGUAGES } from './i18n/index.js'
 // Auth pages loaded eagerly (small, needed immediately)
@@ -95,6 +96,8 @@ const EventSearch = React.lazy(() => import('./components/siem/EventSearch.jsx')
 const DetectionRules = React.lazy(() => import('./components/siem/DetectionRules.jsx'))
 const AlertTriage = React.lazy(() => import('./components/siem/AlertTriage.jsx'))
 const AttackPaths = React.lazy(() => import('./components/attackpaths/AttackPaths.jsx'))
+const Compliance = React.lazy(() => import('./components/compliance/Compliance.jsx'))
+const ComplianceControlDetail = React.lazy(() => import('./components/compliance/ComplianceControlDetail.jsx'))
 
 // Global scan context
 export const ScanContext = createContext({ activeScanId: null, setActiveScanId: () => {}, scans: [], refreshScans: () => {} })
@@ -143,6 +146,7 @@ const NAV_GROUPS = [
     items: [
       { path: '/campaigns', labelKey: 'nav.campaigns', icon: Target, permission: 'page_campaigns' },
       { path: '/aggregated-solutions', labelKey: 'nav.remediation', icon: Layers, permission: 'page_remediation' },
+      { path: '/compliance', labelKey: 'nav.compliance', icon: ShieldCheck, permission: 'page_compliance' },
       { path: '/agents', labelKey: 'nav.agents', icon: Bot, permission: 'page_agents' },
     ],
   },
@@ -1242,6 +1246,9 @@ function AppShell() {
                 <Route path="/siem/rules" element={<DetectionRules />} />
                 <Route path="/siem/alerts" element={<AlertTriage />} />
                 <Route path="/attack-paths" element={<AttackPaths />} />
+                <Route path="/compliance" element={<Compliance />} />
+                <Route path="/compliance/:slug" element={<Compliance />} />
+                <Route path="/compliance/:slug/control/:id" element={<ComplianceControlDetail />} />
                 <Route path="/docs" element={<UserDocs />} />
               </Routes>
             </Suspense>

@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from core.database import get_db, SessionLocal
 from core.limiter import limiter
 from core.time_utils import iso_utc
-from models.models import Agent, AgentRun, AgentSchedule, AgentDocument, AgentApproval, User
+from models.models import Agent, AgentRun, AgentSchedule, AgentDocument, AgentApproval, LLMInteraction, User
 from core.auth import get_current_user, get_accessible_org_ids, apply_org_filter
 from agents.agent_tools import get_tool_catalog
 from agents.agent_engine import run_agent, run_agent_streaming, update_agent_memory, resume_agent_run
@@ -73,7 +73,14 @@ def available_models(db: Session = Depends(get_db)):
 def list_agents(db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
     q = db.query(Agent).filter(Agent.name != "__copilot__").order_by(Agent.updated_at.desc())
     q = apply_org_filter(q, Agent, org_ids)
-    agents = q.all()
+    # Scratch agents are spawned per-(asset, mission) by the audit runner and
+    # are scan-internal; their traces surface from the Scan detail panel, not
+    # the Agents list. Filter in Python so we don't need dialect-specific
+    # JSON operators (tests run on SQLite, prod on Postgres).
+    agents = [
+        a for a in q.all()
+        if not (isinstance(a.guardrails, dict) and a.guardrails.get("scratch") is True)
+    ]
     agent_ids = [a.id for a in agents]
 
     # Gather last run per agent (status + timestamp + run_count)
@@ -571,6 +578,12 @@ def delete_agent(agent_id: int, db: Session = Depends(get_db), org_ids: Optional
     # so clear them explicitly before deleting the agent.
     db.query(AgentApproval).filter(AgentApproval.agent_id == agent_id).delete(synchronize_session=False)
     db.query(AgentSchedule).filter(AgentSchedule.agent_id == agent_id).delete(synchronize_session=False)
+    # llm_interactions is an audit log that should outlive the agent — NULL
+    # the FKs so cascading the agent (and its runs) doesn't trip the FK.
+    run_id_subq = db.query(AgentRun.id).filter(AgentRun.agent_id == agent_id).subquery()
+    db.query(LLMInteraction).filter(
+        (LLMInteraction.agent_id == agent_id) | (LLMInteraction.agent_run_id.in_(run_id_subq))
+    ).update({"agent_id": None, "agent_run_id": None}, synchronize_session=False)
     db.delete(agent)
     db.commit()
     return {"ok": True}

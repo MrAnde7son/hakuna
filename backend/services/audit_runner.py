@@ -637,12 +637,16 @@ def _upsert_asset_by_target(
         existing = q.filter(or_(Asset.hostname == name, Asset.fqdn == name)).first()
     if existing:
         asset = existing
+        current_sources = list(asset.source_systems or [])
+        if "audit_agent" not in current_sources:
+            asset.source_systems = current_sources + ["audit_agent"]
     else:
         asset = Asset(
             scan_id=scan_id,
             ip=ident.get("ip"),
             hostname=ident.get("hostname"),
             fqdn=ident.get("fqdn"),
+            source_systems=["audit_agent"],
         )
         db.add(asset)
         db.flush()

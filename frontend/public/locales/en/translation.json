@@ -27,6 +27,7 @@
     "alerts": "Alerts",
     "ingestSources": "Sources",
     "campaigns": "Campaigns",
+    "compliance": "Compliance",
     "remediation": "Remediation",
     "agents": "Agents",
     "agentApprovals": "Approval Queue",
@@ -103,6 +104,7 @@
     "owner": "Owner",
     "effort": "Effort",
     "cve": "CVE",
+    "cwe": "CWE",
     "rootCause": "Root Cause",
     "search": "Search findings...",
     "noResults": "No findings match your criteria",
@@ -935,7 +937,8 @@
       "deprecated_protocol": "Deprecated Protocol",
       "outdated_version": "Outdated Version",
       "misconfiguration": "Misconfiguration",
-      "missing_patch": "Missing Patches"
+      "missing_patch": "Missing Patches",
+      "vuln_class": "Vulnerability Class"
     },
     "actionLabels": {
       "migrate_to_supported": "Migrate",
@@ -943,7 +946,8 @@
       "upgrade_component": "Upgrade",
       "remediate_config": "Fix Config",
       "apply_patch": "Patch",
-      "bulk_patch": "Bulk Patch"
+      "bulk_patch": "Bulk Patch",
+      "fix_code_defect": "Fix Code"
     }
   },
   "workflows": {
@@ -1118,5 +1122,98 @@
     "errFlowEmpty": "Flow must have at least one step",
     "errFlowJson": "Invalid JSON",
     "errSuccessRequired": "Pick a success condition"
+  },
+  "compliance": {
+    "title": "Compliance",
+    "subtitle": "Map exposures to framework controls",
+    "frameworks": "Frameworks",
+    "controls": "Controls",
+    "scope": "Scope",
+    "reports": "Reports",
+    "subscribed": "Subscribed",
+    "notSubscribed": "Not subscribed",
+    "subscribe": "Subscribe",
+    "unsubscribe": "Unsubscribe",
+    "version": "Version",
+    "authority": "Authority",
+    "domain": "Domain",
+    "ref": "Ref",
+    "control": "Control",
+    "state": "State",
+    "states": {
+      "passing": "Passing",
+      "failing": "Failing",
+      "partial": "Partial",
+      "compensating_control": "Compensating",
+      "not_applicable": "Not Applicable",
+      "not_evaluated": "Not Evaluated"
+    },
+    "verdicts": {
+      "failing": "Failing",
+      "satisfied_by_compensating": "Satisfied (compensating)",
+      "exception_suppressed": "Suppressed",
+      "resolved": "Resolved"
+    },
+    "stats": {
+      "totalControls": "Controls",
+      "passing": "Passing",
+      "failing": "Failing",
+      "partial": "Partial",
+      "compensating": "Compensating",
+      "notApplicable": "N/A",
+      "failingFindings": "Failing findings",
+      "failingAssets": "Failing assets"
+    },
+    "scopeRule": "Scope rule",
+    "scopeTagExpr": "Scope tag expression",
+    "scopeAllAssets": "All org assets",
+    "scopePlaceholder": "e.g. env:prod,cde:yes",
+    "scopeHint": "Comma-separated category:value tags. Leave empty to scope to every asset in the org.",
+    "saveScope": "Save scope",
+    "control_detail": {
+      "guidance": "Auditor Guidance",
+      "mappings": "Detection Mappings",
+      "compensatingControls": "Compensating Controls",
+      "noCompensating": "No compensating controls documented",
+      "addCompensating": "Add compensating control",
+      "rationale": "Rationale",
+      "rationalePlaceholder": "e.g. WAF rule SEC-123 blocks the exploit path; documented in Confluence #compliance-pci-cde",
+      "validUntil": "Valid until",
+      "linkedException": "Linked exception",
+      "rationaleHelp": "Auditor-facing explanation of why this control is satisfied despite failing detections.",
+      "noMappings": "No automated mappings — control is testability=manual_only",
+      "ruleVersion": "Rule v{{version}}",
+      "deleteCC": "Remove",
+      "deleteCCConfirm": "Remove this compensating control? Failing findings will revert to failing verdict on the next evaluator pass."
+    },
+    "findings": {
+      "header": "Findings",
+      "verdict": "Verdict",
+      "matchedVia": "Matched via",
+      "asset": "Asset",
+      "noFindings": "No findings under this control",
+      "viewFinding": "View finding"
+    },
+    "reportRuns": {
+      "header": "Reports",
+      "generate": "Generate report",
+      "generating": "Generating…",
+      "format": "Format",
+      "createdAt": "Generated",
+      "generatedBy": "By",
+      "size": "Size",
+      "download": "Download",
+      "noReports": "No reports yet — click Generate to produce one",
+      "pdfNotImplemented": "PDF reports are not yet supported. Use CSV or JSON for v1.",
+      "ofFramework": "Reports for {{framework}}"
+    },
+    "noFrameworks": "No frameworks installed yet — ship a YAML under backend/compliance/frameworks/ and restart the backend.",
+    "subscribeFirst": "Subscribe to this framework to start tracking compliance posture.",
+    "scopeUpdated": "Scope updated",
+    "subscribed_toast": "Subscribed to {{framework}}",
+    "unsubscribed_toast": "Unsubscribed from {{framework}}",
+    "compensatingCreated": "Compensating control added",
+    "compensatingDeleted": "Compensating control removed",
+    "reportGenerated": "Report generated"
   }
 }

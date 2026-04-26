@@ -85,6 +85,7 @@
     "owner": "Eigenaar",
     "effort": "Inspanning",
     "cve": "CVE",
+    "cwe": "CWE",
     "rootCause": "Grondoorzaak",
     "search": "Bevindingen zoeken...",
     "noResults": "Geen bevindingen voldoen aan je criteria",
