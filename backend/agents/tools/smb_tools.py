@@ -468,6 +468,10 @@ register_audit(ProtocolAudit(
     credential_connector_ids=["windows_host", "windows-host"],
     tool_names=_SMB_TOOL_NAMES,
     required_ports=(445, 139),
+    safety_class="anon_standard",
+    auto_trigger_policy="auto_org_opt_in",
+    cooldown_hours=24,
+    compliance_tags=("cis_benchmarks", "nist_csf_pr_ac"),
     missions=[
         MissionTemplate(
             key="share_audit",

@@ -264,3 +264,203 @@ def test_non_port_change_event_ignored(db_session, test_org, linked_asset, conne
 
     assert n == 0
     mock_dispatch.assert_not_called()
+
+
+# ── AutoTriggerRule registry & per-rule gating ───────────────────────
+
+
+def test_auto_trigger_rules_registry_seeded_with_smb_and_snmp():
+    """The Phase 0 refactor must keep the existing SMB/SNMP behavior — both
+    rules must be present in the registry, with the right port mappings,
+    and gated by the existing ``auto_audit_anon`` setting key so today's
+    customers don't experience a behavior change."""
+    from services.audit_auto_trigger import AUTO_TRIGGER_RULES
+
+    by_protocol = {r.protocol: r for r in AUTO_TRIGGER_RULES}
+    assert {"smb", "snmp"}.issubset(by_protocol.keys())
+
+    smb = by_protocol["smb"]
+    assert set(smb.ports) == {445, 139}
+    assert smb.mission == "null_session"
+    assert smb.enabled_setting_key == "auto_audit_anon"
+    assert smb.requires_per_asset_consent is False
+
+    snmp = by_protocol["snmp"]
+    assert set(snmp.ports) == {161,}
+    assert snmp.mission == "device_posture"
+    assert snmp.transport == "udp"
+
+
+def test_per_rule_setting_key_isolates_families(db_session, test_org, linked_asset, connected_relay):
+    """A future family rule gated by e.g. ``auto_audit_datastore`` must NOT
+    fire when only ``auto_audit_anon`` is enabled. Verifies the per-family
+    gating refactor (each family gets its own switch) actually isolates."""
+    from datetime import timedelta
+    from services.audit_auto_trigger import AUTO_TRIGGER_RULES, AutoTriggerRule
+
+    fake_rule = AutoTriggerRule(
+        protocol="smb",  # reuse existing protocol so dispatch resolves
+        mission="null_session",
+        ports=(8888,),  # not in any other rule
+        cooldown=timedelta(hours=24),
+        enabled_setting_key="auto_audit_datastore",  # new family key
+    )
+    AUTO_TRIGGER_RULES.append(fake_rule)
+    try:
+        from services.audit_auto_trigger import maybe_auto_trigger_anon_audits
+
+        # Only the legacy switch on; the datastore-family rule must not fire.
+        test_org.settings = {"auto_audit_anon": True}
+        db_session.flush()
+
+        with patch("services.audit_auto_trigger.dispatch_audit_run") as mock_dispatch:
+            n = maybe_auto_trigger_anon_audits(
+                db_session, test_org,
+                _port_change_event("scanner-uuid-1", [8888]),
+            )
+
+        assert n == 0
+        mock_dispatch.assert_not_called()
+    finally:
+        AUTO_TRIGGER_RULES.remove(fake_rule)
+
+
+def test_per_asset_consent_gate_blocks_dispatch_when_missing(
+    db_session, test_org, linked_asset, connected_relay,
+):
+    """OT-class rules with ``requires_per_asset_consent=True`` must refuse
+    to dispatch even when the org-level switch is on, unless the asset
+    carries a fresh consent record."""
+    from datetime import timedelta
+    from services.audit_auto_trigger import AUTO_TRIGGER_RULES, AutoTriggerRule
+
+    consent_rule = AutoTriggerRule(
+        protocol="smb",
+        mission="null_session",
+        ports=(9999,),
+        cooldown=timedelta(hours=24),
+        enabled_setting_key="auto_audit_ot",
+        requires_per_asset_consent=True,
+    )
+    AUTO_TRIGGER_RULES.append(consent_rule)
+    try:
+        from services.audit_auto_trigger import maybe_auto_trigger_anon_audits
+
+        test_org.settings = {"auto_audit_ot": True}  # org switch ON
+        # No consent on the asset.
+        db_session.flush()
+
+        with patch("services.audit_auto_trigger.dispatch_audit_run") as mock_dispatch:
+            n = maybe_auto_trigger_anon_audits(
+                db_session, test_org,
+                _port_change_event("scanner-uuid-1", [9999]),
+            )
+        assert n == 0
+        mock_dispatch.assert_not_called()
+    finally:
+        AUTO_TRIGGER_RULES.remove(consent_rule)
+
+
+def test_per_asset_consent_gate_allows_dispatch_when_fresh(
+    db_session, test_org, linked_asset, connected_relay,
+):
+    """With a fresh consent record the consent-gated rule fires normally."""
+    from datetime import timedelta
+    from services.audit_auto_trigger import AUTO_TRIGGER_RULES, AutoTriggerRule
+
+    consent_rule = AutoTriggerRule(
+        protocol="smb",
+        mission="null_session",
+        ports=(9999,),
+        cooldown=timedelta(hours=24),
+        enabled_setting_key="auto_audit_ot",
+        requires_per_asset_consent=True,
+    )
+    AUTO_TRIGGER_RULES.append(consent_rule)
+    try:
+        from services.audit_auto_trigger import maybe_auto_trigger_anon_audits
+
+        test_org.settings = {"auto_audit_ot": True}
+        # Stamp a fresh consent record for protocol=smb.
+        linked_asset.easm_data = {
+            **(linked_asset.easm_data or {}),
+            "ot_audit_consent": {
+                "smb": {
+                    "granted_by": 1,
+                    "granted_at": datetime.now(timezone.utc).isoformat(),
+                },
+            },
+        }
+        db_session.flush()
+
+        with patch("services.audit_runner._dispatch_background_run", return_value="task-1"):
+            n = maybe_auto_trigger_anon_audits(
+                db_session, test_org,
+                _port_change_event("scanner-uuid-1", [9999]),
+            )
+
+        assert n == 1
+    finally:
+        AUTO_TRIGGER_RULES.remove(consent_rule)
+
+
+# ── ProtocolAudit safety_class / capability predicates ────────────────
+
+
+def test_smb_and_snmp_marked_anon_capable():
+    """The Phase 0 refactor moved anon-capability from a hardcoded set in
+    audit_runner to a per-audit ``safety_class`` field. SMB/SNMP must
+    keep ``is_anonymous_capable() == True`` so today's no-credential
+    dispatches keep working."""
+    import agents.agent_tools  # noqa: F401
+    from agents.audit_registry import get_audit
+
+    assert get_audit("smb").is_anonymous_capable() is True
+    assert get_audit("smb").safety_class == "anon_standard"
+    assert get_audit("smb").auto_trigger_policy == "auto_org_opt_in"
+
+    assert get_audit("snmp").is_anonymous_capable() is True
+    assert get_audit("snmp").safety_class == "anon_standard"
+
+
+def test_credentialed_audits_remain_credentialed():
+    """WMI / LDAP / SSH must NOT be anon-capable — they require creds."""
+    import agents.agent_tools  # noqa: F401
+    from agents.audit_registry import get_audit
+
+    for proto in ("wmi", "ldap", "ssh"):
+        audit = get_audit(proto)
+        assert audit.safety_class == "credentialed", (
+            f"{proto} must default to credentialed safety_class"
+        )
+        assert audit.is_anonymous_capable() is False
+        assert audit.requires_per_asset_consent() is False
+
+
+def test_dispatch_rejects_credentialed_audit_without_cred(db_session, test_org):
+    """Audit-runner now derives the cred requirement from the audit's
+    ``safety_class``. A credentialed audit (WMI) without ``credential_id``
+    must still raise the same error message."""
+    import agents.agent_tools  # noqa: F401
+    from services.audit_runner import dispatch_audit_run, AuditDispatchError
+
+    scan = Scan(
+        filename="placeholder", scan_type="manual", source_type="manual",
+        org_id=test_org.id,
+    )
+    db_session.add(scan)
+    db_session.flush()
+    asset = Asset(scan_id=scan.id, hostname="winhost-2", ip="10.0.0.6")
+    db_session.add(asset)
+    db_session.flush()
+
+    with pytest.raises(AuditDispatchError, match="credential_id is required"):
+        dispatch_audit_run(
+            db=db_session,
+            org=test_org,
+            protocol="wmi",
+            mission="identity",
+            asset_ids=[asset.id],
+            relay_agent_id="relay-x",
+            credential_id=None,
+        )

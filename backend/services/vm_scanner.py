@@ -853,6 +853,102 @@ def reap_stale_vm_scans(db: Session | None = None) -> dict:
     return {"checked": checked, "reaped": reaped}
 
 
+def process_pending_easm_vm_triggers(db: Session | None = None) -> dict:
+    """Sweep EASM scans flagged for follow-up VM scanning and dispatch them.
+
+    Replaces the previous in-process `loop.create_task()` handoff in
+    `post_ingest._auto_vm_scan_for_easm`. That fire-and-forget task died with
+    the API container on every Cloud Run liveness-probe shutdown or rolling
+    deploy, leaving EASM scans without their VM follow-up. Now the intent is
+    persisted on the EASM scan's `raw_metadata.needs_auto_vm_scan = True` and
+    this sweeper drains it on a 60s interval — surviving any number of
+    container restarts.
+
+    Idempotency comes for free from `trigger_vm_scan_for_easm_assets`, which
+    already short-circuits when a VM scan with `easm_scan_id` is on file. The
+    flag is cleared in either case (success, no-op, or filtered-out) so we
+    don't loop forever on a scan that genuinely has no VM-scannable assets.
+
+    Returns ``{"swept": n, "dispatched": m, "skipped": k, "errors": e}``.
+    """
+    import asyncio
+
+    from core.database import SessionLocal
+
+    own_session = db is None
+    if own_session:
+        db = SessionLocal()
+
+    swept = 0
+    dispatched = 0
+    skipped = 0
+    errors = 0
+    try:
+        # Cast-to-string match keeps this portable across SQLite (tests) and
+        # Postgres (prod) — JSON ->> operator support diverges.
+        candidates = (
+            db.query(Scan)
+            .filter(
+                Scan.source_type == "easm",
+                cast(Scan.raw_metadata, String).contains('"needs_auto_vm_scan": true'),
+            )
+            .all()
+        )
+        for scan in candidates:
+            swept += 1
+            md = dict(scan.raw_metadata or {})
+            if not md.get("needs_auto_vm_scan"):
+                # Lost the race with another sweeper / the JSON cast matched a
+                # substring on a key we don't care about. Skip silently.
+                continue
+
+            domain = md.get("domain")
+            org = db.query(Organization).filter(Organization.id == scan.org_id).first()
+            if not org or not domain:
+                logger.warning(
+                    "easm vm trigger sweep: scan %s missing org/domain — clearing flag",
+                    scan.id,
+                )
+                md.pop("needs_auto_vm_scan", None)
+                scan.raw_metadata = md
+                db.commit()
+                skipped += 1
+                continue
+
+            try:
+                result = asyncio.run(
+                    trigger_vm_scan_for_easm_assets(db, org, scan.id, domain)
+                )
+            except Exception:
+                logger.exception(
+                    "easm vm trigger sweep: dispatch failed for scan %s",
+                    scan.id,
+                )
+                errors += 1
+                # Leave the flag set — next sweep will retry. Most failures
+                # here are transient (vm-api 5xx, network blip).
+                continue
+
+            # Whether result is a dict (dispatched / already triggered) or
+            # None (no scannable assets), clear the flag — re-sweeping won't
+            # change the outcome until the EASM scan re-runs and refreshes
+            # `easm_data` on its assets.
+            md.pop("needs_auto_vm_scan", None)
+            scan.raw_metadata = md
+            db.commit()
+            if result is not None:
+                dispatched += 1
+            else:
+                skipped += 1
+    except Exception:
+        logger.exception("easm vm trigger sweep failed")
+    finally:
+        if own_session:
+            db.close()
+
+    return {"swept": swept, "dispatched": dispatched, "skipped": skipped, "errors": errors}
+
+
 def poll_running_vm_scans(db: Session | None = None) -> dict:
     """Refresh every in-flight VM scan so results land without a user polling.
 

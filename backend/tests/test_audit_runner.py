@@ -34,7 +34,11 @@ def test_registry_populates_all_audits():
     assert "wmi" in AUDITS
     assert "ldap" in AUDITS
     assert "smb" in AUDITS
-    assert set(list_audits()) == {"wmi", "ldap", "smb", "snmp", "ssh", "aws", "azure", "gcp"}
+    assert set(list_audits()) == {
+        "wmi", "ldap", "smb", "snmp", "ssh",
+        "aws", "azure", "gcp",
+        "exposed_datastore",  # Phase 1a
+    }
 
     wmi = get_audit("wmi")
     assert wmi.label == "WMI Audit"

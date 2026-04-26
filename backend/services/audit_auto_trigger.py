@@ -1,23 +1,34 @@
-"""Auto-dispatch unauthenticated SMB / SNMP audits when hakuna-scanner
-reports newly opened ports on an asset.
+"""Auto-dispatch unauthenticated audits when hakuna-scanner reports newly
+opened ports on an asset.
 
 Wired into ``services.scanner_event_bridge``: after each ``port_change``
-event is forwarded to the workflow engine, this also checks whether any
-of the *newly added* ports map to a protocol we can audit anonymously
-(SMB on 445/139, SNMP on 161). If so — and the org has opted in via
-``Organization.settings["auto_audit_anon"]`` — we kick off an audit run
-through the standard ``services.audit_runner.dispatch_audit_run``
-pipeline with ``credential_id=None``.
+event is forwarded to the workflow engine, this iterates the
+``AUTO_TRIGGER_RULES`` registry, matches newly-added ports against rule
+port lists, and — if the org/asset gating allows — kicks off the
+relevant audit through the standard
+``services.audit_runner.dispatch_audit_run`` pipeline with
+``credential_id=None``.
 
-A 24h per-(asset, protocol) cooldown is stored on
+Per-rule cooldown is stored on
 ``Asset.easm_data["_auto_audit_last"]`` so a flapping port doesn't fan
 out a fresh audit on every poll cycle.
+
+## Adding a family
+
+Append an ``AutoTriggerRule`` to ``AUTO_TRIGGER_RULES``. The rule
+declares: which ports are evidence (multi-port-per-protocol like
+445+139→smb collapses naturally), which protocol+mission to dispatch,
+which org-level setting key gates it, and the cooldown. OT-class
+families set ``requires_per_asset_consent=True`` so they refuse to fire
+without a fresh ``Asset.easm_data["ot_audit_consent"]`` record even
+when the org-level switch is on.
 """
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Callable, Optional
 
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
@@ -28,23 +39,113 @@ from services.audit_runner import AuditDispatchError, dispatch_audit_run
 logger = logging.getLogger(__name__)
 
 
-# Newly-opened port → (protocol, mission) for protocols whose tools support
-# unauthenticated operation. Aligned with
-# ``audit_runner._ANON_CAPABLE_PROTOCOLS`` plus the specific mission whose
-# checklist is meaningful without credentials.
-_PORT_TO_ANON_AUDIT: dict[int, tuple[str, str]] = {
-    445: ("smb", "null_session"),
-    139: ("smb", "null_session"),
-    161: ("snmp", "device_posture"),
-}
-
-_COOLDOWN = timedelta(hours=24)
+# OT consent records expire after this window, forcing a fresh approval
+# before another auto-dispatched run can target the asset. Same window
+# applies regardless of the cooldown_hours on the rule.
+_OT_CONSENT_TTL = timedelta(days=90)
 
 
-def _is_enabled(org: Organization) -> bool:
-    """Per-org opt-in. Default OFF so this never spends LLM budget without
-    explicit consent — the org admin flips it on under settings."""
-    return bool((org.settings or {}).get("auto_audit_anon"))
+@dataclass(frozen=True)
+class AutoTriggerRule:
+    """One scanner-event → audit dispatch rule.
+
+    Multiple rules may match a single event (e.g. an asset that just
+    exposed both 6379 and 27017 will fire two ``exposed_datastore`` runs
+    — though future families may collapse via predicates). 445 + 139
+    collapsing to a single SMB run is handled by both ports mapping to
+    the same ``protocol`` value plus ``setdefault`` semantics in the
+    matcher.
+    """
+    protocol: str
+    mission: str
+    ports: tuple[int, ...]
+    transport: str = "tcp"  # "tcp" | "udp" — checked against the event when
+                             # scanner emits transport-aware port_change events
+    cooldown: timedelta = timedelta(hours=24)
+    # Org-level setting key in ``Organization.settings`` that enables this
+    # rule. Each family gets its own switch so customers can turn on
+    # datastore auditing without also turning on AI auditing, etc.
+    enabled_setting_key: str = "auto_audit_anon"
+    # OT and other high-touch families set this to True. Even with the
+    # org-level switch on, dispatch refuses without a fresh per-asset
+    # consent record on ``Asset.easm_data["ot_audit_consent"]``.
+    requires_per_asset_consent: bool = False
+    # Optional predicate evaluated against the resolved Asset. Used by
+    # families with port collisions (e.g. AI services share 3000/5000/8000
+    # with generic web apps) — the rule fires only when banner-grab data
+    # confirms the service identity.
+    predicate: Optional[Callable[[Asset], bool]] = field(default=None, compare=False)
+
+
+# Module-level rule registry. Order matters only when two rules match
+# the same (port, protocol) — first match wins. Keep it short and
+# explicit; no auto-derivation from ``AUDITS`` since not every audit
+# should auto-fire.
+AUTO_TRIGGER_RULES: list[AutoTriggerRule] = [
+    # ── Family: anon_standard (today's behavior) ──
+    AutoTriggerRule(
+        protocol="smb",
+        mission="null_session",
+        ports=(445, 139),
+        cooldown=timedelta(hours=24),
+        enabled_setting_key="auto_audit_anon",
+    ),
+    AutoTriggerRule(
+        protocol="snmp",
+        mission="device_posture",
+        ports=(161,),
+        transport="udp",
+        cooldown=timedelta(hours=24),
+        enabled_setting_key="auto_audit_anon",
+    ),
+    # ── Family: anon_datastore (Phase 1a) ──
+    # One rule per datastore protocol. They all dispatch into the same
+    # ``exposed_datastore`` audit registration with mission="triage" — the
+    # protocol field on the rule is the AUDITS key, not a separate concept.
+    # Each rule has its own port list and the family is gated by a single
+    # org switch ``auto_audit_datastore`` so an org can opt into the whole
+    # family without also turning on the legacy SMB/SNMP auto-trigger.
+    AutoTriggerRule(
+        protocol="exposed_datastore",
+        mission="triage",
+        ports=(
+            # Phase 1a
+            6379, 27017, 9200, 2375, 6443, 2379,
+            # Phase 1b
+            11211, 5601, 10250, 5984,
+        ),
+        cooldown=timedelta(hours=24),
+        enabled_setting_key="auto_audit_datastore",
+    ),
+]
+
+
+def _rule_enabled_for_org(rule: AutoTriggerRule, org: Organization) -> bool:
+    """Per-org opt-in via the rule's setting key. Default OFF so this never
+    spends LLM budget without explicit consent — the org admin flips it on."""
+    return bool((org.settings or {}).get(rule.enabled_setting_key))
+
+
+def _has_fresh_consent(asset: Asset, protocol: str, now: datetime) -> bool:
+    """Per-asset consent gate for OT-class rules.
+
+    Looks for ``Asset.easm_data["ot_audit_consent"]`` keyed by protocol with
+    a non-expired ``granted_at`` timestamp. Missing or stale → no consent.
+    """
+    consent_map = (asset.easm_data or {}).get("ot_audit_consent") or {}
+    record = consent_map.get(protocol)
+    if not isinstance(record, dict):
+        return False
+    granted_raw = record.get("granted_at")
+    if not granted_raw:
+        return False
+    try:
+        granted = datetime.fromisoformat(granted_raw)
+    except (TypeError, ValueError):
+        return False
+    if granted.tzinfo is None:
+        granted = granted.replace(tzinfo=timezone.utc)
+    return (now - granted) < _OT_CONSENT_TTL
 
 
 def _resolve_backend_asset(
@@ -84,7 +185,7 @@ def _pick_relay(db: Session, org_id: int) -> Optional[RelayAgent]:
     )
 
 
-def _within_cooldown(asset: Asset, protocol: str, now: datetime) -> bool:
+def _within_cooldown(asset: Asset, protocol: str, cooldown: timedelta, now: datetime) -> bool:
     last_map = (asset.easm_data or {}).get("_auto_audit_last") or {}
     raw = last_map.get(protocol)
     if not raw:
@@ -95,7 +196,7 @@ def _within_cooldown(asset: Asset, protocol: str, now: datetime) -> bool:
         return False
     if last.tzinfo is None:
         last = last.replace(tzinfo=timezone.utc)
-    return (now - last) < _COOLDOWN
+    return (now - last) < cooldown
 
 
 def _stamp_cooldown(asset: Asset, protocol: str, now: datetime) -> None:
@@ -106,19 +207,31 @@ def _stamp_cooldown(asset: Asset, protocol: str, now: datetime) -> None:
     asset.easm_data = easm
 
 
+def _match_rules(new_ports: set[int]) -> dict[str, AutoTriggerRule]:
+    """Pick the first rule (in registry order) per protocol whose port set
+    intersects ``new_ports``. Collapsing on protocol means 445+139 produces
+    exactly one SMB rule match — and a future ``exposed_datastore`` rule
+    spanning many ports likewise produces one match per protocol per event.
+    """
+    matched: dict[str, AutoTriggerRule] = {}
+    for rule in AUTO_TRIGGER_RULES:
+        if rule.protocol in matched:
+            continue
+        if any(p in new_ports for p in rule.ports):
+            matched[rule.protocol] = rule
+    return matched
+
+
 def maybe_auto_trigger_anon_audits(
     db: Session, org: Organization, event: dict,
 ) -> int:
-    """Inspect a scanner ``port_change`` event and dispatch matching anon audits.
+    """Inspect a scanner ``port_change`` event and dispatch matching audits.
 
-    Returns the number of audits actually dispatched. No-op (returns 0) if
-    the org hasn't opted in, the event isn't a ``port_change``, no added
-    port matches an anon-capable protocol, the asset can't be resolved, no
-    relay is connected, or the per-(asset,protocol) cooldown is in effect.
+    Returns the number of audits actually dispatched. Per-rule short-circuits
+    return 0 individually: org switch off, no consent (for OT-class rules),
+    cooldown active, predicate rejects, no relay, or asset unresolved.
     """
     if event.get("event_type") != "port_change":
-        return 0
-    if not _is_enabled(org):
         return 0
 
     payload = event.get("payload") or {}
@@ -128,13 +241,14 @@ def maybe_auto_trigger_anon_audits(
             new_ports.add(int(p))
         except (TypeError, ValueError):
             continue
-    matched: dict[str, str] = {}
-    for port in new_ports:
-        if port in _PORT_TO_ANON_AUDIT:
-            proto, mission = _PORT_TO_ANON_AUDIT[port]
-            # First port wins per protocol — 445 and 139 both map to smb;
-            # we only need one audit run.
-            matched.setdefault(proto, mission)
+    matched = _match_rules(new_ports)
+    if not matched:
+        return 0
+
+    # Filter on org-level enablement before any DB work — the common case
+    # is an org with auto_audit_anon=False, and we'd rather skip the
+    # asset-resolution query for those.
+    matched = {p: r for p, r in matched.items() if _rule_enabled_for_org(r, org)}
     if not matched:
         return 0
 
@@ -160,8 +274,20 @@ def maybe_auto_trigger_anon_audits(
 
     now = datetime.now(timezone.utc)
     dispatched = 0
-    for protocol, mission in matched.items():
-        if _within_cooldown(asset, protocol, now):
+    for protocol, rule in matched.items():
+        if rule.requires_per_asset_consent and not _has_fresh_consent(asset, protocol, now):
+            logger.info(
+                "auto-audit: org=%d asset=%d protocol=%s suppressed — no fresh consent",
+                org.id, asset.id, protocol,
+            )
+            continue
+        if rule.predicate is not None and not rule.predicate(asset):
+            logger.debug(
+                "auto-audit: org=%d asset=%d protocol=%s suppressed by predicate",
+                org.id, asset.id, protocol,
+            )
+            continue
+        if _within_cooldown(asset, protocol, rule.cooldown, now):
             logger.debug(
                 "auto-audit: org=%d asset=%d protocol=%s suppressed by cooldown",
                 org.id, asset.id, protocol,
@@ -171,7 +297,7 @@ def maybe_auto_trigger_anon_audits(
             result = dispatch_audit_run(
                 db, org,
                 protocol=protocol,
-                mission=mission,
+                mission=rule.mission,
                 relay_agent_id=relay.id,
                 credential_id=None,
                 asset_ids=[asset.id],
@@ -186,7 +312,7 @@ def maybe_auto_trigger_anon_audits(
         dispatched += 1
         logger.info(
             "auto-audit: org=%d asset=%d protocol=%s mission=%s scan=%s dispatched on port_change",
-            org.id, asset.id, protocol, mission, result.get("scan_id"),
+            org.id, asset.id, protocol, rule.mission, result.get("scan_id"),
         )
     if dispatched:
         db.commit()

@@ -38,11 +38,11 @@ from agents.tools._target_utils import split_host_port
 logger = logging.getLogger(__name__)
 
 
-# Protocols whose tools support unauthenticated operation (e.g. SMB null
-# sessions, SNMP default-community sweeps). Dispatch without a credential
-# is allowed for these; the tools that actually need auth will surface a
-# clean "no credential provided" error to the LLM when called.
-_ANON_CAPABLE_PROTOCOLS = {"smb", "snmp"}
+# Whether an audit can dispatch without a credential is now derived from
+# the audit's own ``safety_class`` (see ``ProtocolAudit.is_anonymous_capable``)
+# rather than a literal protocol set. The single source of truth lives on
+# the registration in ``agents/audit_registry.py``; new families just declare
+# the right safety_class and dispatch picks it up automatically.
 
 
 class AuditDispatchError(Exception):
@@ -153,8 +153,10 @@ def _validate_dispatch_inputs(
     # credential_id is optional — protocols/missions that support anonymous
     # operation (e.g. SMB null sessions) can dispatch without one. Tools that
     # require authentication surface a clean error to the LLM when called
-    # without a credential.
-    if not credential_id and protocol not in _ANON_CAPABLE_PROTOCOLS:
+    # without a credential. The capability is declared on the audit itself
+    # via ``safety_class``; everything other than ``credentialed`` may run
+    # anonymously.
+    if not credential_id and not audit.is_anonymous_capable():
         raise AuditDispatchError(
             f"credential_id is required for protocol {protocol!r}"
         )

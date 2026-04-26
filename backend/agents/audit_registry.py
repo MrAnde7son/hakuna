@@ -16,6 +16,40 @@ its mission prompts in agent_prompts.ENHANCED_PROMPTS, (3) append a call to
 `register_audit(ProtocolAudit(...))` in the protocol's tools module. No route
 or frontend changes required — the generic `/api/audits/run` route and the
 "New Scan → Authenticated Audit" submenu read from AUDITS.
+
+## Safety classes
+
+Each audit declares a ``safety_class`` that drives credential gating, rate
+limits, auto-trigger policy, and frontend grouping. The classes form a
+deliberate hierarchy from "must have credentials" to "must never write a
+single PDU":
+
+  - ``credentialed``       — needs creds (WMI, LDAP, SSH, WinRM, cloud)
+  - ``anon_standard``      — anonymous OK, normal blast radius (SMB, SNMP)
+  - ``anon_datastore``     — anonymous OK, target is a data store
+                              (Redis, Mongo, etcd, k8s API, …)
+  - ``anon_ai_exposure``   — anonymous OK, target is an AI/ML service
+                              (Ollama, Jupyter, Ray, MLflow, …)
+  - ``anon_ipmi``          — anonymous OK, BMC/IPMI Cipher Zero class
+  - ``anon_lan_local``     — anonymous OK, only valid when the relay is on
+                              the same broadcast domain (NetBIOS, mDNS)
+  - ``ot_safe``            — OT/ICS, read-only PDUs only, requires per-asset
+                              consent and aggressive rate limiting
+  - ``ot_passive_only``    — OT/ICS, fingerprint via banner only — never
+                              craft a protocol PDU (Yokogawa, CC-Link IE)
+
+Anything other than ``credentialed`` may dispatch with ``credential_id=None``;
+the ``safety_class != "credentialed"`` predicate replaces what used to be a
+hardcoded ``_ANON_CAPABLE_PROTOCOLS`` set in audit_runner.
+
+## Auto-trigger policy
+
+  - ``manual``               — only kicked off by a user
+  - ``auto_org_opt_in``      — fires from scanner_event_bridge when the
+                                relevant org-level setting is on
+                                (e.g. settings.auto_audit_anon)
+  - ``per_asset_consent``    — never fires without a fresh per-asset consent
+                                record on Asset.easm_data (used for OT)
 """
 
 from __future__ import annotations
@@ -72,6 +106,42 @@ class ProtocolAudit:
     default_wallclock_s: int = 600
     required_ports: tuple[int, ...] = ()  # ports the protocol listens on
 
+    # ── Safety / lifecycle metadata ─────────────────────────────
+    # Default ``credentialed`` so existing audits (WMI, LDAP, SSH, cloud)
+    # keep their behavior unchanged. Anonymous-capable protocols opt in
+    # by overriding to anon_* / ot_* values; see module docstring.
+    safety_class: str = "credentialed"
+    # ``agentic`` runs the LLM ReAct loop. ``fingerprint`` registrations
+    # are metadata-only — they surface in the audit list but have no
+    # tools/missions and aren't dispatched (used by the EASM scanner
+    # extension family).
+    mode: str = "agentic"
+    # Per-(asset, protocol) cooldown enforced by the auto-trigger.
+    # 24h is right for fast-changing surface (SMB share flips, AI service
+    # restarts). OT raises this to 7 days so we don't hammer PLCs.
+    cooldown_hours: int = 24
+    # See module docstring. ``manual`` keeps current default for any audit
+    # whose registration doesn't override it.
+    auto_trigger_policy: str = "manual"
+    # Tags consumed by the compliance evaluator to map findings to control
+    # frameworks (e.g. ("cis_benchmarks","nist_csf_pr_ac") for datastores,
+    # ("iec_62443_3_3","meti_ot_security_guideline_v3") for OT).
+    compliance_tags: tuple[str, ...] = ()
+
+    def is_anonymous_capable(self) -> bool:
+        """True iff this audit can dispatch without a credential.
+
+        Replaces the old ``_ANON_CAPABLE_PROTOCOLS`` literal set in
+        ``audit_runner``. The single source of truth is now the audit's
+        own declared ``safety_class``.
+        """
+        return self.safety_class != "credentialed"
+
+    def requires_per_asset_consent(self) -> bool:
+        """True iff dispatch must check ``Asset.easm_data['ot_audit_consent']``
+        regardless of org-level auto-trigger settings."""
+        return self.auto_trigger_policy == "per_asset_consent"
+
     def mission(self, key: str) -> MissionTemplate | None:
         for m in self.missions:
             if m.key == key:
@@ -99,6 +169,11 @@ class ProtocolAudit:
             ],
             "default_model": self.default_model,
             "default_wallclock_s": self.default_wallclock_s,
+            "safety_class": self.safety_class,
+            "mode": self.mode,
+            "cooldown_hours": self.cooldown_hours,
+            "auto_trigger_policy": self.auto_trigger_policy,
+            "compliance_tags": list(self.compliance_tags),
         }
 
 

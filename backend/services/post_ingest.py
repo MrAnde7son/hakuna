@@ -597,43 +597,37 @@ def _easm_enrich(db, org_id, scan_id):
 
 
 def _auto_vm_scan_for_easm(db, org_id, scan_id):
-    """Trigger a VM scan on high-value assets when an EASM scan completes."""
-    from models.models import Scan, Organization
-    from core.database import SessionLocal
-    import asyncio
+    """Mark an EASM scan for follow-up VM scanning.
+
+    The actual VM scan dispatch happens in the `process_pending_easm_vm_triggers`
+    sweeper (apscheduler, every 60s). We only persist the intent here.
+
+    Why durable handoff and not in-process: the previous implementation used
+    `loop.create_task()` to fire-and-forget the dispatch on the API event loop.
+    On Cloud Run, liveness-probe timeouts and rolling deploys regularly tear
+    down the API instance mid-finalize, killing any background task before
+    `start_vm_scan` reaches the VM scanner. Persisting a flag survives container
+    death — the next instance's sweeper picks it up.
+    """
+    from models.models import Scan
 
     scan = db.query(Scan).filter(Scan.id == scan_id).first()
     if not scan or scan.source_type != "easm":
-        return None
-
-    org = db.query(Organization).filter(Organization.id == org_id).first()
-    if not org:
         return None
 
     domain = (scan.raw_metadata or {}).get("domain")
     if not domain:
         return None
 
-    from services.vm_scanner import trigger_vm_scan_for_easm_assets
+    md = dict(scan.raw_metadata or {})
+    if md.get("needs_auto_vm_scan"):
+        # Already pending — sweeper will handle it.
+        return {"queued": True, "domain": domain, "already_pending": True}
 
-    # Use a dedicated session so the caller's session isn't accessed
-    # concurrently or after the request context closes.
-    async def _trigger_with_own_session():
-        vm_db = SessionLocal()
-        try:
-            vm_org = vm_db.query(Organization).filter(Organization.id == org_id).first()
-            await trigger_vm_scan_for_easm_assets(vm_db, vm_org, scan_id, domain)
-        except Exception:
-            logger.exception("Auto VM scan trigger failed for scan %s", scan_id)
-        finally:
-            vm_db.close()
-
-    try:
-        loop = asyncio.get_running_loop()
-        loop.create_task(_trigger_with_own_session())
-    except RuntimeError:
-        asyncio.run(_trigger_with_own_session())
-    return {"triggered": True, "domain": domain}
+    md["needs_auto_vm_scan"] = True
+    scan.raw_metadata = md
+    db.commit()
+    return {"queued": True, "domain": domain}
 
 
 def _prioritize_findings(db, scan_id, org_id, new_finding_ids=None):

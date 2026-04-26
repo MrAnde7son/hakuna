@@ -253,21 +253,42 @@ class TestPostIngestAutoVmStep:
         assert result is None
         mock_trigger.assert_not_called()
 
-    def test_triggers_for_easm_scan(self, db_session):
-        """VM auto-scan step fires for EASM source type."""
+    def test_flags_easm_scan_for_sweeper(self, db_session):
+        """VM auto-scan step persists `needs_auto_vm_scan` instead of dispatching inline.
+
+        Dispatch happens out-of-band in `process_pending_easm_vm_triggers` so it
+        survives Cloud Run container restarts mid-finalize.
+        """
+        from models.models import Scan
         session, org = db_session
         scan = _make_easm_scan(session, org)
         _make_easm_asset(session, scan.id, "app.example.com", ports=[443])
 
         with patch("services.vm_scanner.trigger_vm_scan_for_easm_assets", new_callable=AsyncMock) as mock_trigger:
-            mock_trigger.return_value = {"scan_id": 999, "job_ids": ["j1"], "status": "running"}
-
             from services.post_ingest import _auto_vm_scan_for_easm
             result = _auto_vm_scan_for_easm(session, org.id, scan.id)
 
         assert result is not None
-        assert result["triggered"] is True
+        assert result["queued"] is True
         assert result["domain"] == "example.com"
+        # Inline dispatch must NOT happen — that was the bug.
+        mock_trigger.assert_not_called()
+        # Flag must be persisted so a restart-resilient sweeper can pick it up.
+        session.refresh(scan)
+        assert scan.raw_metadata.get("needs_auto_vm_scan") is True
+
+    def test_idempotent_when_already_pending(self, db_session):
+        """Re-running the step on an already-flagged scan is a no-op."""
+        session, org = db_session
+        scan = _make_easm_scan(session, org)
+        scan.raw_metadata = {**scan.raw_metadata, "needs_auto_vm_scan": True}
+        session.commit()
+
+        from services.post_ingest import _auto_vm_scan_for_easm
+        result = _auto_vm_scan_for_easm(session, org.id, scan.id)
+
+        assert result["queued"] is True
+        assert result["already_pending"] is True
 
     def test_step_in_finalize_pipeline(self, db_session):
         """The auto_vm_scan step appears in finalize_scan results for EASM scans."""
@@ -281,6 +302,97 @@ class TestPostIngestAutoVmStep:
             results = finalize_scan(session, scan_id=scan.id, org_id=org.id)
 
         assert "auto_vm_scan" in results
+
+
+# ─────────────────────────────────────────────────────────────────────
+# EASM → VM trigger sweeper (durable handoff)
+# ─────────────────────────────────────────────────────────────────────
+
+
+class TestProcessPendingEasmVmTriggers:
+    """Tests for vm_scanner.process_pending_easm_vm_triggers — the periodic
+    sweeper that dispatches VM scans for EASM scans flagged by post_ingest."""
+
+    def _flag(self, session, scan):
+        scan.raw_metadata = {**(scan.raw_metadata or {}), "needs_auto_vm_scan": True}
+        session.commit()
+
+    def test_dispatches_flagged_scan_and_clears_flag(self, db_session):
+        session, org = db_session
+        scan = _make_easm_scan(session, org)
+        _make_easm_asset(session, scan.id, "app.example.com", ports=[443])
+        self._flag(session, scan)
+
+        with patch("services.vm_scanner.start_vm_scan", new_callable=AsyncMock) as mock_start:
+            mock_start.return_value = {"scan_id": 999, "job_ids": ["j1"], "status": "running"}
+
+            from services.vm_scanner import process_pending_easm_vm_triggers
+            stats = process_pending_easm_vm_triggers(session)
+
+        assert stats["swept"] == 1
+        assert stats["dispatched"] == 1
+        mock_start.assert_called_once()
+
+        session.refresh(scan)
+        # Flag must be cleared so the next sweep doesn't re-dispatch.
+        assert "needs_auto_vm_scan" not in (scan.raw_metadata or {})
+
+    def test_skips_unflagged_scan(self, db_session):
+        session, org = db_session
+        scan = _make_easm_scan(session, org)
+        _make_easm_asset(session, scan.id, "app.example.com", ports=[443])
+        # No flag set.
+
+        with patch("services.vm_scanner.start_vm_scan", new_callable=AsyncMock) as mock_start:
+            from services.vm_scanner import process_pending_easm_vm_triggers
+            stats = process_pending_easm_vm_triggers(session)
+
+        assert stats["swept"] == 0
+        assert stats["dispatched"] == 0
+        mock_start.assert_not_called()
+
+    def test_clears_flag_when_no_scannable_assets(self, db_session):
+        """When trigger returns None (no eligible assets) the flag is still cleared
+        — re-sweeping won't change the outcome until the EASM scan re-runs."""
+        session, org = db_session
+        scan = _make_easm_scan(session, org)
+        _make_easm_asset(session, scan.id, "dead.example.com", ports=[], http_status=None)
+        self._flag(session, scan)
+
+        with patch("services.vm_scanner.start_vm_scan", new_callable=AsyncMock) as mock_start:
+            from services.vm_scanner import process_pending_easm_vm_triggers
+            stats = process_pending_easm_vm_triggers(session)
+
+        assert stats["swept"] == 1
+        assert stats["dispatched"] == 0
+        assert stats["skipped"] == 1
+        mock_start.assert_not_called()
+
+        session.refresh(scan)
+        assert "needs_auto_vm_scan" not in (scan.raw_metadata or {})
+
+    def test_keeps_flag_on_dispatch_error(self, db_session):
+        """Transient dispatch failure leaves the flag set so the next tick retries."""
+        session, org = db_session
+        scan = _make_easm_scan(session, org)
+        _make_easm_asset(session, scan.id, "app.example.com", ports=[443])
+        self._flag(session, scan)
+
+        with patch(
+            "services.vm_scanner.trigger_vm_scan_for_easm_assets",
+            new_callable=AsyncMock,
+        ) as mock_trigger:
+            mock_trigger.side_effect = RuntimeError("vm-api 503")
+
+            from services.vm_scanner import process_pending_easm_vm_triggers
+            stats = process_pending_easm_vm_triggers(session)
+
+        assert stats["errors"] == 1
+        assert stats["dispatched"] == 0
+
+        session.refresh(scan)
+        # Flag must still be set so the next sweep retries.
+        assert scan.raw_metadata.get("needs_auto_vm_scan") is True
 
 
 # ─────────────────────────────────────────────────────────────────────

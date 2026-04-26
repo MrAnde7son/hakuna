@@ -16,6 +16,7 @@ from . import smb_query  # noqa: F401
 from . import snmp_query  # noqa: F401
 from . import ssh_query  # noqa: F401
 from . import wmi_query  # noqa: F401
+from . import datastore_probe  # noqa: F401
 
 logger = logging.getLogger(__name__)
 

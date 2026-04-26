@@ -391,6 +391,10 @@ register_audit(ProtocolAudit(
     # preflight — note that our discovery scanners do record UDP-open ports
     # when they observe them, so this is still actionable when positive.
     required_ports=(161,),
+    safety_class="anon_standard",
+    auto_trigger_policy="auto_org_opt_in",
+    cooldown_hours=24,
+    compliance_tags=("cis_benchmarks", "nist_csf_pr_ac"),
     missions=[
         MissionTemplate(
             key="device_posture",

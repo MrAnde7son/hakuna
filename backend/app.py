@@ -450,6 +450,31 @@ def _deferred_startup():
         logger.info("VM scan poller scheduled (every 60 seconds)")
     except Exception as exc:
         logger.error("VM scan poller failed to start: %s", exc)
+    # Drain EASM scans flagged for follow-up VM scanning. Persisted handoff
+    # replaces an earlier `loop.create_task` path that fire-and-forgot the
+    # dispatch on the request loop — that died on every Cloud Run liveness
+    # shutdown, leaving EASM scans without their VM follow-up. Runs every 60s.
+    try:
+        from apscheduler.schedulers.background import BackgroundScheduler as _EasmVmBG
+        from apscheduler.triggers.interval import IntervalTrigger as _EasmVmInterval
+        from services.vm_scanner import process_pending_easm_vm_triggers
+        _easm_vm_scheduler = _EasmVmBG()
+        _easm_vm_scheduler.add_job(
+            process_pending_easm_vm_triggers,
+            _EasmVmInterval(seconds=60),
+            id="easm_vm_trigger_sweep",
+            replace_existing=True,
+            misfire_grace_time=60,
+            coalesce=True,
+            max_instances=1,
+        )
+        _easm_vm_scheduler.start()
+        # Drain once at startup so a scan flagged just before a restart doesn't
+        # have to wait the full 60s for the first sweep.
+        process_pending_easm_vm_triggers()
+        logger.info("EASM→VM trigger sweeper scheduled (every 60 seconds)")
+    except Exception as exc:
+        logger.error("EASM→VM trigger sweeper failed to start: %s", exc)
     # Replan stale Adaptive Scan Plans (every 6 hours).
     # Plans are normally refreshed at the tail of the enrichment pipeline,
     # but assets that haven't been re-enriched in a while still benefit
