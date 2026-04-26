@@ -1,6 +1,6 @@
 ---
 name: SBOM & Runtime
-description: Software inventory, SBOM ingestion, runtime software detection, and CVE correlation to Software entities
+description: Use when ingesting SBOMs (CycloneDX/SPDX/Syft), correlating software versions to CVEs, tracking runtime vs installed software, or designing remediation that consolidates multiple CVEs behind a single upgrade.
 tools: Read, Edit, Write, Glob, Grep, Bash, WebFetch
 skills:
   - add-parser

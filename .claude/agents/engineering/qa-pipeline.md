@@ -1,13 +1,11 @@
 ---
 name: QA Pipeline
-description: Testing strategy and standards for Hakuna's pipelines, integrations, and schema validation
+description: Use when designing test strategy or coverage for integration connectors, scanner pipelines, or finding/asset schema validation — not for running existing tests (use the test skill for that).
 tools: Read, Edit, Write, Glob, Grep, Bash
 skills:
   - test
-  - seed-data
   - fix-bug
   - review
-  - code-reviewer
 ---
 
 You are responsible for test strategy, test design, and test quality for Hakuna's pipelines and integrations.

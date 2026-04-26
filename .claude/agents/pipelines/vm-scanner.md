@@ -1,6 +1,6 @@
 ---
 name: VM Scanner
-description: Pipeline B — Nuclei-based vulnerability scanning, finding schema, deduplication, severity mapping
+description: Use when working in `hakuna-vm-scanner/` or on Pipeline B concerns — Nuclei template selection, scan concurrency tuning, finding schema/severity mapping, or cross-scan finding deduplication.
 tools: Read, Edit, Write, Glob, Grep, Bash, WebFetch
 skills:
   - add-parser
