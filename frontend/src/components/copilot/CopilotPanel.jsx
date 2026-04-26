@@ -764,6 +764,22 @@ export default function CopilotPanel({ open, onClose, currentPath, currentSearch
     if (!msg || streaming) return
     setShowAutonomy(false)
 
+    // Optimistic UI: clear the input, render the user bubble, and enter the
+    // streaming state immediately so the send feels instant. On the first
+    // message of a session we still need to create a conversation server-side,
+    // but that roundtrip should not block visible feedback (especially on
+    // mobile / slow networks).
+    setInput('')
+    if (textareaRef.current) {
+      textareaRef.current.style.height = '20px'
+    }
+    setMessages(prev => [...prev, { role: 'user', content: msg, timestamp: new Date().toISOString() }])
+    setStreaming(true)
+    setStreamText('')
+    setStreamEvents([])
+    setThinkingStep(0)
+    setRecommendations([])
+
     // Auto-create conversation if none active
     let conv = activeConv
     if (!conv) {
@@ -773,16 +789,16 @@ export default function CopilotPanel({ open, onClose, currentPath, currentSearch
         setConversations(prev => [conv, ...prev])
       } catch (e) {
         console.error('Failed to create conversation:', e)
+        setMessages(prev => [...prev, {
+          role: 'error',
+          content: 'Failed to start conversation. Please try again.',
+          timestamp: new Date().toISOString(),
+        }])
+        setStreaming(false)
+        setThinkingStep(-1)
         return
       }
     }
-
-    setInput('')
-    setStreaming(true)
-    setStreamText('')
-    setStreamEvents([])
-    setThinkingStep(0)
-    setRecommendations([])
 
     const _promptStart = Date.now()
     capture('copilot_prompt_sent', {
@@ -790,10 +806,6 @@ export default function CopilotPanel({ open, onClose, currentPath, currentSearch
       conversation_id: conv?.id,
       page: currentPath,
     })
-
-    // Add user message to local state (show original text in chat bubble)
-    const userMsg = { role: 'user', content: msg, timestamp: new Date().toISOString() }
-    setMessages(prev => [...prev, userMsg])
 
     // Build context-enriched message for the backend
     const pageLabel = getPageLabel(currentPath, currentSearch)
