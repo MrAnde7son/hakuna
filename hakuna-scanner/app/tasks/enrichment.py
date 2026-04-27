@@ -157,7 +157,8 @@ async def _get_asset_snapshot(
     async with sf() as db:
         result = await db.execute(
             text(f"""
-                SELECT id, hostname, host(ip) as ip, open_ports, tech_stack, tls_cert
+                SELECT id, hostname, host(ip) as ip, open_ports, open_udp_ports,
+                       tech_stack, tls_cert
                 FROM assets WHERE org_id = :org_id{extra}
             """),
             params,
@@ -168,6 +169,7 @@ async def _get_asset_snapshot(
                 "hostname": row.hostname,
                 "ip": row.ip,
                 "open_ports": row.open_ports,
+                "open_udp_ports": row.open_udp_ports,
                 "tech_stack": row.tech_stack,
                 "tls_cert": row.tls_cert,
             }

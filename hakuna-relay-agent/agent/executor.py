@@ -7,10 +7,6 @@ from .config import AgentConfig
 from .method_registry import METHOD_HANDLERS, get_handler
 from .transport import LocalApiTransport
 
-# Side-effect imports: each method handler registers itself on import.
-# Keep these at module load so METHOD_HANDLERS is populated before the first
-# task arrives. New protocol handlers (kerberos_probe, smb_enum, etc.) plug
-# in by importing them here.
 from . import ldap_query  # noqa: F401
 from . import smb_query  # noqa: F401
 from . import snmp_query  # noqa: F401
@@ -18,6 +14,11 @@ from . import ssh_query  # noqa: F401
 from . import wmi_query  # noqa: F401
 from . import datastore_probe  # noqa: F401
 from . import ai_service_probe  # noqa: F401
+from . import anon_protocol_probe  # noqa: F401
+from . import ipmi_probe  # noqa: F401
+from . import netbios_probe  # noqa: F401
+from . import ot_protocol_probe  # noqa: F401
+from . import ot_passive_probe  # noqa: F401
 
 logger = logging.getLogger(__name__)
 

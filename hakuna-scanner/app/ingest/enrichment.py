@@ -430,16 +430,45 @@ async def store_nmap_results(
 
     nmap_status = "timeout" if timed_out else "complete"
 
-    await db.execute(
-        text("""
-            UPDATE assets SET
-                os_fingerprint = COALESCE(:os_fp, os_fingerprint),
-                nmap_status = :status,
-                nmap_last_run = :now
-            WHERE id = :id
-        """),
-        {"os_fp": os_fp, "status": nmap_status, "now": now, "id": asset_id},
-    )
+    # Collect UDP open ports for the assets.open_udp_ports denormalization.
+    # Populated only when the nmap run included UDP services — a TCP-only
+    # run leaves the column untouched (NULL or whatever it was before).
+    udp_open: set[int] = set()
+    has_udp_results = False
+    for svc in nmap_host.services:
+        if (svc.protocol or "tcp") == "udp":
+            has_udp_results = True
+            # nmap UDP marks ports "open|filtered" for the closed default —
+            # only count actually-open ones.
+            if (svc.state or "").startswith("open") and not svc.state.startswith("open|filtered"):
+                udp_open.add(svc.port)
+
+    if has_udp_results:
+        await db.execute(
+            text("""
+                UPDATE assets SET
+                    os_fingerprint = COALESCE(:os_fp, os_fingerprint),
+                    nmap_status = :status,
+                    nmap_last_run = :now,
+                    open_udp_ports = :udp_ports
+                WHERE id = :id
+            """),
+            {
+                "os_fp": os_fp, "status": nmap_status, "now": now, "id": asset_id,
+                "udp_ports": sorted(udp_open),
+            },
+        )
+    else:
+        await db.execute(
+            text("""
+                UPDATE assets SET
+                    os_fingerprint = COALESCE(:os_fp, os_fingerprint),
+                    nmap_status = :status,
+                    nmap_last_run = :now
+                WHERE id = :id
+            """),
+            {"os_fp": os_fp, "status": nmap_status, "now": now, "id": asset_id},
+        )
 
     # Per-port results
     for svc in nmap_host.services:

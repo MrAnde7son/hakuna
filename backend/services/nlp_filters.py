@@ -27,6 +27,17 @@ def apply_asset_nlp_filters(query, af: dict, db: Session = None):
         query = query.filter(Asset.asset_status == af["asset_status"])
     if af.get("is_internet_facing"):
         query = query.filter(Asset.is_internet_facing == True)
+    if af.get("is_credentialed"):
+        query = query.filter(Asset.is_credentialed == True)
+    if af.get("device_type"):
+        query = query.filter(Asset.device_type == af["device_type"])
+    if af.get("asset_type"):
+        query = query.filter(Asset.asset_type == af["asset_type"])
+    if af.get("business_context"):
+        query = query.filter(Asset.business_context.ilike(f"%{af['business_context']}%"))
+    if af.get("min_sources") is not None:
+        # JSON array length on source_systems — Postgres jsonb_array_length
+        query = query.filter(func.jsonb_array_length(Asset.source_systems) >= int(af["min_sources"]))
     if af.get("search"):
         pat = f"%{af['search']}%"
         query = query.filter(or_(
@@ -113,6 +124,30 @@ def apply_finding_nlp_filters(query, ff: dict, db: Session = None):
         query = query.filter(cast(Finding.source_systems, Text).ilike(f'%"{ff["source"]}"%'))
     if ff.get("exclude_source"):
         query = query.filter(~cast(Finding.source_systems, Text).ilike(f'%"{ff["exclude_source"]}"%'))
+    if ff.get("control_mitigation_status"):
+        query = query.filter(Finding.control_mitigation_status == ff["control_mitigation_status"])
+    if ff.get("ssvc_decision"):
+        query = query.filter(Finding.ssvc_decision == ff["ssvc_decision"])
+    if ff.get("greynoise_seen"):
+        query = query.filter(Finding.greynoise_seen == True)
+    if ff.get("exploit_maturity_level"):
+        query = query.filter(Finding.exploit_maturity_level == ff["exploit_maturity_level"])
+    if ff.get("ctx_reachability"):
+        query = query.filter(Finding.ctx_reachability == ff["ctx_reachability"])
+    if ff.get("ctx_exploitability"):
+        query = query.filter(Finding.ctx_exploitability == ff["ctx_exploitability"])
+    if ff.get("ctx_accessibility"):
+        query = query.filter(Finding.ctx_accessibility == ff["ctx_accessibility"])
+    if ff.get("llm_verdict"):
+        verdict_expr = Finding.llm_validation.op("->>")("verdict")
+        if ff["llm_verdict"] == "any":
+            query = query.filter(Finding.llm_validation.isnot(None), verdict_expr.isnot(None))
+        else:
+            query = query.filter(verdict_expr == ff["llm_verdict"])
+    if ff.get("exploit_count_min") is not None:
+        query = query.filter(Finding.exploit_count >= int(ff["exploit_count_min"]))
+    if ff.get("owner_suggestion"):
+        query = query.filter(Finding.owner_suggestion.ilike(f"%{ff['owner_suggestion']}%"))
     if ff.get("tags") and db is not None:
         tag_list = [t.strip() for t in ff["tags"].split(",")]
         tag_subq = db.query(TagAssignment.finding_id).join(Tag, TagAssignment.tag_id == Tag.id).filter(

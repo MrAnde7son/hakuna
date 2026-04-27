@@ -530,3 +530,132 @@ def test_widget_hints_field_always_present():
     assert isinstance(r["widget_hints"], list)
     assert isinstance(r["metric_intents"], list)
     assert isinstance(r["inventory_intents"], list)
+
+
+# ── LLM / Analyst validation (NEW) ───────────────────────────────────────────
+
+def test_validated_findings():
+    r = parse_nlp_query("validated findings")
+    assert r["finding_filters"]["llm_verdict"] == "any"
+
+def test_true_positive_findings():
+    r = parse_nlp_query("true positive findings")
+    assert r["finding_filters"]["llm_verdict"] == "true_positive"
+
+def test_false_positive_validation():
+    r = parse_nlp_query("validated false positives")
+    assert r["finding_filters"]["llm_verdict"] == "false_positive"
+
+def test_needs_review_findings():
+    r = parse_nlp_query("findings that need review")
+    assert r["finding_filters"]["llm_verdict"] == "needs_review"
+
+
+# ── Validated context (NEW) ──────────────────────────────────────────────────
+
+def test_ctx_easily_exploitable():
+    r = parse_nlp_query("easily exploitable findings")
+    assert r["finding_filters"]["ctx_exploitability"] == "easily_exploitable"
+
+def test_ctx_unreachable():
+    r = parse_nlp_query("unreachable vulnerabilities")
+    assert r["finding_filters"]["ctx_reachability"] == "unreachable"
+
+def test_ctx_publicly_accessible():
+    r = parse_nlp_query("publicly accessible findings")
+    assert r["finding_filters"]["ctx_accessibility"] == "public"
+
+
+# ── Compensating controls (NEW) ──────────────────────────────────────────────
+
+def test_mitigated_by_controls():
+    r = parse_nlp_query("findings mitigated by controls")
+    assert r["finding_filters"]["control_mitigation_status"] == "mitigated"
+
+def test_partially_mitigated():
+    r = parse_nlp_query("partially mitigated vulns")
+    assert r["finding_filters"]["control_mitigation_status"] == "partially_mitigated"
+
+def test_unmitigated():
+    r = parse_nlp_query("unmitigated findings")
+    assert r["finding_filters"]["control_mitigation_status"] == "not_mitigated"
+
+
+# ── SSVC / Exploit maturity (NEW) ────────────────────────────────────────────
+
+def test_ssvc_act():
+    r = parse_nlp_query("SSVC Act findings")
+    assert r["finding_filters"]["ssvc_decision"] == "Act"
+
+def test_ssvc_attend():
+    r = parse_nlp_query("ssvc attend")
+    assert r["finding_filters"]["ssvc_decision"] == "Attend"
+
+def test_weaponized_exploits():
+    r = parse_nlp_query("findings with weaponized exploits")
+    assert r["finding_filters"]["exploit_maturity_level"] == "weaponized"
+
+def test_functional_exploits():
+    r = parse_nlp_query("functional exploits available")
+    assert r["finding_filters"]["exploit_maturity_level"] == "functional"
+
+
+# ── GreyNoise (NEW) ──────────────────────────────────────────────────────────
+
+def test_greynoise_seen():
+    r = parse_nlp_query("findings actively exploited in the wild")
+    assert r["finding_filters"]["greynoise_seen"] is True
+
+
+# ── Asset-side new fields ────────────────────────────────────────────────────
+
+def test_credentialed_assets():
+    r = parse_nlp_query("credentialed assets")
+    assert r["asset_filters"]["is_credentialed"] is True
+
+def test_authenticated_scans():
+    r = parse_nlp_query("authenticated scans")
+    assert r["asset_filters"]["is_credentialed"] is True
+
+def test_device_type_router():
+    r = parse_nlp_query("router devices")
+    assert r["asset_filters"]["device_type"] == "router"
+
+def test_device_type_workstation():
+    r = parse_nlp_query("workstation assets")
+    assert r["asset_filters"]["device_type"] == "workstation"
+
+def test_asset_type_web_app():
+    r = parse_nlp_query("web app assets")
+    assert r["asset_filters"]["asset_type"] == "web_app"
+
+def test_asset_type_cloud_instance():
+    r = parse_nlp_query("cloud instances")
+    assert r["asset_filters"]["asset_type"] == "cloud_instance"
+
+def test_asset_type_container_image():
+    r = parse_nlp_query("container images with critical vulns")
+    assert r["asset_filters"]["asset_type"] == "container_image"
+
+
+# ── Captured rules (NEW) ─────────────────────────────────────────────────────
+
+def test_owned_by_filter():
+    r = parse_nlp_query("findings owned by netops")
+    assert r["finding_filters"]["owner_suggestion"] == "netops"
+
+
+# ── Registry-as-source-of-truth (scaling guarantee) ──────────────────────────
+
+def test_new_field_does_not_leak_into_search():
+    """Every registry rule auto-contributes its consumed patterns to the residual
+    strip — adding a field should never cause it to surface as a Text: chip."""
+    queries = [
+        "validated findings", "true positive findings", "ssvc act",
+        "weaponized exploits", "credentialed assets", "router devices",
+        "easily exploitable", "unmitigated", "publicly accessible findings",
+    ]
+    for q in queries:
+        r = parse_nlp_query(q)
+        labels = [c["label"] for c in r["explanation"]]
+        assert "Text" not in labels, f"'{q}' leaked into Text: chip"

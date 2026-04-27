@@ -52,8 +52,9 @@ async def detect_changes(
     """Compare current asset state with a previous snapshot and emit change events.
 
     `previous_snapshot` should be a list of dicts with keys:
-    {id, hostname, ip, open_ports, tech_stack, tls_cert}
-    captured before the scan run updated the assets.
+    {id, hostname, ip, open_ports, open_udp_ports, tech_stack, tls_cert}
+    captured before the scan run updated the assets. ``open_udp_ports`` is
+    optional for back-compat with snapshots taken before Phase 4.0.
     """
     now = datetime.now(timezone.utc)
     events_created = 0
@@ -61,7 +62,11 @@ async def detect_changes(
     for prev in previous_snapshot:
         asset_id = prev["id"]
         row = await db.execute(
-            text("SELECT hostname, host(ip) as ip, open_ports, tech_stack, tls_cert FROM assets WHERE id = :id"),
+            text("""
+                SELECT hostname, host(ip) as ip, open_ports, open_udp_ports,
+                       tech_stack, tls_cert
+                FROM assets WHERE id = :id
+            """),
             {"id": asset_id},
         )
         current = row.fetchone()
@@ -77,7 +82,7 @@ async def detect_changes(
             }, now)
             events_created += 1
 
-        # Port change
+        # TCP port change
         prev_ports = sorted(prev.get("open_ports") or [])
         curr_ports = sorted(current.open_ports or [])
         if prev_ports != curr_ports:
@@ -86,8 +91,25 @@ async def detect_changes(
             if new_ports or removed_ports:
                 await _insert_event(db, org_id, asset_id, "port_change", {
                     "hostname": current.hostname,
+                    "transport": "tcp",
                     "new_ports": new_ports,
                     "removed_ports": removed_ports,
+                }, now)
+                events_created += 1
+
+        # UDP port change (Phase 4.0). Same payload shape as TCP — the
+        # ``transport`` field is what the audit auto-trigger filters on.
+        prev_udp = sorted(prev.get("open_udp_ports") or [])
+        curr_udp = sorted(current.open_udp_ports or [])
+        if prev_udp != curr_udp:
+            new_udp = [p for p in curr_udp if p not in prev_udp]
+            removed_udp = [p for p in prev_udp if p not in curr_udp]
+            if new_udp or removed_udp:
+                await _insert_event(db, org_id, asset_id, "port_change", {
+                    "hostname": current.hostname,
+                    "transport": "udp",
+                    "new_ports": new_udp,
+                    "removed_ports": removed_udp,
                 }, now)
                 events_created += 1
 

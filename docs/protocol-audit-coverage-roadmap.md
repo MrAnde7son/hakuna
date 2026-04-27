@@ -1,7 +1,7 @@
 # Protocol Audit Coverage Expansion — Roadmap
 
 **Last updated:** 2026-04-27
-**Status:** Phase 0, 1a, 1b, 2, 3, 3.5 shipped. Phase 4–5 planned.
+**Status:** Phase 0, 1a, 1b, 2, 3, 3.5, 4.0, 4.1, 4.2, 4.3, 5 shipped. Open relay-side prereqs: register local interfaces (gates 4.3 from firing in production); JP localization + OT Posture dashboard land in a follow-on UX slice.
 
 ## The big picture
 
@@ -23,8 +23,11 @@ Hakuna started with two anonymous-capable agentic audits (SMB null-session, SNMP
 | 2 | F: EASM fingerprinter (gap-fill only) | ✅ shipped | 49 (19 backend + 30 scanner) | ~3 days |
 | 3 | B: `exposed_ai_service` (Option D: gap-fill only) | ✅ shipped | 56 (29 backend + 27 relay) | ~1 wk |
 | 3.5 | B': Managed AI governance (saas + cloud + secrets) | ✅ shipped | 258 (235 backend + 23 scanner) | ~1 wk |
-| 4 | C+D: IPMI + small anon | 📋 planned | — | ~1 wk |
-| 5 | E: OT/ICS (JP-only protocols) | 📋 planned | — | ~2 wk |
+| 4.1 | D: `exposed_anon_protocol` (FTP/VNC/DNS-AXFR/Kerberos/TFTP) | ✅ shipped | 36 (18 backend + 18 relay) | ~2 days |
+| 4.0 | Scanner UDP `port_change` events (transport-aware delta) | ✅ shipped | 9 (5 scanner + 4 backend) | ~1 day |
+| 4.2 | C: `ipmi_bmc` (Cipher Zero + RAKP-3) | ✅ shipped | 31 (13 backend + 18 relay) | ~3 days |
+| 4.3 | D': `netbios_local` (LAN-local, relay subnet predicate) | ✅ shipped | 26 (15 backend + 11 relay) | ~2 days |
+| 5 | E: OT/ICS (`ot_protocol` + `ot_passive`, JP wedge included) | ✅ shipped | 61 (25 backend + 36 relay) | ~3 days |
 
 ### Pre-existing scanner coverage (audit 2026-04-26)
 
@@ -304,27 +307,205 @@ Findings emitted as `plugin_family="AI Governance"` with `plugin_id=leaked_manag
 
 ---
 
-## 📋 Phase 4 — Families C + D: IPMI + small anon protocols
+## ✅ Phase 4.1 — Family D slice: `exposed_anon_protocol` bundle
 
-**Why fourth:** small surface area, drop in alongside whichever release window is open.
+**Status:** shipped. 18 backend + 18 relay tests pass.
 
-### Audits
-- **`ipmi_bmc`** (UDP 623, `safety_class="anon_ipmi"`) — Cipher Zero + RAKP hash test. Devastating in legacy DCs.
-- **`kerberos_anon`** (88) — username enum + AS-REP roast
-- **`dns_axfr`** (53) — zone transfer
-- **`tftp_anon`** (UDP 69) — common-filename probe with hardcoded list
-- **`netbios_local`** (UDP 137/5355/5353, `safety_class="anon_lan_local"`) — auto-fires only when relay reports same /24 as asset
-- **`ftp_anon`** (21), **`vnc_anon`** (5900) — auth-disabled checks
+Single audit registration covering five legacy anon-misconfig protocols, mirroring the Phase 1 datastore-bundle pattern (one audit, one relay method, one mission, op-dispatch). The `kerberos_anon` AS-REP-roast scope from the original roadmap was deliberately narrowed to **reachability + realm fingerprint** — actual username enumeration / roasting belongs in a separate consent-gated mission, not in `triage`.
+
+| Port | Protocol | Decisive field |
+|---|---|---|
+| 21 | FTP | `anonymous_login_allowed` (USER anonymous → 230) |
+| 5900 | VNC | `auth_required` (RFB security type 1 = None) |
+| 53 | DNS | `axfr_allowed` (zone-transfer materialized) |
+| 88 | Kerberos | `kdc_reachable` + best-effort `realm` from KRB-ERROR scan |
+| UDP 69 | TFTP | `readable_files` (hardcoded common-filename list at relay) |
+
+### Files added
+- [`backend/agents/tools/exposed_anon_protocol_tools.py`](../backend/agents/tools/exposed_anon_protocol_tools.py)
+- [`hakuna-relay-agent/agent/anon_protocol_probe.py`](../hakuna-relay-agent/agent/anon_protocol_probe.py)
+- [`backend/agents/prompts/audit/exposed_anon_protocol/_preamble.md`](../backend/agents/prompts/audit/exposed_anon_protocol/_preamble.md), [`triage.md`](../backend/agents/prompts/audit/exposed_anon_protocol/triage.md)
+- [`backend/tests/test_exposed_anon_protocol_audit.py`](../backend/tests/test_exposed_anon_protocol_audit.py) — 18 tests
+- [`hakuna-relay-agent/tests/test_anon_protocol_probe.py`](../hakuna-relay-agent/tests/test_anon_protocol_probe.py) — 18 tests including TFTP-filename-injection guard
+
+### Defense in depth
+- Backend tool layer exposes one `op` per protocol; the agent cannot smuggle paths or realms.
+- Relay allowlist (`_OP_HANDLERS` in `anon_protocol_probe.py`) rejects unknown ops before any network code.
+- TFTP filename list is `_TFTP_COMMON_FILES` at the relay — `op_params.filenames` is ignored. Tested explicitly.
+- Kerberos probe is fingerprint-only: malformed AS-REQ-shaped TCP message + best-effort realm extraction. **No** AS-REQ for real principals, no AS-REP roasting.
+- DNS AXFR uses dnspython if available; the probe degrades gracefully (returns `_errors`) when not installed.
+
+### Auto-trigger (delivered)
+Ports {21, 53, 88, 5900} → `("exposed_anon_protocol", "triage")`. Gated by new family switch `auto_audit_anon_protocol`. UDP 69 (TFTP) deliberately excluded from auto-trigger until Phase 4.0 lands UDP `port_change` events; the audit can still be dispatched manually with TFTP probing in scope.
 
 ### Compliance
-IPMI → `nist_csf_pr_ac`, `cis_benchmarks`. AXFR → `cis_benchmarks`. FTP anon → `pci_dss_4`.
-
-### Prerequisite
-**Phase 0.4** — UDP `port_change` events from the scanner. Currently TCP-only. See [hakuna-scanner/app/ingest/delta.py](../hakuna-scanner/app/ingest/delta.py).
+`cis_benchmarks`, `nist_csf_pr_ac`, `pci_dss_4`. Wired in registration's `compliance_tags`.
 
 ---
 
-## 📋 Phase 5 — Family E: OT/ICS (highest stakes, JP-flavored)
+## ✅ Phase 4.0 — Scanner UDP `port_change` events (transport-aware delta)
+
+**Status:** shipped. Alembic migration 014 + delta diff + auto-trigger transport filter.
+
+### What changed
+- **Scanner schema**: new `assets.open_udp_ports` Integer array column ([migration 014](../hakuna-scanner/alembic/versions/014_add_open_udp_ports.py)). Mirrors `assets.open_ports` but holds UDP ports populated from the existing nmap UDP scan.
+- **Enrichment**: `store_nmap_results` ([enrichment.py](../hakuna-scanner/app/ingest/enrichment.py)) now extracts UDP services from nmap's per-port output and writes them to `assets.open_udp_ports`. TCP-only nmap runs leave the column untouched.
+- **Snapshot capture**: `_get_asset_snapshot` ([tasks/enrichment.py](../hakuna-scanner/app/tasks/enrichment.py)) reads both arrays so the post-scan delta has both transports' previous state.
+- **Delta diffing**: `detect_changes` ([delta.py](../hakuna-scanner/app/ingest/delta.py)) diffs TCP and UDP separately and emits one `port_change` event per (asset, transport) with `payload.transport ∈ {"tcp", "udp"}`. Same asset with simultaneous TCP+UDP changes produces two distinct events.
+- **Auto-trigger filter**: [`audit_auto_trigger.py`](../backend/services/audit_auto_trigger.py) `_match_rules(new_ports, transport)` rejects rules whose declared `transport` doesn't match the event transport. Legacy events with no `transport` field default to `"tcp"` — historical SMB/datastore/anon-protocol behavior preserved.
+
+### Backwards compatibility
+- Pre-4.0 `port_change` events without a `transport` field default to TCP at the matcher.
+- Snapshots without `open_udp_ports` (taken before migration) are tolerated by `detect_changes` — UDP diffs default to empty.
+
+### What this unlocked
+- **SNMP rule** (declared `transport='udp'` since Phase 0) starts firing for the first time — historically the matcher ignored transport, so the rule actually didn't match TCP-shape events. New tests pin the correct UDP-only behavior.
+- **IPMI rule** (Phase 4.2) and **NetBIOS rule** (Phase 4.3) auto-fire on UDP-tagged events.
+- **TFTP** in the `exposed_anon_protocol` family (Phase 4.1) — auto-trigger still excludes UDP 69 deliberately (the rule is TCP-only) since the TFTP probe is opportunistic; the audit can still be dispatched manually with TFTP probing in scope.
+
+---
+
+## ✅ Phase 4.2 — Family C: `ipmi_bmc` (Cipher Zero + RAKP-3)
+
+**Status:** shipped. 13 backend + 18 relay tests pass.
+
+Single-protocol audit registration with two ops, both UDP/623, RMCP+ packet-construction at the relay (no `pyipmi`/`pyghmi` dependency — neither library exposes the low-level control we need for cipher-zero and deliberately-incomplete RAKP-3).
+
+| Op | Detection | Severity (when fired) |
+|---|---|---|
+| `cipher_zero` | RMCP+ Open Session Request with auth/integ/conf=0; BMC accepts → critical | always **critical** (any user, no password → full host control) |
+| `rakp_hash` | RAKP-1 with username `admin`/`root`; BMC returns RAKP-2 with status=0 + non-zero KEAC → hash leak (CVE-2013-4786) | **high**/**medium** depending on network position |
+
+### Files added
+- [`backend/agents/tools/ipmi_tools.py`](../backend/agents/tools/ipmi_tools.py)
+- [`hakuna-relay-agent/agent/ipmi_probe.py`](../hakuna-relay-agent/agent/ipmi_probe.py) — hand-rolled RMCP+ session header + Open Session Req/Resp + RAKP-1/RAKP-2 parsers
+- [`backend/agents/prompts/audit/ipmi_bmc/_preamble.md`](../backend/agents/prompts/audit/ipmi_bmc/_preamble.md), [`triage.md`](../backend/agents/prompts/audit/ipmi_bmc/triage.md)
+- [`backend/tests/test_ipmi_bmc_audit.py`](../backend/tests/test_ipmi_bmc_audit.py) — 13 tests (registration, dispatch, auto-trigger, transport-filter)
+- [`hakuna-relay-agent/tests/test_ipmi_probe.py`](../hakuna-relay-agent/tests/test_ipmi_probe.py) — 18 tests covering packet builders + parsers + cipher-zero verdict matrix + RAKP-2 keac handling
+
+### Auto-trigger (delivered)
+UDP 623 → `("ipmi_bmc", "triage")`. Gated by family switch `auto_audit_ipmi`. Rule declares `transport="udp"`; only fires on UDP-tagged port_change events from Phase 4.0.
+
+### Defense-in-depth
+- Op-allowlist (`_OP_HANDLERS` in `ipmi_probe.py`) restricts the relay to exactly two ops — no chassis power, no virtual-media, no SOL.
+- `_build_rakp1` clamps username to 16 bytes per IPMI spec — no buffer-overrun smuggling.
+- Triage prompt limits username probing to `admin` then `root` (only if first returns "name unknown"). The agent is told **not** to enumerate vendor-default usernames.
+
+### Compliance
+`nist_csf_pr_ac`, `cis_benchmarks`.
+
+---
+
+## ✅ Phase 4.3 — Family D': `netbios_local` (LAN-local)
+
+**Status:** shipped. 15 backend + 11 relay tests pass.
+
+Single audit registration covering three LAN-local name-resolution / service-discovery protocols. All probes are unicast UDP queries sent directly to the asset (not multicast solicitations) — the auto-trigger's subnet predicate ensures the relay shares a broadcast domain with the asset so the unicast probes land.
+
+| Op | Port | Detection |
+|---|---|---|
+| `nbns` | UDP 137 | NBSTAT query (`*` name) — response = NBT-NS enabled, name table reveals workgroup + signed-on user |
+| `llmnr` | UDP 5355 | Unicast LLMNR query for the host's short name — any reply = LLMNR enabled (Responder/poisoning vector) |
+| `mdns` | UDP 5353 | Unicast DNS-SD `_services._dns-sd._udp.local` PTR — response = mDNS enabled, advertised services exposed |
+
+### New: `_lan_local_predicate` (relay/asset same-subnet gate)
+[`audit_auto_trigger.py`](../backend/services/audit_auto_trigger.py) — predicate signature widened to `Callable[[Asset, RelayAgent | None], bool]`. The LAN-local rule's predicate reads `RelayAgent.labels["local_interfaces"]` (a list of CIDR strings) and accepts only when the asset's IP falls inside one of them. Missing labels = predicate rejects (defensive default).
+
+### Files added
+- [`backend/agents/tools/netbios_local_tools.py`](../backend/agents/tools/netbios_local_tools.py)
+- [`hakuna-relay-agent/agent/netbios_probe.py`](../hakuna-relay-agent/agent/netbios_probe.py) — RFC 1002 NetBIOS-name encoder, NBSTAT response parser, DNS-format query builder shared between LLMNR and mDNS, DNS-SD service-name scanner
+- [`backend/agents/prompts/audit/netbios_local/_preamble.md`](../backend/agents/prompts/audit/netbios_local/_preamble.md), [`triage.md`](../backend/agents/prompts/audit/netbios_local/triage.md)
+- [`backend/tests/test_netbios_local_audit.py`](../backend/tests/test_netbios_local_audit.py) — 15 tests
+- [`hakuna-relay-agent/tests/test_netbios_probe.py`](../hakuna-relay-agent/tests/test_netbios_probe.py) — 11 tests covering encoders + parsers + per-op silent-host vs responding-host vs mismatched-tid behavior
+
+### Auto-trigger
+UDP {137, 5355, 5353} → `("netbios_local", "triage")`. Family switch `auto_audit_netbios`. Predicate-gated on relay-asset same subnet.
+
+### Open prerequisite
+The relay-agent registration code does not yet populate `RelayAgent.labels["local_interfaces"]`. Until it does, the predicate defensively rejects every event and the audit only fires via manual dispatch. **Next steps**: extend the relay's startup to enumerate local interfaces (Python `psutil.net_if_addrs()` or stdlib `socket.if_nameindex`+`fcntl`) and include them in the registration handshake; update the backend relay-registration route to persist into `labels`. Out of scope for this slice — the predicate, audit, prompts, and tests are ready to consume the data the moment it lands.
+
+### Defense-in-depth
+- Probes are unicast-only — the relay never multicasts, never poisons, never spoofs Responder-style replies.
+- DNS-SD service-list parser dedupes and caps at 50 services.
+- LLMNR query uses just the short hostname (RFC compliance) — confirmed by test that fqdn input gets stripped.
+
+---
+
+## ✅ Phase 5 — Family E: OT/ICS (`ot_protocol` + `ot_passive`)
+
+**Status:** shipped. 25 backend + 36 relay tests pass. Two audit registrations covering ten active read-only fingerprints + one passive UDP listener. Per-asset OT consent enforced at BOTH the auto-trigger gate AND the manual-dispatch path (the latter is new in this slice — see [audit_runner.py](../backend/services/audit_runner.py) `_has_fresh_ot_consent`).
+
+**Deferred to a follow-on UX slice (not blocking GA):** JP-first localization (`frontend/src/locales/ja/audit.json`), OT Posture Dashboard page, METI v3 control-mapping UI. Phase 5 ships the audit machinery and compliance tags; the Japanese UX surface lands separately so it can iterate with design-partner factories.
+
+### What landed
+
+**Active audit `ot_protocol` (`safety_class="ot_safe"`)** — single registration, single relay handler `ot_protocol_probe`, op-allowlisted, ten read-only ops:
+
+| Op | Port | Family | What it asks |
+|---|---|---|---|
+| `modbus_read_device_id` | TCP 502 | Modbus | FC 43 / MEI 14: vendor + product + revision |
+| `modbus_read_holding` | TCP 502 | Modbus | FC 3: ≤16 registers, unit_id ≤247 |
+| `s7_read_szl` | TCP 102 | Siemens S7 | COTP CR + Setup + Read SZL 0x0011 (CPU/MLFB) |
+| `enip_list_identity` | TCP 44818 | EtherNet/IP CIP | ListIdentity → vendor/product/revision |
+| `bacnet_read_property` | UDP 47808 | BACnet/IP | ReadProperty Object-Name on Device 0 |
+| `opcua_hello` | TCP 4840 | OPC UA | Hello + ACK; deeper GetEndpoints intentionally deferred |
+| `melsec_read_cpu_info` | TCP 5007 | Mitsubishi SLMP (JP) | Cmd 0x0101 / Sub 0x0000: CPU model |
+| `omron_fins_read_cpu_unit` | UDP 9600 | Omron FINS (JP) | MRC/SRC 0x05/0x01: CPU unit data read |
+| `iec104_interrogate` | TCP 2404 | IEC 60870-5-104 | U-format STARTDT + I-format C_IC_NA_1 (type 100) |
+| `profinet_dcp_unicast` | UDP 34962 | PROFINET DCP | Best-effort unicast IDENTIFY (canonically L2 — opportunistic) |
+
+**Passive audit `ot_passive` (`safety_class="ot_passive_only"`)** — single registration, single relay handler `ot_passive_probe`. Sole op: `passive_listen` with a closed allowlist of profiles (`yokogawa_vnetip` UDP 12289, `cclink_ie` UDP 61450). Receive-only socket; the test suite explicitly asserts the relay never calls `sendto`/`sendall`/`send`.
+
+### Defense-in-depth
+
+- **Op-allowlist** at the relay (`_OP_HANDLERS`) — unknown ops rejected before any byte hits the wire. Mirrors the IPMI/datastore/anon-protocol pattern.
+- **Read-only enforcement at the relay** (not just the tool palette): every op's request bytes are constants in the relay file or built from clamped parameters. SLMP command code is hardcoded `0x0101` (Read CPU Type); FINS MRC/SRC hardcoded `0x05/0x01`; IEC-104 type ID hardcoded 100. The LLM can never supply a write op via crafted op_params.
+- **Rate limiter** at the relay — `_RateLimiter` with ≥2-second inter-PDU floor and 1 RPS default; `HAKUNA_OT_RPS` env var allows down-tuning to 0.2 RPS for cautious JP factories. Process-global, so concurrent ops across protocol handlers can't gang up.
+- **Modbus FC3 clamping** — `count` capped at 16, `unit_id` capped at 247 (spec ceiling) at BOTH tool and relay layers; tested with a 99999-input that should clamp to 16.
+- **PROFINET DCP** — clearly documented as INCONCLUSIVE on negative; the LLM is instructed never to claim absence based on this op. The error message itself includes the word "inconclusive."
+- **Per-asset OT consent gate at manual dispatch** — `services.audit_runner.dispatch_audit_run` now refuses any `ot_*` audit run without a fresh `Asset.easm_data['ot_audit_consent'][protocol]` (90-day TTL). Same gate applied to `rescan_audit_scan`. Auto-trigger had this already; the manual API path was an open hole and is now closed.
+
+### Auto-trigger (delivered)
+
+Two rules per protocol, split by transport (Phase 4.0's transport-aware delta):
+
+- TCP {502, 102, 44818, 4840, 5007, 2404} → `("ot_protocol", "triage")`
+- UDP {47808, 9600, 34962} → `("ot_protocol", "triage")` AND `("ot_passive", "triage")` (both fire when consent for both protocols is present)
+
+Both gated by `auto_audit_ot` org switch (defense-in-depth master kill — same shape as every other family) AND `requires_per_asset_consent=True`. 7-day cooldown per (asset, protocol).
+
+### Compliance
+
+`iec_62443_3_3`, `meti_ot_security_guideline_v3`, plus `nist_csf_pr_ac` for the active audit. Wired in registration's `compliance_tags`. Findings emit these tags for the existing compliance evaluator.
+
+### Files added
+
+- [`backend/agents/tools/ot_protocol_tools.py`](../backend/agents/tools/ot_protocol_tools.py)
+- [`backend/agents/tools/ot_passive_tools.py`](../backend/agents/tools/ot_passive_tools.py)
+- [`backend/agents/prompts/audit/ot_protocol/_preamble.md`](../backend/agents/prompts/audit/ot_protocol/_preamble.md), [`triage.md`](../backend/agents/prompts/audit/ot_protocol/triage.md)
+- [`backend/agents/prompts/audit/ot_passive/_preamble.md`](../backend/agents/prompts/audit/ot_passive/_preamble.md), [`triage.md`](../backend/agents/prompts/audit/ot_passive/triage.md)
+- [`backend/tests/test_ot_protocol_audit.py`](../backend/tests/test_ot_protocol_audit.py) — 18 tests
+- [`backend/tests/test_ot_passive_audit.py`](../backend/tests/test_ot_passive_audit.py) — 7 tests
+- [`hakuna-relay-agent/agent/ot_protocol_probe.py`](../hakuna-relay-agent/agent/ot_protocol_probe.py) — 10 hand-rolled byte protocols + rate limiter
+- [`hakuna-relay-agent/agent/ot_passive_probe.py`](../hakuna-relay-agent/agent/ot_passive_probe.py) — receive-only listener with closed profile allowlist
+- [`hakuna-relay-agent/tests/test_ot_protocol_probe.py`](../hakuna-relay-agent/tests/test_ot_protocol_probe.py) — 30 tests including rate-limiter floor + read-only-FC enforcement
+- [`hakuna-relay-agent/tests/test_ot_passive_probe.py`](../hakuna-relay-agent/tests/test_ot_passive_probe.py) — 6 tests including "never sends" contract
+- [`backend/services/audit_runner.py`](../backend/services/audit_runner.py) — `_has_fresh_ot_consent` helper + dispatch gate
+- [`backend/services/audit_auto_trigger.py`](../backend/services/audit_auto_trigger.py) — three new OT rules
+
+### Library choices
+
+Hand-rolled byte parsers for every protocol (~50–100 LoC each) — no `pymodbus`/`python-snap7`/`bacpypes3`/`asyncua`/`pyipmi` dependencies. Each protocol's request packet is a constant or clamped-parameter builder; reading 100 LoC of explicit byte construction is cheaper to audit than verifying a third-party lib's "does this *actually* never write?" guarantees.
+
+### Still pending (follow-on UX slice)
+
+- JP-first localization (`frontend/src/locales/ja/audit.json` + Japanese vendor names 三菱電機 / オムロン / 横河 in OT kickoff card)
+- OT Posture Dashboard page (`frontend/src/pages/OTPostureDashboard.tsx`) — asset × protocol matrix, per-asset consent state, IEC 62443 coverage %
+- Multi-tier kickoff grouping by `safety_class` now that there are 8 tiers (the binary cloud-vs-host split outgrew its design)
+
+---
+
+## (archived) Phase 5 plan, pre-shipping
 
 **Why last:** highest safety stakes, JP localization gating sales, longest QA cycle. By now `safety_class` infrastructure has been exercised across four families.
 
@@ -388,11 +569,14 @@ New page `frontend/src/pages/OTPostureDashboard.tsx`. Shows asset → protocol m
 | `auto_audit_anon` | SMB, SNMP (legacy) | shipped |
 | `auto_audit_datastore` | Family A | shipped |
 | `auto_audit_ai` | Family B (self-hosted) | shipped |
-| `auto_audit_ipmi` | Family C | planned |
+| `auto_audit_anon_protocol` | Family D bundle (FTP/VNC/DNS/Kerberos/TFTP) | shipped (Phase 4.1) |
+| `auto_audit_ipmi` | Family C (IPMI BMC) | shipped (Phase 4.2) |
+| `auto_audit_netbios` | Family D' (NetBIOS/LLMNR/mDNS) | shipped (Phase 4.3) |
+| `auto_audit_ot` | Family E (`ot_protocol` + `ot_passive`) | shipped (Phase 5) |
 
 Family B' (Phase 3.5, managed AI governance) does NOT get its own switch — coverage rides on the existing cloud audits' kickoff cadence and the always-on secrets-scan stage.
 
-OT explicitly does NOT get an org switch — per-asset only.
+OT (Family E, Phase 5) follows the same pattern as the rest — `auto_audit_ot` org switch + per-asset consent. Both gates must pass to auto-fire. The earlier roadmap text proposed "per-asset only" with no org switch, but defense-in-depth + consistency with the other families won out: master-kill switches are cheap and the consent record is still the per-asset signal.
 
 ### Per-asset consent record
 `Asset.easm_data["ot_audit_consent"]` keyed by protocol with 90-day TTL. Helper functions live in [audit_auto_trigger.py](../backend/services/audit_auto_trigger.py). Reused by any future high-touch family.
@@ -422,9 +606,9 @@ Kickoff menu groups by `safety_class`, not alphabetically. Tiers:
 
 | Prereq | Blocks | Where |
 |---|---|---|
-| Scanner UDP `port_change` events | Phase 4 (IPMI/TFTP/NetBIOS) | [hakuna-scanner/app/ingest/delta.py](../hakuna-scanner/app/ingest/delta.py) |
-| Relay registration carries local interfaces | Family D `netbios_local` subnet predicate | hakuna-relay-agent registration |
-| Relay-side method allowlist + rate limiter | Phase 5 (OT) | hakuna-relay-agent executor |
+| ~~Scanner UDP `port_change` events~~ | ~~Phase 4 (IPMI/TFTP/NetBIOS)~~ | ✅ Phase 4.0 (migration 014 + transport-aware delta) |
+| Relay registration carries local interfaces | Family D' `netbios_local` predicate fires in production | hakuna-relay-agent registration handshake — read by `_lan_local_predicate` |
+| ~~Relay-side method allowlist + rate limiter~~ | ~~Phase 5 (OT)~~ | ✅ Phase 5 (`_OP_HANDLERS` + `_RateLimiter` in `ot_protocol_probe.py`) |
 | Compliance YAML loader supports per-finding tag→control | Compliance auto-tagging across all phases | [backend/services/compliance_loader.py](../backend/services/compliance_loader.py) |
 
 ---

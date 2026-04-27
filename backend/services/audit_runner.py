@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import ipaddress
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import urlparse
 
@@ -47,6 +47,34 @@ logger = logging.getLogger(__name__)
 
 class AuditDispatchError(Exception):
     """Raised when an audit can't be kicked off (missing inputs, bad protocol)."""
+
+
+# Per-asset consent records for OT-class audits expire after this window;
+# mirror of the auto-trigger TTL (services/audit_auto_trigger._OT_CONSENT_TTL).
+# Kept here so manual-dispatch refuses without a live consent record even when
+# the auto-trigger never gets involved.
+_OT_CONSENT_TTL = timedelta(days=90)
+
+
+def _has_fresh_ot_consent(asset: Asset, protocol: str, now: datetime) -> bool:
+    """Mirrors services.audit_auto_trigger._has_fresh_consent for the manual-
+    dispatch path. Re-implemented here (rather than imported) to avoid an
+    import cycle: audit_auto_trigger imports dispatch_audit_run from this
+    module."""
+    consent_map = (asset.easm_data or {}).get("ot_audit_consent") or {}
+    record = consent_map.get(protocol)
+    if not isinstance(record, dict):
+        return False
+    granted_raw = record.get("granted_at")
+    if not granted_raw:
+        return False
+    try:
+        granted = datetime.fromisoformat(granted_raw)
+    except (TypeError, ValueError):
+        return False
+    if granted.tzinfo is None:
+        granted = granted.replace(tzinfo=timezone.utc)
+    return (now - granted) < _OT_CONSENT_TTL
 
 
 def _asset_open_ports(asset: Asset) -> list[int]:
@@ -364,6 +392,28 @@ def dispatch_audit_run(
     asset_ids = _resolve_asset_ids_for_scan(
         db, org.id, scan.id, asset_ids=asset_ids, targets=targets,
     )
+    # OT-class audits require a fresh per-asset consent record regardless of
+    # who dispatched. The auto-trigger gate already enforces this; the
+    # manual-dispatch path goes through here. Refuse the whole run rather
+    # than silently dropping unconsented assets — the operator is asking us
+    # to send PDUs to PLCs/DCS hardware and we don't drop those requests
+    # quietly. Caller can record consent via the OT consent API and retry.
+    if audit.requires_per_asset_consent():
+        now = datetime.now(timezone.utc)
+        unconsented: list[int] = []
+        for aid in asset_ids:
+            asset = db.query(Asset).filter(Asset.id == aid).first()
+            if asset is None:
+                continue
+            if not _has_fresh_ot_consent(asset, protocol, now):
+                unconsented.append(aid)
+        if unconsented:
+            raise AuditDispatchError(
+                f"protocol {protocol!r} requires fresh per-asset OT consent; "
+                f"{len(unconsented)} asset(s) without consent: {unconsented[:5]}"
+                + (" …" if len(unconsented) > 5 else "")
+            )
+
     md = dict(scan.raw_metadata or {})
     if targets:
         md["ad_hoc_targets"] = list(targets)
@@ -469,6 +519,22 @@ def rescan_audit_scan(
         db, org.id, scan.id,
         asset_ids=effective_asset_ids, targets=effective_targets,
     )
+
+    if audit.requires_per_asset_consent():
+        now = datetime.now(timezone.utc)
+        unconsented: list[int] = []
+        for aid in final_asset_ids:
+            asset = db.query(Asset).filter(Asset.id == aid).first()
+            if asset is None:
+                continue
+            if not _has_fresh_ot_consent(asset, protocol, now):
+                unconsented.append(aid)
+        if unconsented:
+            raise AuditDispatchError(
+                f"protocol {protocol!r} requires fresh per-asset OT consent; "
+                f"{len(unconsented)} asset(s) without consent: {unconsented[:5]}"
+                + (" …" if len(unconsented) > 5 else "")
+            )
 
     # Rotate run fields in place. Preserve history + protocol, overwrite
     # everything that describes the current run.

@@ -210,8 +210,12 @@ if $DO_SCANNERS; then
   success "hakuna-vm-scanner image pushed"
 
   step "Pulling and restarting scanners on VM"
+  # `docker image prune -f` after the up clears the previous :latest
+  # images that became dangling when the new tags were pulled — without
+  # it, the VM disk fills up after a handful of deploys (containerd
+  # extract failures with "no space left on device").
   gcloud compute ssh hakuna-scanners --zone="${ZONE}" --tunnel-through-iap \
-    --command="cd /opt/hakuna-scanners && sudo docker compose pull && sudo docker compose up -d" \
+    --command="cd /opt/hakuna-scanners && sudo docker compose pull && sudo docker compose up -d && sudo docker image prune -f" \
     --quiet
   success "Scanner containers restarted on VM (alembic migrations run on startup)"
 fi

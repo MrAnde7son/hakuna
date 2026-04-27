@@ -25,6 +25,7 @@ when the org-level switch is on.
 """
 from __future__ import annotations
 
+import ipaddress
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -70,11 +71,17 @@ class AutoTriggerRule:
     # org-level switch on, dispatch refuses without a fresh per-asset
     # consent record on ``Asset.easm_data["ot_audit_consent"]``.
     requires_per_asset_consent: bool = False
-    # Optional predicate evaluated against the resolved Asset. Used by
-    # families with port collisions (e.g. AI services share 3000/5000/8000
-    # with generic web apps) — the rule fires only when banner-grab data
-    # confirms the service identity.
-    predicate: Optional[Callable[[Asset], bool]] = field(default=None, compare=False)
+    # Optional predicate evaluated against the resolved Asset (and the
+    # relay that would dispatch the run, when relevant). Used by:
+    #   * families with port collisions (e.g. AI services share 3000/5000/8000
+    #     with generic web apps) — the rule fires only when banner-grab
+    #     data confirms the service identity.
+    #   * LAN-local audits (NetBIOS/LLMNR/mDNS) — the rule fires only when
+    #     the relay shares a broadcast domain with the asset.
+    # Predicates that don't need the relay should ignore the second arg.
+    predicate: Optional[Callable[[Asset, Optional[RelayAgent]], bool]] = field(
+        default=None, compare=False,
+    )
 
 
 # Module-level rule registry. Order matters only when two rules match
@@ -140,9 +147,122 @@ AUTO_TRIGGER_RULES: list[AutoTriggerRule] = [
         ports=(8888, 8265, 5000, 6006, 8080, 1234, 3000),
         cooldown=timedelta(hours=24),
         enabled_setting_key="auto_audit_ai",
-        predicate=lambda asset: _ai_service_predicate(asset),
+        predicate=lambda asset, _relay: _ai_service_predicate(asset),
+    ),
+    # ── Family: anon_standard (Phase 4.1) ──
+    # Legacy anon-misconfig protocols. Single registration covers the
+    # five member protocols; the audit's tools palette + relay handler
+    # dispatch on op. UDP-only TFTP (port 69) is currently not surfaced
+    # via the scanner's TCP-based port_change events — it'll join when
+    # Phase 4.0 (UDP port_change) lands. The other four ports are TCP.
+    AutoTriggerRule(
+        protocol="exposed_anon_protocol",
+        mission="triage",
+        ports=(21, 53, 88, 5900),
+        cooldown=timedelta(hours=24),
+        enabled_setting_key="auto_audit_anon_protocol",
+    ),
+    # ── Family: anon_ipmi (Phase 4.2) ──
+    # IPMI BMC on UDP 623 → cipher zero + RAKP-3 hash leak triage. UDP-only;
+    # depends on Phase 4.0 transport-aware port_change events to fire.
+    AutoTriggerRule(
+        protocol="ipmi_bmc",
+        mission="triage",
+        ports=(623,),
+        transport="udp",
+        cooldown=timedelta(hours=24),
+        enabled_setting_key="auto_audit_ipmi",
+    ),
+    # ── Family: anon_lan_local (Phase 4.3) ──
+    # NetBIOS-NS / LLMNR / mDNS — only valid when the relay shares a
+    # broadcast domain with the asset. The predicate enforces that by
+    # comparing the asset's IP against the relay's reported local CIDRs.
+    # Without same-subnet, multicast-style protocols won't reach the host
+    # and the LLM would burn budget on probes destined to time out.
+    AutoTriggerRule(
+        protocol="netbios_local",
+        mission="triage",
+        ports=(137, 5355, 5353),
+        transport="udp",
+        cooldown=timedelta(hours=24),
+        enabled_setting_key="auto_audit_netbios",
+        predicate=lambda asset, relay: _lan_local_predicate(asset, relay),
+    ),
+    # ── Family E: ot_safe (Phase 5) ──
+    # Active OT/ICS audit. Same gating shape as the other families (org-level
+    # ``auto_audit_ot`` master switch) PLUS a per-asset consent record on
+    # ``Asset.easm_data['ot_audit_consent']`` (90-day TTL) — operators sign
+    # off on each PLC/DCS/RTU individually because even read-only PDUs land
+    # on plant safety hardware. Both gates must pass to auto-fire.
+    # 7-day cooldown so we don't re-poke a PLC daily. Two rules — one per
+    # transport — because OT fingerprints split across TCP and UDP and
+    # Phase 4.0's transport-aware delta means we'd miss UDP-only protocols
+    # (BACnet, Omron FINS, PROFINET) without a UDP rule.
+    AutoTriggerRule(
+        protocol="ot_protocol",
+        mission="triage",
+        ports=(502, 102, 44818, 4840, 5007, 2404),
+        transport="tcp",
+        cooldown=timedelta(days=7),
+        enabled_setting_key="auto_audit_ot",
+        requires_per_asset_consent=True,
+    ),
+    AutoTriggerRule(
+        protocol="ot_protocol",
+        mission="triage",
+        ports=(47808, 9600, 34962),
+        transport="udp",
+        cooldown=timedelta(days=7),
+        enabled_setting_key="auto_audit_ot",
+        requires_per_asset_consent=True,
+    ),
+    # ── Family E': ot_passive_only (Phase 5) ──
+    # Passive listener — bind a UDP socket and wait for vendor-signature
+    # frames. No PDU is ever sent. Same per-asset consent gate as the
+    # active audit. There's no canonical port_change trigger for a passive
+    # listener (it works against any open-port set), so this rule fires on
+    # the same UDP-port set that suggests OT presence. Consent + cooldown
+    # do the rest of the gating.
+    AutoTriggerRule(
+        protocol="ot_passive",
+        mission="triage",
+        ports=(47808, 9600, 34962),
+        transport="udp",
+        cooldown=timedelta(days=7),
+        enabled_setting_key="auto_audit_ot",
+        requires_per_asset_consent=True,
     ),
 ]
+
+
+def _lan_local_predicate(asset: Asset, relay: Optional[RelayAgent]) -> bool:
+    """Gate LAN-local audits on relay-and-asset same-subnet.
+
+    Reads the relay's reported local interfaces from
+    ``RelayAgent.labels["local_interfaces"]`` (a list of CIDR strings
+    populated at relay registration). The audit fires only when the
+    asset's IP falls inside one of those CIDRs. Missing labels = treat
+    as "not on same subnet" (defensive default — better to skip than to
+    fire LLM budget on a probe that can't reach the host).
+    """
+    if relay is None or not asset.ip:
+        return False
+    labels = getattr(relay, "labels", None) or {}
+    cidrs = labels.get("local_interfaces") if isinstance(labels, dict) else None
+    if not cidrs or not isinstance(cidrs, list):
+        return False
+    try:
+        addr = ipaddress.ip_address(str(asset.ip))
+    except (TypeError, ValueError):
+        return False
+    for cidr in cidrs:
+        try:
+            net = ipaddress.ip_network(str(cidr), strict=False)
+        except (TypeError, ValueError):
+            continue
+        if addr in net:
+            return True
+    return False
 
 
 # Ports where the rule fires regardless of asset_type — these are
@@ -270,15 +390,25 @@ def _stamp_cooldown(asset: Asset, protocol: str, now: datetime) -> None:
     asset.easm_data = easm
 
 
-def _match_rules(new_ports: set[int]) -> dict[str, AutoTriggerRule]:
+def _match_rules(new_ports: set[int], transport: str = "tcp") -> dict[str, AutoTriggerRule]:
     """Pick the first rule (in registry order) per protocol whose port set
-    intersects ``new_ports``. Collapsing on protocol means 445+139 produces
-    exactly one SMB rule match — and a future ``exposed_datastore`` rule
-    spanning many ports likewise produces one match per protocol per event.
+    intersects ``new_ports`` AND whose declared transport matches ``transport``.
+
+    Phase 4.0 introduced transport-aware port_change events (the scanner
+    emits one event per (asset, transport) per scan). Rules declare their
+    transport on the dataclass; matcher rejects rules whose transport
+    doesn't match the event. UDP-only services (SNMP 161, IPMI 623, TFTP
+    69, NetBIOS 137/5353/5355) only fire when ``transport='udp'``; TCP
+    services only fire when ``transport='tcp'``.
+
+    Events without a ``transport`` field (legacy / pre-4.0) default to
+    ``'tcp'`` for back-compat — matching the historical TCP-only behavior.
     """
     matched: dict[str, AutoTriggerRule] = {}
     for rule in AUTO_TRIGGER_RULES:
         if rule.protocol in matched:
+            continue
+        if rule.transport != transport:
             continue
         if any(p in new_ports for p in rule.ports):
             matched[rule.protocol] = rule
@@ -304,7 +434,11 @@ def maybe_auto_trigger_anon_audits(
             new_ports.add(int(p))
         except (TypeError, ValueError):
             continue
-    matched = _match_rules(new_ports)
+    # Phase 4.0: events carry a transport tag; legacy events without one
+    # are treated as TCP. SNMP/IPMI/TFTP/NetBIOS rules declare transport=udp
+    # and only fire on UDP events.
+    transport = (payload.get("transport") or "tcp").lower()
+    matched = _match_rules(new_ports, transport)
     if not matched:
         return 0
 
@@ -344,7 +478,7 @@ def maybe_auto_trigger_anon_audits(
                 org.id, asset.id, protocol,
             )
             continue
-        if rule.predicate is not None and not rule.predicate(asset):
+        if rule.predicate is not None and not rule.predicate(asset, relay):
             logger.debug(
                 "auto-audit: org=%d asset=%d protocol=%s suppressed by predicate",
                 org.id, asset.id, protocol,

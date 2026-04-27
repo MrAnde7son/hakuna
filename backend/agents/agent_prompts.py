@@ -18,7 +18,9 @@ PROMPTS_DIR = Path(__file__).parent / "prompts"
 AUDIT_PROTOCOLS = (
     "wmi", "ldap", "smb", "snmp", "ssh",
     "aws", "azure", "gcp", "managed_ai_saas",
-    "exposed_datastore", "exposed_ai_service",
+    "exposed_datastore", "exposed_ai_service", "exposed_anon_protocol",
+    "ipmi_bmc", "netbios_local",
+    "ot_protocol", "ot_passive",
 )
 
 

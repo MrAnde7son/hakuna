@@ -19,6 +19,10 @@ class Asset(Base):
     asn: Mapped[str | None] = mapped_column(String(32), nullable=True)
     asn_org: Mapped[str | None] = mapped_column(Text, nullable=True)
     open_ports: Mapped[list[int] | None] = mapped_column(ARRAY(Integer), nullable=True)
+    # UDP-side counterpart populated from nmap UDP scan (see migration 014).
+    # Kept separate because UDP "open" semantics differ from TCP and we want
+    # transport-aware port_change events for the audit auto-trigger.
+    open_udp_ports: Mapped[list[int] | None] = mapped_column(ARRAY(Integer), nullable=True)
     services: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
     http_title: Mapped[str | None] = mapped_column(Text, nullable=True)

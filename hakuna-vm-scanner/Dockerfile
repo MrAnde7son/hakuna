@@ -1,11 +1,13 @@
-FROM python:3.11-slim
+# ───────── Builder stage ─────────
+# Go toolchain + nuclei template fetch live here. Runtime stage copies
+# only the compiled binaries + downloaded templates, so /usr/local/go
+# never reaches the published image.
+FROM python:3.11-slim AS builder
 
-# System deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
     wget curl git ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Go 1.22 (needed for nuclei)
 ENV GO_VERSION=1.22.5
 RUN wget -q "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" -O /tmp/go.tar.gz \
     && tar -C /usr/local -xzf /tmp/go.tar.gz \
@@ -13,21 +15,32 @@ RUN wget -q "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" -O /tmp/go.ta
 ENV PATH="/usr/local/go/bin:/root/go/bin:${PATH}"
 ENV GOPATH="/root/go"
 
-# Install nuclei
 RUN go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
 
-# Install ffuf — used by the content_discovery_worker for path + parameter
+# ffuf — used by the content_discovery_worker for path + parameter
 # brute-forcing. Pinned to v2 (stable major); any bump should be verified
 # against the worker's JSON output parsing since ffuf has changed field
 # names between majors.
-RUN go install github.com/ffuf/ffuf/v2@latest \
-    && ln -sf /root/go/bin/ffuf /usr/local/bin/ffuf
+RUN go install github.com/ffuf/ffuf/v2@latest
 
-# Download default templates
-RUN nuclei -update-templates || true
+# Default templates — fetched at build time so the runtime image is
+# offline-capable for the standard template set.
+RUN /root/go/bin/nuclei -update-templates || true
 
-# Clean Go module cache
-RUN go clean -modcache
+
+# ───────── Runtime stage ─────────
+FROM python:3.11-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Compiled Go binaries
+COPY --from=builder /root/go/bin/nuclei /usr/local/bin/nuclei
+COPY --from=builder /root/go/bin/ffuf   /usr/local/bin/ffuf
+
+# Nuclei template store — default location is $HOME/nuclei-templates
+COPY --from=builder /root/nuclei-templates /root/nuclei-templates
 
 # Python deps
 WORKDIR /app
@@ -47,9 +60,7 @@ RUN if [ "$SKIP_PLAYWRIGHT" = "0" ]; then \
         echo "skipping playwright chromium install"; \
     fi
 
-# App code
 COPY scanner/ /app/scanner/
 COPY templates/ /app/templates/
 
-# Default command (overridden per service in docker-compose)
 CMD ["uvicorn", "scanner.vm.api:create_app", "--factory", "--host", "0.0.0.0", "--port", "8002"]

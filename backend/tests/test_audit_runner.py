@@ -41,6 +41,11 @@ def test_registry_populates_all_audits():
         "easm_fingerprint",  # Phase 2 (scanner-driven, mode=fingerprint)
         "exposed_ai_service",  # Phase 3 (gap-fill AI service audit)
         "managed_ai_saas",  # Phase 3.5 slice 0 (OpenAI / Anthropic admin APIs)
+        "exposed_anon_protocol",  # Phase 4.1 (FTP/VNC/DNS-AXFR/Kerberos/TFTP)
+        "ipmi_bmc",  # Phase 4.2 (Cipher Zero + RAKP-3 hash leak)
+        "netbios_local",  # Phase 4.3 (NBNS + LLMNR + mDNS, LAN-local)
+        "ot_protocol",  # Phase 5 (active OT/ICS read-only fingerprints)
+        "ot_passive",  # Phase 5 (passive Yokogawa Vnet/IP + CC-Link IE)
     }
 
     wmi = get_audit("wmi")

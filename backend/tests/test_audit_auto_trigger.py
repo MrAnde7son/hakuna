@@ -50,7 +50,14 @@ def linked_asset(db_session, test_org):
     return asset
 
 
-def _port_change_event(scanner_asset_id: str, new_ports: list[int], hostname: str = "winhost-1"):
+def _port_change_event(
+    scanner_asset_id: str,
+    new_ports: list[int],
+    hostname: str = "winhost-1",
+    transport: str = "tcp",
+):
+    """Build a scanner port_change event. Phase 4.0 added the ``transport``
+    field; defaults to TCP for the legacy SMB/datastore/anon-protocol tests."""
     return {
         "id": "evt-1",
         "asset_id": scanner_asset_id,
@@ -58,6 +65,7 @@ def _port_change_event(scanner_asset_id: str, new_ports: list[int], hostname: st
         "created_at": "2026-04-25T00:00:00+00:00",
         "payload": {
             "hostname": hostname,
+            "transport": transport,
             "new_ports": new_ports,
             "removed_ports": [],
         },
@@ -106,6 +114,8 @@ def test_smb_dispatched_on_445(db_session, test_org, linked_asset, connected_rel
 
 
 def test_snmp_dispatched_on_161(db_session, test_org, linked_asset, connected_relay):
+    """SNMP rule declares ``transport='udp'``; the auto-trigger only fires
+    when the scanner emits a UDP-tagged port_change event (Phase 4.0)."""
     from services.audit_auto_trigger import maybe_auto_trigger_anon_audits
 
     test_org.settings = {"auto_audit_anon": True}
@@ -114,7 +124,7 @@ def test_snmp_dispatched_on_161(db_session, test_org, linked_asset, connected_re
     with patch("services.audit_runner._dispatch_background_run", return_value="task-1"):
         n = maybe_auto_trigger_anon_audits(
             db_session, test_org,
-            _port_change_event("scanner-uuid-1", [161]),
+            _port_change_event("scanner-uuid-1", [161], transport="udp"),
         )
 
     assert n == 1
@@ -123,6 +133,76 @@ def test_snmp_dispatched_on_161(db_session, test_org, linked_asset, connected_re
     assert scan.raw_metadata["protocol"] == "snmp"
     assert scan.raw_metadata["mission"] == "device_posture"
     assert scan.raw_metadata["credential_id"] is None
+
+
+def test_snmp_does_not_fire_on_tcp_event_for_port_161(
+    db_session, test_org, linked_asset, connected_relay,
+):
+    """Phase 4.0 transport filter: a TCP port_change for port 161 (which
+    would be unusual but shouldn't crash) must NOT fire the SNMP audit —
+    SNMP is declared transport='udp' on the rule."""
+    from services.audit_auto_trigger import maybe_auto_trigger_anon_audits
+
+    test_org.settings = {"auto_audit_anon": True}
+    db_session.flush()
+
+    with patch("services.audit_auto_trigger.dispatch_audit_run") as mock_dispatch:
+        n = maybe_auto_trigger_anon_audits(
+            db_session, test_org,
+            _port_change_event("scanner-uuid-1", [161], transport="tcp"),
+        )
+
+    assert n == 0
+    mock_dispatch.assert_not_called()
+
+
+def test_smb_does_not_fire_on_udp_event_for_port_445(
+    db_session, test_org, linked_asset, connected_relay,
+):
+    """Mirror of the SNMP case: SMB rule is TCP; a UDP-tagged event with
+    port 445 must not fire it. Confirms the matcher is symmetric."""
+    from services.audit_auto_trigger import maybe_auto_trigger_anon_audits
+
+    test_org.settings = {"auto_audit_anon": True}
+    db_session.flush()
+
+    with patch("services.audit_auto_trigger.dispatch_audit_run") as mock_dispatch:
+        n = maybe_auto_trigger_anon_audits(
+            db_session, test_org,
+            _port_change_event("scanner-uuid-1", [445], transport="udp"),
+        )
+
+    assert n == 0
+    mock_dispatch.assert_not_called()
+
+
+def test_legacy_event_without_transport_field_defaults_to_tcp(
+    db_session, test_org, linked_asset, connected_relay,
+):
+    """Phase 4.0 backwards-compat: a port_change event with no ``transport``
+    field (pre-4.0 scanner emit) must be treated as TCP — preserving the
+    historical behavior where SMB on 445 would fire."""
+    from services.audit_auto_trigger import maybe_auto_trigger_anon_audits
+
+    test_org.settings = {"auto_audit_anon": True}
+    db_session.flush()
+
+    legacy_event = {
+        "id": "evt-legacy",
+        "asset_id": "scanner-uuid-1",
+        "event_type": "port_change",
+        "created_at": "2026-04-25T00:00:00+00:00",
+        "payload": {
+            "hostname": "winhost-1",
+            "new_ports": [445],
+            "removed_ports": [],
+            # No ``transport`` field — pre-Phase-4.0 scanner emit shape.
+        },
+    }
+    with patch("services.audit_runner._dispatch_background_run", return_value="task-1"):
+        n = maybe_auto_trigger_anon_audits(db_session, test_org, legacy_event)
+
+    assert n == 1
 
 
 def test_no_match_for_unrelated_ports(db_session, test_org, linked_asset, connected_relay):

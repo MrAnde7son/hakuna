@@ -359,11 +359,53 @@ app.include_router(validation_router)
 from models.entity_registry import ENTITY_MODEL_MAP
 
 
+# Postgres advisory lock that gates in-process scheduler startup. With
+# `uvicorn --workers N`, every worker would otherwise fork its own copy of
+# every APScheduler in `_deferred_startup`, firing each cron job N times in
+# parallel. The first worker to grab this lock owns the schedulers; the
+# others skip them. The lock is session-scoped and pinned to a dedicated
+# psycopg2 connection held in a module global — Postgres releases it
+# automatically when that connection closes, so a respawned worker can
+# take over after a crash.
+_SCHEDULER_LOCK_CONN = None
+_SCHEDULER_ADVISORY_LOCK_ID = 0x484B5343484544  # "HKSCHED" — stable arbitrary constant
+
+
+def _try_acquire_scheduler_leadership() -> bool:
+    from core.database import DATABASE_URL, _IS_SQLITE
+    global _SCHEDULER_LOCK_CONN
+    if _IS_SQLITE:
+        return True
+    try:
+        import psycopg2
+        url = DATABASE_URL
+        if url.startswith("postgresql+"):
+            url = "postgresql://" + url.split("://", 1)[1]
+        conn = psycopg2.connect(url)
+        conn.autocommit = True
+        cur = conn.cursor()
+        cur.execute("SELECT pg_try_advisory_lock(%s)", (_SCHEDULER_ADVISORY_LOCK_ID,))
+        acquired = cur.fetchone()[0]
+        cur.close()
+        if acquired:
+            _SCHEDULER_LOCK_CONN = conn
+            return True
+        conn.close()
+        return False
+    except Exception as exc:
+        logger.warning("Scheduler advisory-lock check failed (%s); running schedulers in this worker", exc)
+        return True
+
+
 def _deferred_startup():
     """Heavy startup tasks that run in a background thread so the server
     can bind the port and pass Render's port-scan check immediately."""
-    import threading
+    import threading, os
     logger.info("Deferred startup running in background thread: %s", threading.current_thread().name)
+    if not _try_acquire_scheduler_leadership():
+        logger.info("Scheduler leadership held by another worker (pid=%d) — skipping scheduler startup", os.getpid())
+        return
+    logger.info("Scheduler leadership acquired (pid=%d) — starting schedulers", os.getpid())
     # Start workflow scheduler for cron-based triggers
     from core.database import SessionLocal
     workflow_engine.start_scheduler(SessionLocal)
