@@ -244,12 +244,14 @@ def test_auto_trigger_dispatches_ipmi_on_udp_623_event(
     assert md["asset_ids"] == [linked_bmc_asset.id]
 
 
-def test_auto_trigger_does_nothing_without_ipmi_switch(
+def test_auto_trigger_skipped_when_ipmi_explicitly_off(
     db_session, test_org, linked_bmc_asset, connected_relay_for_org,
 ):
+    """``auto_audit_ipmi=False`` opts out the IPMI family even when the
+    legacy ``auto_audit_anon`` switch is on."""
     from services.audit_auto_trigger import maybe_auto_trigger_anon_audits
 
-    test_org.settings = {"auto_audit_anon": True}  # legacy switch only
+    test_org.settings = {"auto_audit_anon": True, "auto_audit_ipmi": False}
     db_session.flush()
 
     with patch("services.audit_auto_trigger.dispatch_audit_run") as mock_dispatch:

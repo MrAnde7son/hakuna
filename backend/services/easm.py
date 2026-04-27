@@ -2225,6 +2225,7 @@ async def _trigger_easm_scan_with_error(
 
 async def scan_domain(
     db: Session, org: Organization, domain: str, scan_type: str = "full",
+    suppress_auto_followup: bool = False,
 ) -> Optional[dict]:
     """
     Full flow: add domain to hakuna (idempotent), trigger scan,
@@ -2287,6 +2288,13 @@ async def scan_domain(
     }
     if failure_reason:
         base_meta["error"] = failure_reason
+    # Per-scan opt-out for ALL automated follow-ups: anonymous audits
+    # (SMB/SNMP, datastore, AI, anon-protocol, IPMI, NetBIOS) AND the post-
+    # ingest VM (Nuclei) scan. Read by ``audit_auto_trigger`` when port_change
+    # events land, and by ``post_ingest._auto_vm_scan_for_easm`` before the
+    # VM-trigger flag is written.
+    if suppress_auto_followup:
+        base_meta["suppress_auto_followup"] = True
 
     if scan:
         # Keep old assets/findings visible until the new scan completes

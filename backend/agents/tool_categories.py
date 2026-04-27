@@ -77,10 +77,10 @@ TOOL_CATEGORIES = {
         ],
     },
     "scans": {
-        "keywords": ["scan", "compare", "import", "upload"],
+        "keywords": ["scan", "compare", "import", "upload", "ingest", "attached", "attachment", ".nessus"],
         "tools": [
             "list_scans", "get_scan_summary", "compare_scans",
-            "delete_scan", "rename_scan",
+            "delete_scan", "rename_scan", "upload_scan",
         ],
     },
     "tags": {
@@ -198,6 +198,64 @@ TOOL_CATEGORIES = {
             "list_ownership_rules", "manage_ownership_rule",
             "run_ownership_rules", "list_custom_roles",
             "manage_custom_role",
+        ],
+    },
+    "users": {
+        "keywords": [
+            "user", "users", "team member", "invite", "account",
+            "admin", "analyst", "viewer", "deactivate", "remove user",
+            "assign role",
+        ],
+        "tools": [
+            "list_users", "invite_user", "update_user", "delete_user",
+            "assign_user_role", "list_custom_roles", "manage_custom_role",
+        ],
+    },
+    "relay_agents": {
+        "keywords": [
+            "relay agent", "relay", "on-prem", "on premise", "connector agent",
+            "private network", "enrollment token",
+        ],
+        "tools": [
+            "list_relay_agents", "get_relay_agent", "create_relay_agent",
+            "delete_relay_agent", "rotate_relay_agent_token",
+        ],
+    },
+    "custom_fields": {
+        "keywords": [
+            "custom field", "custom fields", "field definition", "schema extension",
+            "extend asset", "extend finding",
+        ],
+        "tools": [
+            "list_custom_fields", "create_custom_field",
+            "update_custom_field", "delete_custom_field",
+        ],
+    },
+    "compliance": {
+        "keywords": [
+            "compliance", "framework", "control", "audit framework",
+            "pci", "soc 2", "soc2", "iso 27001", "nist", "iec 62443", "cis",
+        ],
+        "tools": [
+            "list_compliance_frameworks", "subscribe_to_compliance_framework",
+            "list_compliance_controls", "get_compliance_control",
+        ],
+    },
+    "audit_log": {
+        "keywords": [
+            "audit log", "audit trail", "who changed", "who deleted",
+            "history of changes", "activity log", "change log",
+        ],
+        "tools": ["query_audit_log"],
+    },
+    "attack_paths": {
+        "keywords": [
+            "attack path", "attack paths", "kill chain", "lateral movement",
+            "blast radius",
+        ],
+        "tools": [
+            "list_attack_paths", "get_attack_path", "get_blast_radius",
+            "analyze_attack_surface",
         ],
     },
     "reports": {

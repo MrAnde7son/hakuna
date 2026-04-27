@@ -411,14 +411,17 @@ def _port_change_event(scanner_asset_id: str, new_ports: list[int], hostname: st
     }
 
 
-def test_auto_trigger_does_nothing_without_ai_family_switch(
+def test_auto_trigger_skipped_when_ai_family_explicitly_off(
     db_session, test_org, linked_ai_asset, connected_relay_for_ai_org,
 ):
-    """Other family switches must not bleed in — the AI rule is gated solely
-    by ``auto_audit_ai``."""
+    """``auto_audit_ai=False`` opts out the AI family even when other family
+    switches are on. Confirms each family gate is independent."""
     from services.audit_auto_trigger import maybe_auto_trigger_anon_audits
 
-    test_org.settings = {"auto_audit_anon": True, "auto_audit_datastore": True}
+    test_org.settings = {
+        "auto_audit_anon": True, "auto_audit_datastore": True,
+        "auto_audit_ai": False,
+    }
     db_session.flush()
 
     with patch("services.audit_auto_trigger.dispatch_audit_run") as mock_dispatch:

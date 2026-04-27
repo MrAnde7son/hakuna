@@ -277,6 +277,24 @@ class TestPostIngestAutoVmStep:
         session.refresh(scan)
         assert scan.raw_metadata.get("needs_auto_vm_scan") is True
 
+    def test_suppress_auto_followup_skips_queueing(self, db_session):
+        """When the EASM scan was created with ``suppress_auto_followup=True``
+        (operator unchecked the "Run automated follow-up scans" box), the VM
+        auto-trigger refuses to queue — and the flag is NOT written. Same flag
+        also blocks the audit auto-trigger; see test_audit_auto_trigger.py."""
+        session, org = db_session
+        scan = _make_easm_scan(session, org)
+        scan.raw_metadata = {**(scan.raw_metadata or {}), "suppress_auto_followup": True}
+        session.commit()
+
+        from services.post_ingest import _auto_vm_scan_for_easm
+        result = _auto_vm_scan_for_easm(session, org.id, scan.id)
+
+        assert result["queued"] is False
+        assert result["suppressed"] is True
+        session.refresh(scan)
+        assert "needs_auto_vm_scan" not in (scan.raw_metadata or {})
+
     def test_idempotent_when_already_pending(self, db_session):
         """Re-running the step on an already-flagged scan is a no-op."""
         session, org = db_session

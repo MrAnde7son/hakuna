@@ -304,9 +304,21 @@ def _ai_service_predicate(asset: Asset) -> bool:
 
 
 def _rule_enabled_for_org(rule: AutoTriggerRule, org: Organization) -> bool:
-    """Per-org opt-in via the rule's setting key. Default OFF so this never
-    spends LLM budget without explicit consent — the org admin flips it on."""
-    return bool((org.settings or {}).get(rule.enabled_setting_key))
+    """Per-org enable gate.
+
+    Anonymous audit families (SMB/SNMP, datastore, AI, anon-protocol, IPMI,
+    NetBIOS) default to ON — newly-discovered exposed services get triaged
+    automatically. An admin can flip the family-specific setting to ``False``
+    to opt out.
+
+    Rules that require per-asset consent (OT/ICS) stay default-OFF: the org
+    setting must be explicitly ``True`` AND a fresh consent record must exist
+    on the asset before any PDU is sent at plant-safety hardware.
+    """
+    explicit = (org.settings or {}).get(rule.enabled_setting_key)
+    if explicit is not None:
+        return bool(explicit)
+    return not rule.requires_per_asset_consent
 
 
 def _has_fresh_consent(asset: Asset, protocol: str, now: datetime) -> bool:
@@ -458,6 +470,20 @@ def maybe_auto_trigger_anon_audits(
         logger.info(
             "auto-audit: org=%d skipped — scanner asset %s not yet linked to backend",
             org.id, event.get("asset_id"),
+        )
+        return 0
+
+    # Per-scan opt-out: when the EASM scan that discovered this asset was
+    # started with the "Run automated follow-up scans" checkbox unticked,
+    # the scan record carries ``suppress_auto_followup=True``. Honor it
+    # across all rules — the operator already declined family-by-family
+    # granularity by unchecking at scan time. Same flag also blocks the
+    # post-ingest VM (Nuclei) scan; see ``post_ingest._auto_vm_scan_for_easm``.
+    scan = asset.scan
+    if scan and (scan.raw_metadata or {}).get("suppress_auto_followup"):
+        logger.info(
+            "auto-audit: org=%d asset=%d suppressed — scan %d opted out at creation",
+            org.id, asset.id, scan.id,
         )
         return 0
 

@@ -10,6 +10,11 @@ services:
       - POSTGRES_DB=hakuna
     volumes:
       - postgres-data:/var/lib/postgresql/data
+      # Init scripts run once on a fresh volume. Creates `hakuna_easm` so the
+      # EASM scanner stack can share this Postgres in dev instead of running
+      # its own clone. See scripts/postgres-init/01-create-easm-db.sh for the
+      # manual createdb command if your volume already exists.
+      - ./scripts/postgres-init:/docker-entrypoint-initdb.d:ro
     ports:
       # Host-exposed for psql/debugger access. 5433 to avoid clashing with a
       # system postgres on 5432.
@@ -85,11 +90,13 @@ services:
       - GOOGLE_APPLICATION_CREDENTIALS=/gcp/adc.json
 
   redis:
-    # Shared broker for the audit-worker queue (DB 2) AND the VM scanner's
-    # Celery broker/result backend (DB 0/1). The VM scanner's compose joins
-    # this network as `hakuna_default` (external) rather than spinning up its
-    # own redis — matches prod, where VM scanner has a dedicated Memorystore
-    # but locally we multiplex to keep the stack minimal.
+    # Shared broker, DB-namespaced per consumer:
+    #   DB 0/1 — VM scanner (broker / result backend)
+    #   DB 2   — audit-worker queue
+    #   DB 3   — EASM scanner (broker / result backend)
+    # Both scanner stacks join this network as `hakuna_default` (external)
+    # rather than spinning up their own redis. Matches prod for VM scanner
+    # (dedicated Memorystore there); EASM scanner runs in-process in prod.
     image: redis:7-alpine
     command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
     volumes:

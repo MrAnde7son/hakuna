@@ -99,6 +99,21 @@ resource "google_secret_manager_secret_version" "integration_secret_key" {
   secret_data = var.integration_secret_key
 }
 
+# Internal shared secret for /internal/relay/dispatch — the audit-worker uses
+# it in X-Internal-Token to call back into the API for relay dispatch (the API
+# owns the websocket; the worker can't reach agents directly).
+resource "google_secret_manager_secret" "internal_shared_secret" {
+  secret_id = "hakuna-internal-shared-secret"
+  replication {
+    auto {}
+  }
+}
+
+resource "google_secret_manager_secret_version" "internal_shared_secret" {
+  secret      = google_secret_manager_secret.internal_shared_secret.id
+  secret_data = var.internal_shared_secret
+}
+
 # ── Stripe billing secrets ────────────────────────────────────────────────────
 
 resource "google_secret_manager_secret" "stripe_secret_key" {

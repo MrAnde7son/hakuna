@@ -38,6 +38,7 @@ const ROUTES = [
   { path: '/compliance', name: 'Compliance Frameworks' },
   { path: '/compliance/cis_v8', name: 'Compliance Framework Overview' },
   { path: '/compliance/cis_v8/control/1', name: 'Compliance Control Detail' },
+  { path: '/ot-posture', name: 'OT Posture Dashboard' },
 ]
 
 // Public routes (no auth required).

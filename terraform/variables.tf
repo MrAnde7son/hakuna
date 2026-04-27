@@ -141,6 +141,23 @@ variable "integration_secret_key" {
   }
 }
 
+variable "internal_shared_secret" {
+  type        = string
+  description = "Shared secret for /internal/relay/dispatch — audit-worker presents it in X-Internal-Token. Generate with: openssl rand -hex 32."
+  sensitive   = true
+
+  validation {
+    condition     = length(var.internal_shared_secret) >= 32
+    error_message = "internal_shared_secret must be at least 32 characters."
+  }
+}
+
+variable "audit_worker_machine_type" {
+  type        = string
+  description = "Machine type for the audit-worker VM. e2-small is enough — the worker drives LLM API calls, not CPU-heavy scans."
+  default     = "e2-small"
+}
+
 # ── Stripe billing ────────────────────────────────────────────────────────────
 
 variable "stripe_secret_key" {

@@ -1,0 +1,150 @@
+# METI OT Security Guideline v3 — Initial mapping pack.
+#
+# Scope: the L3 (control system) requirement subset of METI's
+# 制御システムのセキュリティリスク分析ガイド v3.0 that Hakuna's Phase 5
+# OT audits (`ot_protocol`, `ot_passive`) directly evidence. Mappings key
+# off `finding.plugin_family` (closed vocabulary from
+# `agents/tools/emit_finding.py`).
+#
+# JP-side framework labelling lives in the `name_ja` field for the OT
+# Posture dashboard's localized rendering. The framework-level mapping
+# logic is identical to IEC 62443-3-3 because METI v3's L3 cells reuse
+# the same SR taxonomy under different labels.
+
+framework:
+  slug: meti_ot_security_v3
+  name: METI OT Security Guideline v3
+  name_ja: 制御システムのセキュリティリスク分析ガイド v3.0
+  version: "3.0"
+  authority: METI / IPA (Japan)
+  published_at: 2023-10-13
+  description: |
+    METI's OT security guideline v3.0 — Japan's reference framework for
+    industrial control system risk analysis, published by IPA on behalf
+    of METI. Used by Japanese plant operators and OT vendors as the
+    domestic complement to IEC 62443-3-3. Required reading for
+    customers running Mitsubishi MELSEC, Omron FINS, Yokogawa Vnet/IP,
+    or CC-Link IE deployments.
+  categories: [OT/ICS]
+  mapping_schema_version: 1
+
+release:
+  tag: "2026.04.27-v1"
+  notes: |
+    Initial METI v3 pack — the L3-CPS cells that Hakuna's Phase 5 OT
+    audits directly evidence. This pack ships with English headings;
+    `name_ja` carries the official JP cell label for localized
+    rendering. Manual-only governance cells are listed without mappings.
+
+controls:
+
+  # ── L3-CPS-PE-1 — PLC integrity ───────────────────────────
+  - ref: "L3-CPS-PE-1"
+    title: PLC integrity (PLCの完全性)
+    domain: Plant Equipment
+    testability: automated
+    canonical_guidance: |
+      Findings that fingerprint a PLC's vendor / model / firmware
+      anonymously (Modbus FC 43 / Siemens S7 SZL / Mitsubishi SLMP /
+      Omron FINS / EtherNet/IP CIP ListIdentity) are direct evidence
+      the device-side control plane lacks identification controls on
+      the protocol path — the prerequisite for upstream PLC integrity
+      protection.
+    mappings:
+      - key: meti_v3_l3_cps_pe_1_active_ot_finding
+        when:
+          logic: AND
+          conditions:
+            - field: finding.plugin_family
+              op: eq
+              value: "Audit: OT (active read-only)"
+            - field: finding.workflow_status
+              op: neq
+              value: resolved
+      - key: meti_v3_l3_cps_pe_1_passive_jp_vendor_signal
+        when:
+          logic: AND
+          conditions:
+            - field: finding.plugin_family
+              op: eq
+              value: "Audit: OT (passive listen)"
+            - field: finding.workflow_status
+              op: neq
+              value: resolved
+
+  # ── L3-CPS-IT-2 — Control protocol authentication absence ─
+  - ref: "L3-CPS-IT-2"
+    title: Control protocol authentication absence (制御プロトコル認証の欠如)
+    domain: Information Technology in OT
+    testability: automated
+    canonical_guidance: |
+      Severity ≥ Medium findings on the active OT audit indicate a
+      device responded to a read-only control PDU without authentication
+      — evidence the control protocol does not enforce per-peer
+      authentication. METI v3 calls this out specifically for
+      Mitsubishi SLMP and Omron FINS where vendor defaults often ship
+      with no auth at all on read function codes.
+    mappings:
+      - key: meti_v3_l3_cps_it_2_unauth_ot_response
+        when:
+          logic: AND
+          conditions:
+            - field: finding.plugin_family
+              op: eq
+              value: "Audit: OT (active read-only)"
+            - field: finding.severity
+              op: gte
+              value: 2
+            - field: finding.workflow_status
+              op: neq
+              value: resolved
+
+  # ── L3-CPS-NW-1 — Plant-IT segmentation ───────────────────
+  - ref: "L3-CPS-NW-1"
+    title: Plant-IT network segmentation (プラント-IT間のネットワーク分離)
+    domain: Network
+    testability: automated
+    canonical_guidance: |
+      OT protocol findings on assets the EASM scanner has flagged as
+      internet-facing are direct evidence the L3-IT/OT segmentation
+      boundary is breached. METI v3 treats this as a critical finding
+      irrespective of the specific protocol observed.
+    mappings:
+      - key: meti_v3_l3_cps_nw_1_ot_internet_facing
+        when:
+          logic: AND
+          conditions:
+            - field: finding.plugin_family
+              op: in
+              value:
+                - "Audit: OT (active read-only)"
+                - "Audit: OT (passive listen)"
+            - field: inventory.is_internet_facing
+              op: is_true
+            - field: finding.workflow_status
+              op: neq
+              value: resolved
+
+  # ── L3-CPS-MG-1 — Operator approval workflow ─────────────
+  - ref: "L3-CPS-MG-1"
+    title: Operator approval workflow for OT audits (OT監査の運用承認)
+    domain: Management
+    testability: manual_only
+    canonical_guidance: |
+      Plant operators must sign off on any active OT audit before it
+      runs. Hakuna enforces this technically via per-asset consent
+      records on `Asset.easm_data["ot_audit_consent"]` (90-day TTL);
+      auditors verify the workflow exists and consent records are
+      current via the OT Posture dashboard.
+
+  # ── L3-CPS-MG-2 — Read-only enforcement ─────────────────
+  - ref: "L3-CPS-MG-2"
+    title: Read-only enforcement (読み取り専用の保証)
+    domain: Management
+    testability: manual_only
+    canonical_guidance: |
+      All Hakuna OT audit relays enforce read-only function codes at
+      the byte-construction layer — no write FC can be issued even on a
+      prompt-injection compromised LLM. This SR is evidenced by the
+      relay codebase plus the per-protocol read-only test in the relay
+      test suite (`hakuna-relay-agent/tests/test_ot_protocol_probe.py`).

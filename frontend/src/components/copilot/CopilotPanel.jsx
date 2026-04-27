@@ -8,7 +8,7 @@ import {
   ChevronDown, ChevronRight, Wrench, ShieldAlert, Zap,
   Clock, Globe, Bug, Target, Briefcase, Clipboard,
   Copy, Check, RotateCcw, ThumbsUp, ThumbsDown,
-  Search, Tags, LayoutDashboard, Settings,
+  Search, Tags, LayoutDashboard, Settings, Paperclip, FileText,
 } from 'lucide-react'
 import { tryRenderRichBlock } from './RichBlockRenderer.jsx'
 import { capture } from '../../utils/analytics.js'
@@ -24,6 +24,8 @@ import {
   getStoredToken,
   getOrgContext,
   getBillingUsage,
+  uploadCopilotAttachment,
+  deleteCopilotAttachment,
 } from '../../api.js'
 
 const API_ORIGIN = import.meta.env.VITE_API_URL || ''
@@ -664,9 +666,13 @@ export default function CopilotPanel({ open, onClose, currentPath, currentSearch
   const [recommendations, setRecommendations] = useState([])
   const [autonomy, setAutonomy] = useState(null)
   const [showAutonomy, setShowAutonomy] = useState(false)
+  // Files the user dropped in the composer but hasn't sent yet.
+  // Each entry: { id, filename, size_bytes, content_type, uploading?, error? }
+  const [pendingAttachments, setPendingAttachments] = useState([])
   const messagesEndRef = useRef(null)
   const textareaRef = useRef(null)
   const abortRef = useRef(null)
+  const fileInputRef = useRef(null)
   const navigate = useNavigate()
 
   // Markdown components with SPA-aware link handling for internal routes
@@ -761,7 +767,10 @@ export default function CopilotPanel({ open, onClose, currentPath, currentSearch
 
   const sendMessage = useCallback(async (text) => {
     const msg = (text || input).trim()
-    if (!msg || streaming) return
+    // Allow send when only attachments are present (msg may be empty).
+    const readyAttachments = pendingAttachments.filter(a => a.id && !a.uploading && !a.error)
+    if (streaming) return
+    if (!msg && readyAttachments.length === 0) return
     setShowAutonomy(false)
 
     // Optimistic UI: clear the input, render the user bubble, and enter the
@@ -773,7 +782,12 @@ export default function CopilotPanel({ open, onClose, currentPath, currentSearch
     if (textareaRef.current) {
       textareaRef.current.style.height = '20px'
     }
-    setMessages(prev => [...prev, { role: 'user', content: msg, timestamp: new Date().toISOString() }])
+    const userBubble = readyAttachments.length
+      ? (msg
+          ? `${msg}\n\n_Attached: ${readyAttachments.map(a => a.filename).join(', ')}_`
+          : `_Attached: ${readyAttachments.map(a => a.filename).join(', ')}_`)
+      : msg
+    setMessages(prev => [...prev, { role: 'user', content: userBubble, timestamp: new Date().toISOString() }])
     setStreaming(true)
     setStreamText('')
     setStreamEvents([])
@@ -861,9 +875,16 @@ export default function CopilotPanel({ open, onClose, currentPath, currentSearch
       const resp = await fetch(`${API_ORIGIN}/api/copilot/conversations/${conv.id}/message`, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ message: msg, context: contextPrefix || undefined }),
+        body: JSON.stringify({
+          message: msg || `Please process the attached file${readyAttachments.length === 1 ? '' : 's'}.`,
+          context: contextPrefix || undefined,
+          attachment_ids: readyAttachments.length ? readyAttachments.map(a => a.id) : undefined,
+        }),
         signal: abortController.signal,
       })
+
+      // Send is committed — clear the pending tray so the same files don't re-attach.
+      setPendingAttachments([])
 
       if (!resp.ok || !resp.body) {
         let errMsg = `Request failed: ${resp.status}`
@@ -966,13 +987,65 @@ export default function CopilotPanel({ open, onClose, currentPath, currentSearch
       abortRef.current = null
       getBillingUsage().then(setTokenUsage).catch(() => {})
     }
-  }, [input, streaming, activeConv])
+  }, [input, streaming, activeConv, pendingAttachments])
 
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       sendMessage()
     }
+  }
+
+  // Ensure a conversation exists, then upload each chosen file. Files are
+  // staged on the server; the IDs ride along on the next sendMessage().
+  const handleAttachFiles = useCallback(async (files) => {
+    if (!files || !files.length) return
+    let conv = activeConv
+    if (!conv) {
+      try {
+        conv = await createCopilotConversation()
+        setActiveConv(conv)
+        setConversations(prev => [conv, ...prev])
+      } catch (e) {
+        console.error('Failed to create conversation for attachment:', e)
+        return
+      }
+    }
+    for (const file of files) {
+      const placeholderKey = `tmp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      setPendingAttachments(prev => [...prev, {
+        _key: placeholderKey,
+        filename: file.name,
+        size_bytes: file.size,
+        content_type: file.type,
+        uploading: true,
+      }])
+      try {
+        const result = await uploadCopilotAttachment(conv.id, file)
+        setPendingAttachments(prev => prev.map(a =>
+          a._key === placeholderKey ? { ...result, _key: placeholderKey } : a,
+        ))
+      } catch (e) {
+        console.error('Attachment upload failed:', e)
+        setPendingAttachments(prev => prev.map(a =>
+          a._key === placeholderKey ? { ...a, uploading: false, error: e.message || 'Upload failed' } : a,
+        ))
+      }
+    }
+  }, [activeConv])
+
+  const handleRemoveAttachment = useCallback(async (entry) => {
+    setPendingAttachments(prev => prev.filter(a => a._key !== entry._key && a.id !== entry.id))
+    if (entry.id && activeConv) {
+      try { await deleteCopilotAttachment(activeConv.id, entry.id) } catch {}
+    }
+  }, [activeConv])
+
+  const formatBytes = (n) => {
+    if (n == null) return ''
+    if (n < 1024) return `${n} B`
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+    return `${(n / (1024 * 1024)).toFixed(1)} MB`
   }
 
   const handleStop = () => {
@@ -1520,11 +1593,73 @@ export default function CopilotPanel({ open, onClose, currentPath, currentSearch
           paddingBottom: fullScreen ? 'calc(12px + env(safe-area-inset-bottom, 0px))' : 12,
           background: 'var(--bg-secondary)',
         }}>
+          {pendingAttachments.length > 0 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+              {pendingAttachments.map((a) => (
+                <div
+                  key={a._key || a.id}
+                  style={{
+                    display: 'inline-flex', alignItems: 'center', gap: 6,
+                    padding: '4px 6px 4px 8px', borderRadius: 6,
+                    border: `1px solid ${a.error ? '#ef4444' : 'var(--border)'}`,
+                    background: 'var(--bg)', fontSize: 12,
+                    color: a.error ? '#ef4444' : 'var(--text)',
+                    maxWidth: 240,
+                  }}
+                  title={a.error || a.filename}
+                >
+                  {a.uploading
+                    ? <Loader2 size={12} className="spin" style={{ animation: 'spin 1s linear infinite' }} />
+                    : <FileText size={12} style={{ color: 'var(--accent)' }} />}
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {a.filename}
+                  </span>
+                  <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>
+                    {a.error ? 'failed' : formatBytes(a.size_bytes)}
+                  </span>
+                  <button
+                    onClick={() => handleRemoveAttachment(a)}
+                    style={{
+                      border: 'none', background: 'transparent', cursor: 'pointer',
+                      color: 'var(--text-muted)', padding: 0, display: 'flex',
+                    }}
+                    title="Remove attachment"
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            style={{ display: 'none' }}
+            onChange={(e) => {
+              handleAttachFiles(Array.from(e.target.files || []))
+              e.target.value = ''
+            }}
+          />
           <div style={{
             display: 'flex', gap: 8, alignItems: 'flex-end',
             background: 'var(--bg)', border: '1px solid var(--border)',
             borderRadius: 12, padding: '6px 6px 6px 14px',
           }}>
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              disabled={streaming}
+              style={{
+                width: 32, height: 32, borderRadius: 8, border: 'none',
+                background: 'transparent', color: 'var(--text-muted)',
+                cursor: streaming ? 'default' : 'pointer',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                flexShrink: 0,
+              }}
+              title="Attach file"
+            >
+              <Paperclip size={16} />
+            </button>
             <textarea
               ref={textareaRef}
               value={input}
@@ -1559,12 +1694,12 @@ export default function CopilotPanel({ open, onClose, currentPath, currentSearch
             ) : (
               <button
                 onClick={() => sendMessage()}
-                disabled={!input.trim()}
+                disabled={!input.trim() && !pendingAttachments.some(a => a.id && !a.uploading && !a.error)}
                 style={{
                   width: 32, height: 32, borderRadius: 8, border: 'none',
-                  background: input.trim() ? 'var(--accent)' : 'var(--bg-secondary)',
-                  color: input.trim() ? '#fff' : 'var(--text-muted)',
-                  cursor: input.trim() ? 'pointer' : 'default',
+                  background: (input.trim() || pendingAttachments.some(a => a.id && !a.uploading && !a.error)) ? 'var(--accent)' : 'var(--bg-secondary)',
+                  color: (input.trim() || pendingAttachments.some(a => a.id && !a.uploading && !a.error)) ? '#fff' : 'var(--text-muted)',
+                  cursor: (input.trim() || pendingAttachments.some(a => a.id && !a.uploading && !a.error)) ? 'pointer' : 'default',
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   flexShrink: 0,
                   transition: 'background 0.15s ease',

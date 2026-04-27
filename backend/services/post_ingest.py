@@ -654,6 +654,13 @@ def _auto_vm_scan_for_easm(db, org_id, scan_id):
     if not domain:
         return None
 
+    # Per-scan opt-out: same flag the audit auto-trigger honors. When the
+    # operator unticked "Run automated follow-up scans" at EASM scan creation,
+    # skip queueing the VM follow-up too — keeping the audit and VM rails
+    # consistent on a single user-facing toggle.
+    if (scan.raw_metadata or {}).get("suppress_auto_followup"):
+        return {"queued": False, "domain": domain, "suppressed": True}
+
     md = dict(scan.raw_metadata or {})
     if md.get("needs_auto_vm_scan"):
         # Already pending — sweeper will handle it.

@@ -28,6 +28,7 @@ import websockets
 
 from .config import load_config
 from .executor import handle_task
+from .local_interfaces import enumerate_local_cidrs
 
 __version__ = "0.1.0"
 
@@ -93,6 +94,23 @@ async def run_agent():
                                 welcome.get("agent_name"),
                                 welcome.get("agent_id"),
                                 welcome.get("credentials_mode"))
+
+                # Send registration metadata so the backend can populate
+                # RelayAgent.labels — currently consumed by _lan_local_predicate
+                # (NetBIOS/LLMNR/mDNS audits) but reusable for future
+                # subnet-scoped families.
+                local_cidrs = enumerate_local_cidrs()
+                if local_cidrs:
+                    logger.info("Reporting %d local IPv4 network(s): %s",
+                                len(local_cidrs), ", ".join(local_cidrs))
+                else:
+                    logger.info("No local IPv4 networks detected — "
+                                "LAN-local audits will only fire via manual dispatch")
+                await ws.send(json.dumps({
+                    "type": "register",
+                    "agent_version": __version__,
+                    "local_interfaces": local_cidrs,
+                }))
 
                 # Main message loop
                 async for raw_msg in ws:

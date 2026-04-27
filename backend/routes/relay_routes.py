@@ -321,6 +321,29 @@ async def get_setup_instructions(
 # WebSocket Endpoint
 # ─────────────────────────────────────────────────────────
 
+def _apply_register_message(agent: RelayAgent, msg: dict) -> None:
+    """Apply a relay-side ``{"type": "register", ...}`` payload to the agent row.
+
+    Extracted so the receive loop's logic is unit-testable. Currently
+    captures:
+      * ``agent_version`` (already captured on pong, but registration arrives
+        first so update here too).
+      * ``local_interfaces`` — list of CIDR strings consumed by
+        ``_lan_local_predicate`` for NetBIOS/LLMNR/mDNS audit gating.
+
+    Other fields are accepted but ignored for forward compatibility.
+    """
+    version = msg.get("agent_version")
+    if isinstance(version, str) and version:
+        agent.agent_version = version
+    cidrs = msg.get("local_interfaces")
+    if isinstance(cidrs, list):
+        cleaned = [c for c in cidrs if isinstance(c, str) and c]
+        labels = dict(agent.labels or {})
+        labels["local_interfaces"] = cleaned
+        agent.labels = labels
+
+
 def _authenticate_agent(db: Session, token: str) -> Optional[RelayAgent]:
     """Verify an agent token against stored hashes."""
     if not token or not token.startswith(TOKEN_PREFIX):
@@ -384,8 +407,11 @@ async def relay_websocket(ws: WebSocket, db: Session = Depends(get_db)):
 
             # Update last_seen
             agent.last_seen_at = datetime.utcnow()
-            if msg.get("type") == "pong":
+            msg_type = msg.get("type")
+            if msg_type == "pong":
                 agent.agent_version = msg.get("agent_version")
+            elif msg_type == "register":
+                _apply_register_message(agent, msg)
             db.commit()
     except WebSocketDisconnect:
         logger.info("Relay agent %s (%s) disconnected", agent.name, agent.id)

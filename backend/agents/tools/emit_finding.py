@@ -42,16 +42,24 @@ _SEVERITY_MAP = {
 # plugin_family as a stable taxonomy; freeform strings break aggregation.
 # Adding a new audit protocol requires extending this map.
 _PROTOCOL_PLUGIN_FAMILIES: dict[str, str] = {
-    "wmi":      "Audit: Windows",
-    "ldap":     "Audit: Active Directory",
-    "smb":      "Audit: SMB",
-    "kerberos": "Audit: Kerberos",
-    "winrm":    "Audit: WinRM",
-    "snmp":     "Audit: SNMP",
-    "ssh":      "Audit: SSH",
-    "aws":      "Audit: Cloud (AWS)",
-    "azure":    "Audit: Cloud (Azure)",
-    "gcp":      "Audit: Cloud (GCP)",
+    "wmi":                   "Audit: Windows",
+    "ldap":                  "Audit: Active Directory",
+    "smb":                   "Audit: SMB",
+    "kerberos":              "Audit: Kerberos",
+    "winrm":                 "Audit: WinRM",
+    "snmp":                  "Audit: SNMP",
+    "ssh":                   "Audit: SSH",
+    "aws":                   "Audit: Cloud (AWS)",
+    "azure":                 "Audit: Cloud (Azure)",
+    "gcp":                   "Audit: Cloud (GCP)",
+    "exposed_datastore":     "Audit: Exposed Datastore",
+    "exposed_ai_service":    "Audit: Exposed AI Service",
+    "exposed_anon_protocol": "Audit: Exposed Anonymous Protocol",
+    "ipmi_bmc":              "Audit: IPMI / BMC",
+    "netbios_local":         "Audit: NetBIOS / LLMNR / mDNS",
+    "ot_protocol":           "Audit: OT (active read-only)",
+    "ot_passive":            "Audit: OT (passive listen)",
+    "managed_ai_saas":       "Audit: Managed AI (SaaS)",
 }
 
 # ctx_* enums match the documented Finding column values

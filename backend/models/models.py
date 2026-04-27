@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Float, Boolean, Text, DateTime, ForeignKey, JSON, UniqueConstraint, Index, text
+from sqlalchemy import Column, Integer, String, Float, Boolean, Text, DateTime, ForeignKey, JSON, LargeBinary, UniqueConstraint, Index, text
 from sqlalchemy.orm import relationship
 from core.database import Base
 from integrations.model_registry import importable
@@ -1734,7 +1734,13 @@ class FindingException(Base):
 # ─────────────────────────────────────────────────────────
 
 class ReportTemplate(Base):
-    """Saved report/dashboard template configuration."""
+    """Saved report/dashboard template configuration.
+
+    Uniqueness is enforced by the expression index
+    ``uq_report_template_org_name (COALESCE(org_id, 0), name)`` created in
+    migration 049 — SQLAlchemy can't express COALESCE in ``__table_args__``
+    portably, so the constraint lives in the migration only.
+    """
     __tablename__ = "report_templates"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -1921,6 +1927,25 @@ class CopilotConversation(Base):
     messages = Column(JSON, default=list)  # [{role, content, timestamp, tool_calls?}]
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class CopilotAttachment(Base):
+    """File attached by a user inside a copilot chat. Bytes are stored inline
+    (capped at MAX_SCAN_UPLOAD_BYTES) so scan-upload tools can resolve
+    `attachment_id` → bytes without a second hop."""
+    __tablename__ = "copilot_attachments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    conversation_id = Column(Integer, ForeignKey("copilot_conversations.id"), nullable=True, index=True)
+    filename = Column(String, nullable=False)
+    content_type = Column(String, nullable=True)
+    size_bytes = Column(Integer, nullable=False, default=0)
+    content = Column(LargeBinary, nullable=False)
+    consumed_at = Column(DateTime, nullable=True)  # set when a tool processes it
+    consumed_by_tool = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
 
 
 # ─────────────────────────────────────────────────────────

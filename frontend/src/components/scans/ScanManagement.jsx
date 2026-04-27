@@ -6,6 +6,7 @@ import {
   RefreshCw, Trash2, Search, Clock, Server, Shield, Loader,
   Play, MonitorSmartphone, History, ChevronDown, ChevronUp, Edit2, Save,
   Square, Terminal, Key, Radio, ShieldAlert, Users, HardDrive, Database, Network, Cloud,
+  Cpu, Sparkles, Factory, Eye,
 } from 'lucide-react'
 import { useScan } from '../../App.jsx'
 import useURLFilters from '../../hooks/useURLFilters.js'
@@ -30,12 +31,36 @@ const SOURCE_TYPES = {
   rapid7: { label: 'Rapid7', icon: Shield, color: '#f97316', bg: '#f9731622' },
   openvas: { label: 'OpenVAS', icon: Shield, color: '#22c55e', bg: '#22c55e22' },
   vm_scanner: { label: 'VM', icon: MonitorSmartphone, color: '#ec4899', bg: '#ec489922' },
-  wmi_audit: { label: 'WMI Audit', icon: Terminal, color: '#14b8a6', bg: '#14b8a622' },
-  // Future protocol audits land here as siblings: ldap_audit, smb_audit, etc.
+  // Protocol audits use source_type "{protocol}_audit" and resolve via AUDIT_CARD_META below.
+}
+
+const AUDIT_BADGE_ACRONYMS = new Set([
+  'ai', 'ot', 'ics', 'ipmi', 'bmc', 'wmi', 'ssh', 'ldap', 'smb', 'snmp',
+  'aws', 'gcp', 'mssql', 'saas', 'ftp', 'nfs',
+])
+
+function shortAuditBadge(protocol) {
+  return protocol
+    .split('_')
+    .map(t => (AUDIT_BADGE_ACRONYMS.has(t) ? t.toUpperCase() : t.charAt(0).toUpperCase() + t.slice(1)))
+    .join(' ') + ' Audit'
 }
 
 function getSourceMeta(type) {
-  return SOURCE_TYPES[type] || { label: type || 'Unknown', icon: FileText, color: '#71717a', bg: '#71717a22' }
+  if (SOURCE_TYPES[type]) return SOURCE_TYPES[type]
+  if (typeof type === 'string' && type.endsWith('_audit')) {
+    const protocol = type.slice(0, -'_audit'.length)
+    const meta = AUDIT_CARD_META[protocol]
+    if (meta) {
+      return {
+        label: shortAuditBadge(protocol),
+        icon: meta.icon,
+        color: meta.color,
+        bg: `${meta.color}22`,
+      }
+    }
+  }
+  return { label: type || 'Unknown', icon: FileText, color: '#71717a', bg: '#71717a22' }
 }
 
 
@@ -169,19 +194,79 @@ function UploadRow({ upload, onDismiss }) {
 // label around the *outcome* (what the audit reveals) rather than the wire
 // protocol, since practitioners pick an audit by goal, not transport.
 // New protocols fall back to the default ShieldAlert + teal until added here.
+//
+// `category` groups host-target audits in the picker so the user scans 4
+// short sections instead of one wall of 12+ tiles. Cloud picker has its own
+// flow and ignores category.
 const AUDIT_CARD_META = {
-  wmi:   { icon: Terminal,  color: '#14b8a6', label: 'Endpoint Audit (WMI)',          description: 'Inspect Windows host config' },
-  ldap:  { icon: Users,     color: '#8b5cf6', label: 'Active Directory Audit (LDAP)', description: 'Query users, groups, domain' },
-  smb:   { icon: HardDrive, color: '#f97316', label: 'Windows Share Audit (SMB)',     description: 'Inventory shares and exposure' },
-  mssql: { icon: Database,  color: '#0284c7', label: 'Database Audit (MSSQL)',        description: 'Inspect SQL Server config' },
-  snmp:  { icon: Network,   color: '#65a30d', label: 'Network Device Audit (SNMP)',   description: 'Query routers, switches, printers' },
-  ssh:   { icon: Terminal,  color: '#14b8a6', label: 'Linux Audit (SSH)',             description: 'Inspect Linux host config' },
-  aws:   { icon: Cloud,     color: '#f59e0b', label: 'AWS Cloud Audit',               description: 'IAM, exposure, posture' },
-  azure: { icon: Cloud,     color: '#0284c7', label: 'Azure Cloud Audit',             description: 'IAM, exposure, posture' },
-  gcp:   { icon: Cloud,     color: '#16a34a', label: 'GCP Cloud Audit',               description: 'IAM, exposure, posture' },
+  wmi:                    { icon: Terminal,   color: '#14b8a6', label: 'Endpoint Audit (WMI)',          description: 'Inspect Windows host config',          category: 'endpoint' },
+  ssh:                    { icon: Terminal,   color: '#0ea5e9', label: 'Linux Audit (SSH)',             description: 'Inspect Linux host config',            category: 'endpoint' },
+  ldap:                   { icon: Users,      color: '#8b5cf6', label: 'Active Directory Audit (LDAP)', description: 'Query users, groups, domain',          category: 'endpoint' },
+  smb:                    { icon: HardDrive,  color: '#f97316', label: 'Windows Share Audit (SMB)',     description: 'Inventory shares and exposure',        category: 'network' },
+  snmp:                   { icon: Network,    color: '#65a30d', label: 'Network Device Audit (SNMP)',   description: 'Query routers, switches, printers',    category: 'network' },
+  ipmi_bmc:               { icon: Cpu,        color: '#475569', label: 'IPMI / BMC Audit',              description: 'Out-of-band server management',        category: 'network' },
+  netbios_local:          { icon: Radio,      color: '#0284c7', label: 'NetBIOS / LLMNR / mDNS',        description: 'Local-segment name spoofing risk',     category: 'network' },
+  exposed_ai_service:     { icon: Sparkles,   color: '#d946ef', label: 'Exposed AI Service',            description: 'Open Ollama, vLLM, LM Studio, etc.',   category: 'exposed' },
+  exposed_datastore:      { icon: Database,   color: '#f43f5e', label: 'Exposed Datastore',             description: 'Open Redis, Mongo, Elastic, S3',       category: 'exposed' },
+  exposed_anon_protocol:  { icon: Eye,        color: '#f59e0b', label: 'Exposed Anonymous Service',     description: 'Anon FTP, NFS, rsync, SMB',            category: 'exposed' },
+  ot_passive:             { icon: Radar,      color: '#6366f1', label: 'OT / ICS Passive',              description: 'Listen-only OT discovery',             category: 'ot' },
+  ot_protocol:            { icon: Factory,    color: '#7c3aed', label: 'OT / ICS Protocol (Read-Only)', description: 'Modbus, S7, EtherNet/IP probe',        category: 'ot' },
+  mssql:                  { icon: Database,   color: '#0284c7', label: 'Database Audit (MSSQL)',        description: 'Inspect SQL Server config',            category: 'endpoint' },
+  aws:                    { icon: Cloud,      color: '#f59e0b', label: 'AWS Cloud Audit',               description: 'IAM, exposure, posture' },
+  azure:                  { icon: Cloud,      color: '#0284c7', label: 'Azure Cloud Audit',             description: 'IAM, exposure, posture' },
+  gcp:                    { icon: Cloud,      color: '#16a34a', label: 'GCP Cloud Audit',               description: 'IAM, exposure, posture' },
+  managed_ai_saas:        { icon: Sparkles,   color: '#d946ef', label: 'Managed AI (SaaS) Governance',  description: 'OpenAI, Anthropic, Bedrock, Vertex' },
 }
 
-const CLOUD_PROTOCOLS = new Set(['aws', 'azure', 'gcp'])
+const CLOUD_PROTOCOLS = new Set(['aws', 'azure', 'gcp', 'managed_ai_saas'])
+
+// Picker grouping is by *what* the audit inspects (target/outcome), not by
+// *how* it accesses (auth model). The auth model is shown as a per-row badge
+// instead — that decoupling lets protocols that span both worlds (SMB exists
+// as both anonymous null-session and credentialed share enumeration) live
+// alongside their target peers (LDAP, FTP, NFS) instead of being shoved into
+// an "auth" bucket that confuses users.
+const TARGET_GROUPS = [
+  { key: 'datastore', label: 'Datastores',             hint: 'Redis, Mongo, Elastic, etcd, kubelet' },
+  { key: 'ai',        label: 'AI services',            hint: 'Self-hosted Ollama, vLLM, Jupyter, MLflow' },
+  { key: 'ot',        label: 'OT / ICS',               hint: 'Modbus, S7, BACnet, Yokogawa, CC-Link' },
+  { key: 'network',   label: 'Network devices',        hint: 'SNMP, IPMI/BMC, NetBIOS/LLMNR/mDNS' },
+  { key: 'shares',    label: 'File shares & identity', hint: 'SMB, FTP, NFS, rsync, LDAP' },
+  { key: 'hosts',     label: 'Hosts & databases',      hint: 'WMI, SSH, MSSQL' },
+  { key: 'other',     label: 'Other',                  hint: '' },
+]
+
+// Map each registered protocol → which target group it belongs in. Anything
+// not listed falls into "Other" so a newly-registered audit still appears.
+const PROTOCOL_TARGET = {
+  exposed_datastore:     'datastore',
+  exposed_ai_service:    'ai',
+  managed_ai_saas:       'ai',
+  ot_passive:            'ot',
+  ot_protocol:           'ot',
+  snmp:                  'network',
+  ipmi_bmc:              'network',
+  netbios_local:         'network',
+  exposed_anon_protocol: 'shares',
+  smb:                   'shares',
+  ldap:                  'shares',
+  wmi:                   'hosts',
+  ssh:                   'hosts',
+  mssql:                 'hosts',
+}
+
+// Per-row badge derived from the audit's safety_class. Badge tells the user
+// the access mode at a glance without making it the primary axis of the page.
+const SAFETY_BADGE = {
+  anon_datastore:    { label: 'Anonymous',       color: '#f59e0b' },
+  anon_ai_exposure:  { label: 'Anonymous',       color: '#f59e0b' },
+  anon_ipmi:         { label: 'Anonymous',       color: '#f59e0b' },
+  anon_lan_local:    { label: 'LAN-local',       color: '#f59e0b' },
+  anon_standard:     { label: 'Anonymous',       color: '#f59e0b' },
+  ot_safe:           { label: 'Active read-only', color: '#a855f7' },
+  ot_passive_only:   { label: 'Passive listen',  color: '#64748b' },
+  credentialed:      { label: 'Credentialed',    color: '#0ea5e9' },
+}
 
 function NewScanModal({ onClose, onFile, uploading, easmEnabled, onScanDomain, onSetupEasm, onVmScan, onAuditScan }) {
   const [mode, setMode] = useState(null)
@@ -189,9 +274,36 @@ function NewScanModal({ onClose, onFile, uploading, easmEnabled, onScanDomain, o
   const [scanType, setScanType] = useState('full')
   const [scanning, setScanning] = useState(false)
   const [error, setError] = useState(null)
+  // Automated follow-up scans: anonymous audits (SMB/SNMP, datastore, AI,
+  // anon-protocol, IPMI, NetBIOS) auto-fire on newly-discovered ports, and the
+  // post-ingest VM (Nuclei) scan kicks off against EASM HTTP assets. On by
+  // default; unticking writes ``suppress_auto_followup=true`` on the scan
+  // record, which both rails honor.
+  const [autoFollowupEnabled, setAutoFollowupEnabled] = useState(true)
   const [auditProtocols, setAuditProtocols] = useState([])   // flattened from /api/audits/protocols
+  const [auditSearch, setAuditSearch] = useState('')
   const cloudProtocols = useMemo(() => auditProtocols.filter(p => CLOUD_PROTOCOLS.has(p.protocol)), [auditProtocols])
   const hostProtocols  = useMemo(() => auditProtocols.filter(p => !CLOUD_PROTOCOLS.has(p.protocol)), [auditProtocols])
+
+  // Group host audits by target/outcome for the picker. Search filters
+  // across the user-facing label and description (not the wire-protocol id),
+  // since the section headings already make the protocol secondary.
+  const groupedHostAudits = useMemo(() => {
+    const q = auditSearch.trim().toLowerCase()
+    const buckets = Object.fromEntries(TARGET_GROUPS.map(c => [c.key, []]))
+    for (const p of hostProtocols) {
+      const meta = AUDIT_CARD_META[p.protocol] || {}
+      const label = meta.label || p.label || p.protocol
+      const description = meta.description || 'Protocol ReAct audit'
+      if (q && !label.toLowerCase().includes(q) && !description.toLowerCase().includes(q)) continue
+      const groupKey = PROTOCOL_TARGET[p.protocol] || 'other'
+      const badge = SAFETY_BADGE[p.safety_class] || null
+      buckets[groupKey].push({ ...p, _meta: meta, _label: label, _description: description, _badge: badge })
+    }
+    return TARGET_GROUPS
+      .map(c => ({ ...c, items: buckets[c.key] }))
+      .filter(c => c.items.length > 0)
+  }, [hostProtocols, auditSearch])
 
   // Load registered protocol audits so each gets its own top-level card.
   // Cards render immediately for EASM/VM/Import; audit cards append as the
@@ -216,7 +328,7 @@ function NewScanModal({ onClose, onFile, uploading, easmEnabled, onScanDomain, o
     setScanning(true)
     setError(null)
     try {
-      await onScanDomain(domain.trim(), scanType)
+      await onScanDomain(domain.trim(), scanType, !autoFollowupEnabled)
       onClose()
     } catch (err) {
       setError(err.message)
@@ -244,7 +356,9 @@ function NewScanModal({ onClose, onFile, uploading, easmEnabled, onScanDomain, o
     }} onClick={e => { if (e.target === e.currentTarget) onClose() }}>
       <div style={{
         background: 'var(--bg-card)', border: '1px solid var(--border)',
-        borderRadius: 14, padding: 28, width: '100%', maxWidth: 520,
+        borderRadius: 14, padding: 28, width: '100%',
+        maxWidth: mode === 'host-picker' ? 720 : 520,
+        maxHeight: '90vh', overflowY: 'auto',
         boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
       }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
@@ -284,29 +398,90 @@ function NewScanModal({ onClose, onFile, uploading, easmEnabled, onScanDomain, o
           </div>
         )}
 
-        {(mode === 'cloud-picker' || mode === 'host-picker') && (
+        {mode === 'cloud-picker' && (
           <div>
             <BackButton onClick={() => setMode(null)} />
             <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>
-              {mode === 'cloud-picker'
-                ? 'Pick a cloud provider to audit.'
-                : 'Pick a protocol to audit. Some support unauthenticated discovery; others require credentials.'}
+              Pick a cloud provider to audit.
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-              {(mode === 'cloud-picker' ? cloudProtocols : hostProtocols).map(p => {
+              {cloudProtocols.map(p => {
                 const meta = AUDIT_CARD_META[p.protocol] || { icon: ShieldAlert, color: '#14b8a6' }
                 return (
                   <SourceOption
                     key={p.protocol}
                     icon={meta.icon}
                     label={meta.label || p.label}
-                    description={meta.description || 'Protocol ReAct audit'}
+                    description={meta.description || 'Protocol audit'}
                     color={meta.color}
                     onClick={() => setMode(`audit:${p.protocol}`)}
                   />
                 )
               })}
             </div>
+          </div>
+        )}
+
+        {mode === 'host-picker' && (
+          <div>
+            <BackButton onClick={() => setMode(null)} />
+
+            {/* Sticky search keeps filter input in view while scrolling the
+                list. Background matches the modal so groups slide under it. */}
+            <div style={{
+              position: 'sticky', top: -28, zIndex: 1,
+              background: 'var(--bg-card)', paddingBottom: 12, marginBottom: 4,
+            }}>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 10 }}>
+                Pick an audit. Auth mode is shown on each row.
+              </div>
+              <div style={{ position: 'relative' }}>
+                <Search size={14} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
+                <input
+                  value={auditSearch}
+                  onChange={e => setAuditSearch(e.target.value)}
+                  placeholder="Search audits…"
+                  autoFocus
+                  style={{
+                    width: '100%', padding: '8px 10px 8px 30px', borderRadius: 8,
+                    border: '1px solid var(--border)', background: 'var(--bg)',
+                    color: 'var(--text-primary)', fontSize: 13, boxSizing: 'border-box',
+                  }}
+                />
+              </div>
+            </div>
+
+            {groupedHostAudits.length === 0 && (
+              <div style={{ fontSize: 12, color: 'var(--text-muted)', textAlign: 'center', padding: '24px 0' }}>
+                No audits match “{auditSearch}”.
+              </div>
+            )}
+
+            {groupedHostAudits.map(group => (
+              <div key={group.key} style={{ marginBottom: 14 }}>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 6 }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.4, color: 'var(--text-primary)' }}>
+                    {group.label}
+                  </div>
+                  {group.hint && (
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{group.hint}</div>
+                  )}
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8 }}>
+                  {group.items.map(p => (
+                    <AuditOptionRow
+                      key={p.protocol}
+                      icon={p._meta.icon || ShieldAlert}
+                      label={p._label}
+                      description={p._description}
+                      color={p._meta.color || '#14b8a6'}
+                      badge={p._badge}
+                      onClick={() => setMode(`audit:${p.protocol}`)}
+                    />
+                  ))}
+                </div>
+              </div>
+            ))}
           </div>
         )}
 
@@ -427,6 +602,27 @@ function NewScanModal({ onClose, onFile, uploading, easmEnabled, onScanDomain, o
                 ))}
               </div>
             </div>
+
+            <label style={{
+              display: 'flex', alignItems: 'flex-start', gap: 8, marginBottom: 16,
+              padding: '10px 12px', borderRadius: 8, border: '1px solid var(--border)',
+              background: 'var(--bg)', cursor: 'pointer',
+            }}>
+              <input
+                type="checkbox"
+                checked={autoFollowupEnabled}
+                onChange={e => setAutoFollowupEnabled(e.target.checked)}
+                style={{ marginTop: 2, cursor: 'pointer' }}
+              />
+              <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.4 }}>
+                <div style={{ fontWeight: 600, color: 'var(--text-primary)', marginBottom: 2 }}>
+                  Run automated follow-up scans
+                </div>
+                Auto-triages newly-discovered services (SMB, SNMP, Redis, Mongo,
+                FTP, IPMI, etc.) and runs a Nuclei vulnerability scan against
+                discovered HTTP assets. No credentials required. Uncheck to skip.
+              </div>
+            </label>
 
             {error && (
               <div style={{ fontSize: 12, color: '#dc2626', marginBottom: 12, padding: '8px 10px', background: '#dc262611', borderRadius: 6 }}>
@@ -1697,6 +1893,51 @@ function SourceOption({ icon: Icon, label, description, color, disabled, disable
       <div style={{ fontSize: 11, color: 'var(--text-muted)', textAlign: 'center' }}>
         {disabled ? disabledMessage : description}
       </div>
+    </button>
+  )
+}
+
+
+// Compact horizontal row used by the host-audit picker. Same affordances as
+// SourceOption (icon, label, description, hover tint) but ~3× denser, with
+// an optional auth-mode badge on the right.
+function AuditOptionRow({ icon: Icon, label, description, color, badge, onClick }) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        display: 'flex', alignItems: 'center', gap: 10,
+        padding: '9px 11px', borderRadius: 8,
+        border: '1px solid var(--border)', background: 'transparent',
+        cursor: 'pointer', width: '100%', textAlign: 'left',
+        transition: 'all 0.15s', minWidth: 0,
+      }}
+      onMouseEnter={e => { e.currentTarget.style.borderColor = color; e.currentTarget.style.background = `${color}11` }}
+      onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.background = 'transparent' }}
+    >
+      <div style={{
+        width: 30, height: 30, borderRadius: 7, flexShrink: 0,
+        background: `${color}22`, display: 'flex', alignItems: 'center', justifyContent: 'center',
+      }}>
+        <Icon size={15} color={color} />
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontWeight: 600, fontSize: 12.5, color: 'var(--text-primary)', lineHeight: 1.3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {label}
+        </div>
+        <div style={{ fontSize: 10.5, color: 'var(--text-muted)', marginTop: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {description}
+        </div>
+      </div>
+      {badge && (
+        <span style={{
+          fontSize: 9.5, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.3,
+          padding: '2px 6px', borderRadius: 4, flexShrink: 0,
+          color: badge.color, background: `${badge.color}1a`, border: `1px solid ${badge.color}33`,
+        }}>
+          {badge.label}
+        </span>
+      )}
     </button>
   )
 }
@@ -3464,8 +3705,8 @@ export default function ScanManagement() {
     navigate('/')
   }
 
-  const handleScanDomain = async (domain, scanType) => {
-    const result = await scanEasmDomain(domain, scanType)
+  const handleScanDomain = async (domain, scanType, suppressAutoFollowup = false) => {
+    const result = await scanEasmDomain(domain, scanType, suppressAutoFollowup)
     await refreshScans()
     if (result?.scan_id) {
       setActiveScanId(result.scan_id)

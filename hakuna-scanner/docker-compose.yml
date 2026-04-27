@@ -1,31 +1,22 @@
+# Local dev: EASM scanner shares the main hakuna stack's Postgres and Redis,
+# matching the VM scanner's pattern. EASM models collide with the main backend
+# on table names (`findings`, `orgs`, `assets`), so EASM gets its own database
+# `hakuna_easm` on the same Postgres instance — created by
+# scripts/postgres-init/01-create-easm-db.sh on first volume init. Redis is
+# multiplexed by DB number; EASM uses DB 3 (see ../docker-compose.yml).
+#
+# Production is unaffected — Cloud Run doesn't use this compose file.
+#
+# Bring up order:
+#   1. cd .. && docker compose up -d              # postgres + redis + backend
+#   2. cd hakuna-scanner && docker compose up -d  # easm-api + workers
+#
+# If your `postgres-data` volume predates this change, the init script will
+# not have run. Create the DB manually:
+#   docker compose -f ../docker-compose.yml exec postgres \
+#     createdb -U hakuna hakuna_easm
 services:
-  postgres:
-    image: postgres:15-alpine
-    environment:
-      POSTGRES_USER: hakuna
-      POSTGRES_PASSWORD: hakuna
-      POSTGRES_DB: hakuna
-    volumes:
-      - pg_data:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U hakuna"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-  api:
+  easm-api:
     build: .
     command: >
       sh -c "PYTHONPATH=/app alembic upgrade head &&
@@ -34,27 +25,15 @@ services:
       - "8001:8001"
     env_file: .env
     environment:
-      DATABASE_URL: postgresql+asyncpg://hakuna:hakuna@postgres:5432/hakuna
-      DATABASE_URL_SYNC: postgresql://hakuna:hakuna@postgres:5432/hakuna
-      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgresql+asyncpg://hakuna:hakuna@postgres:5432/hakuna_easm
+      DATABASE_URL_SYNC: postgresql://hakuna:hakuna@postgres:5432/hakuna_easm
+      REDIS_URL: redis://redis:6379/3
       PYTHONPATH: /app
     volumes:
       - .:/app
       - screenshots:/data/screenshots
-    # Reach the scanner's own postgres/redis on `default`, and expose the
-    # API to the main hakuna stack on `hakuna_default` under the alias
-    # `easm-api` (referenced by backend's HAKUNA_SCANNER_URL). Aliasing
-    # avoids the bare `api` hostname colliding on the shared network.
     networks:
-      default:
-      hakuna_default:
-        aliases:
-          - easm-api
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+      - hakuna_default
 
   worker:
     build: .
@@ -70,9 +49,9 @@ services:
       -Q celery
     env_file: .env
     environment:
-      DATABASE_URL: postgresql+asyncpg://hakuna:hakuna@postgres:5432/hakuna
-      DATABASE_URL_SYNC: postgresql://hakuna:hakuna@postgres:5432/hakuna
-      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgresql+asyncpg://hakuna:hakuna@postgres:5432/hakuna_easm
+      DATABASE_URL_SYNC: postgresql://hakuna:hakuna@postgres:5432/hakuna_easm
+      REDIS_URL: redis://redis:6379/3
       PYTHONPATH: /app
     volumes:
       - .:/app
@@ -82,11 +61,8 @@ services:
         limits:
           cpus: "4.0"
           memory: 4G
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+    networks:
+      - hakuna_default
 
   nmap-worker:
     build: .
@@ -98,9 +74,9 @@ services:
       -Q nmap_queue
     env_file: .env
     environment:
-      DATABASE_URL: postgresql+asyncpg://hakuna:hakuna@postgres:5432/hakuna
-      DATABASE_URL_SYNC: postgresql://hakuna:hakuna@postgres:5432/hakuna
-      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgresql+asyncpg://hakuna:hakuna@postgres:5432/hakuna_easm
+      DATABASE_URL_SYNC: postgresql://hakuna:hakuna@postgres:5432/hakuna_easm
+      REDIS_URL: redis://redis:6379/3
       PYTHONPATH: /app
     volumes:
       - .:/app
@@ -109,11 +85,8 @@ services:
         limits:
           cpus: "1.5"
           memory: 1G
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+    networks:
+      - hakuna_default
 
   beat:
     build: .
@@ -122,25 +95,18 @@ services:
       --loglevel=info
     env_file: .env
     environment:
-      DATABASE_URL: postgresql+asyncpg://hakuna:hakuna@postgres:5432/hakuna
-      DATABASE_URL_SYNC: postgresql://hakuna:hakuna@postgres:5432/hakuna
-      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgresql+asyncpg://hakuna:hakuna@postgres:5432/hakuna_easm
+      DATABASE_URL_SYNC: postgresql://hakuna:hakuna@postgres:5432/hakuna_easm
+      REDIS_URL: redis://redis:6379/3
       PYTHONPATH: /app
     volumes:
       - .:/app
-    depends_on:
-      redis:
-        condition: service_healthy
+    networks:
+      - hakuna_default
 
 volumes:
-  pg_data:
   screenshots:
 
-# `default` is this stack's private network (postgres + redis + workers).
-# `hakuna_default` is created by ../docker-compose.yml; the api service joins
-# it so the main backend can reach it as `easm-api:8001`. Bring the main
-# stack up first so the network exists.
 networks:
-  default:
   hakuna_default:
     external: true

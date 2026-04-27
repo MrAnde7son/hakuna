@@ -73,10 +73,54 @@ def _port_change_event(
 
 
 def test_disabled_when_org_setting_off(db_session, test_org, linked_asset, connected_relay):
-    """Default behavior: settings.auto_audit_anon is unset → no dispatch."""
+    """Explicit opt-out: setting auto_audit_anon=False suppresses dispatch.
+
+    Defaults flipped to ON for credential-less audit families, so checking
+    "missing setting → no dispatch" is no longer the right invariant — that
+    case now fires. The opt-out path is the explicit ``False`` value.
+    """
+    from services.audit_auto_trigger import maybe_auto_trigger_anon_audits
+
+    test_org.settings = {"auto_audit_anon": False}
+    db_session.flush()
+
+    with patch("services.audit_auto_trigger.dispatch_audit_run") as mock_dispatch:
+        n = maybe_auto_trigger_anon_audits(
+            db_session, test_org,
+            _port_change_event("scanner-uuid-1", [445]),
+        )
+
+    assert n == 0
+    mock_dispatch.assert_not_called()
+
+
+def test_default_on_for_anon_families(db_session, test_org, linked_asset, connected_relay):
+    """Newly-onboarded orgs (no auto_audit_* settings written) auto-fire the
+    SMB rule on a 445 port_change. Confirms the default-ON behavior for
+    credential-less audit families."""
     from services.audit_auto_trigger import maybe_auto_trigger_anon_audits
 
     assert (test_org.settings or {}).get("auto_audit_anon") is None
+
+    with patch("services.audit_runner._dispatch_background_run", return_value="task-1"):
+        n = maybe_auto_trigger_anon_audits(
+            db_session, test_org,
+            _port_change_event("scanner-uuid-1", [445]),
+        )
+
+    assert n == 1
+
+
+def test_per_scan_suppress_auto_followup(db_session, test_org, linked_asset, connected_relay):
+    """When the EASM scan was started with ``suppress_auto_followup=True`` on
+    raw_metadata, no audits fire for assets discovered by that scan even
+    though the org-level default is ON. Same flag also blocks the post-ingest
+    VM scan — see test_auto_vm_scan.py."""
+    from services.audit_auto_trigger import maybe_auto_trigger_anon_audits
+
+    scan = db_session.query(Scan).filter_by(id=linked_asset.scan_id).first()
+    scan.raw_metadata = {**(scan.raw_metadata or {}), "suppress_auto_followup": True}
+    db_session.flush()
 
     with patch("services.audit_auto_trigger.dispatch_audit_run") as mock_dispatch:
         n = maybe_auto_trigger_anon_audits(
@@ -372,9 +416,10 @@ def test_auto_trigger_rules_registry_seeded_with_smb_and_snmp():
 
 
 def test_per_rule_setting_key_isolates_families(db_session, test_org, linked_asset, connected_relay):
-    """A future family rule gated by e.g. ``auto_audit_datastore`` must NOT
-    fire when only ``auto_audit_anon`` is enabled. Verifies the per-family
-    gating refactor (each family gets its own switch) actually isolates."""
+    """Each family's switch is independent: explicitly turning off
+    ``auto_audit_datastore`` must suppress that family even with the legacy
+    ``auto_audit_anon`` switch on. Verifies the per-family gating refactor
+    actually isolates (in either direction now that defaults are ON)."""
     from datetime import timedelta
     from services.audit_auto_trigger import AUTO_TRIGGER_RULES, AutoTriggerRule
 
@@ -389,8 +434,9 @@ def test_per_rule_setting_key_isolates_families(db_session, test_org, linked_ass
     try:
         from services.audit_auto_trigger import maybe_auto_trigger_anon_audits
 
-        # Only the legacy switch on; the datastore-family rule must not fire.
-        test_org.settings = {"auto_audit_anon": True}
+        # Legacy switch on, datastore family explicitly off — the datastore
+        # rule must not fire even though defaults are otherwise ON.
+        test_org.settings = {"auto_audit_anon": True, "auto_audit_datastore": False}
         db_session.flush()
 
         with patch("services.audit_auto_trigger.dispatch_audit_run") as mock_dispatch:

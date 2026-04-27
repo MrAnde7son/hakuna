@@ -469,6 +469,7 @@ terraform/
 | Cloud SQL (single zonal, 2 databases) | ~$95 |
 | Memorystore Redis Basic 1GB | ~$52 |
 | Compute Engine e2-standard-4 (scanners) | ~$110 |
+| Compute Engine e2-small (audit-worker) | ~$13 |
 | Load Balancer + CDN | ~$22 |
 | VPC Connector | ~$16 |
 | GCS, Secrets, Registry | ~$7 |
@@ -482,11 +483,16 @@ Covered by GCP credits (~57 months of runway at this rate).
 
 ### Phase 2 — Celery Workers (when async tasks are slow)
 
-Uncomment in the following files:
-- `iam.tf` — `google_service_account.worker` and its roles
-- `database.tf` — read replica resource
-- Add `compute_workers.tf` — Compute Engine VM with Docker Compose
-- `cloudrun_api.tf` — change `CELERY_TASK_ALWAYS_EAGER` from `"true"` to `"false"`
+**Audit worker — done.** `compute_audit_worker.tf` provisions `hakuna-audit-worker`
+(e2-small) running the Protocol Audit Celery worker on Redis DB 3. The Cloud Run
+API has `CELERY_TASK_ALWAYS_EAGER=false` and dispatches via `apply_async`. Set
+the new `internal_shared_secret` var in `terraform.tfvars` (`openssl rand -hex 32`)
+before applying. Rollout order: apply the worker first (or together — tasks queue
+harmlessly until the VM finishes its ~3-min startup script), then verify with
+`gcloud compute instances tail-serial-port-output hakuna-audit-worker --zone me-west1-b`.
+
+Still pending:
+- `database.tf` — read replica resource (Phase 3 trigger)
 
 ### Phase 3 — High Availability (when uptime SLA matters)
 

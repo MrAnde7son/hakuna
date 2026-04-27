@@ -268,15 +268,14 @@ def _port_change_event(scanner_asset_id: str, new_ports: list[int], hostname: st
     }
 
 
-def test_auto_trigger_does_nothing_without_anon_protocol_family_switch(
+def test_auto_trigger_skipped_when_anon_protocol_family_explicitly_off(
     db_session, test_org, linked_anon_asset, connected_relay_for_org,
 ):
-    """Even with the legacy ``auto_audit_anon`` switch on, the
-    anon-protocol family rule must NOT fire — its per-family switch is
-    what controls it."""
+    """``auto_audit_anon_protocol=False`` opts out the family even when the
+    legacy ``auto_audit_anon`` switch is on."""
     from services.audit_auto_trigger import maybe_auto_trigger_anon_audits
 
-    test_org.settings = {"auto_audit_anon": True}  # legacy switch only
+    test_org.settings = {"auto_audit_anon": True, "auto_audit_anon_protocol": False}
     db_session.flush()
 
     with patch("services.audit_auto_trigger.dispatch_audit_run") as mock_dispatch:
@@ -341,11 +340,12 @@ def test_auto_trigger_anon_protocol_independent_from_other_family_switches(
     db_session, test_org, linked_anon_asset, connected_relay_for_org,
 ):
     """An org with ``auto_audit_anon_protocol`` on but ``auto_audit_anon``
-    off must NOT fire SMB on a 445 port — and vice versa. Confirms the
-    per-family isolation."""
+    explicitly off must NOT fire SMB on a 445 port — and vice versa. Confirms
+    the per-family isolation under default-ON semantics: each family's
+    explicit ``False`` wins over the other family's ``True``."""
     from services.audit_auto_trigger import maybe_auto_trigger_anon_audits
 
-    test_org.settings = {"auto_audit_anon_protocol": True}
+    test_org.settings = {"auto_audit_anon_protocol": True, "auto_audit_anon": False}
     db_session.flush()
 
     with patch("services.audit_runner._dispatch_background_run", return_value="task-1"):
@@ -354,7 +354,7 @@ def test_auto_trigger_anon_protocol_independent_from_other_family_switches(
             _port_change_event("scanner-uuid-anon-1", [21, 445], "legacy-prod-1"),
         )
 
-    # One run — the anon-protocol one. SMB rule is gated by auto_audit_anon (off).
+    # One run — the anon-protocol one. SMB rule is gated by auto_audit_anon (False).
     assert n == 1
     types = {s.scan_type for s in db_session.query(Scan).all()}
     assert "exposed_anon_protocol_audit" in types

@@ -55,6 +55,7 @@ import {
   getSiemNoisySources,
   getSiemAlertSeverity,
   getSiemRecentAlerts,
+  getOtPostureOverview,
 } from '../../api.js'
 import { Card, SeverityBadge, ScoreBar, Spinner, EffortBadge, OwnerBadge, Button, Pill, ExportImportButtons, ErrorBanner, SkeletonCard, useToast, useConfirm } from '../shared/ui.jsx'
 import { capture } from '../../utils/analytics.js'
@@ -104,7 +105,10 @@ function templateToReport(t) {
     name: t.name,
     description: t.description,
     widgets: t.config?.widgets || [],
-    createdAt: t.config?.createdAt || t.created_at,
+    // Prefer the DB's created_at; fall back to legacy config.createdAt only if
+    // the row predates the column being populated (older OOTB seeds wrote a
+    // 1970 sentinel into config.createdAt).
+    createdAt: t.created_at || t.config?.createdAt,
     updatedAt: t.updated_at,
     is_default: t.is_default,
   }
@@ -161,6 +165,7 @@ const DATA_SOURCES = {
   siem_noisy_sources:      (scanId, f) => getSiemNoisySources(),
   siem_alert_severity:     (scanId, f) => getSiemAlertSeverity(),
   siem_recent_alerts:      (scanId, f) => getSiemRecentAlerts(f?.limit || 15),
+  ot_posture:              (scanId, f) => getOtPostureOverview(),
 }
 
 // Sources whose backend endpoints honor the `tags` query param. Widgets
@@ -698,6 +703,84 @@ const DATA_PRESETS = {
     ],
     extract: d => Array.isArray(d) ? d : [],
     rowDrillDown: row => row?.id ? `/siem/alerts?alert_id=${row.id}` : '/siem/alerts',
+  },
+
+  // ── OT Posture metrics ──
+  ot_asset_count: {
+    label: 'OT-Eligible Assets', group: 'OT Posture', source: 'ot_posture', type: 'metric',
+    extract: d => d?.ot_asset_count ?? 0, color: '#7c3aed',
+  },
+  ot_consents_fresh: {
+    label: 'Active OT Consents', group: 'OT Posture', source: 'ot_posture', type: 'metric',
+    extract: d => (d?.protocols || []).reduce((acc, p) => acc + (p.consent_summary?.fresh || 0), 0),
+    color: '#16a34a',
+  },
+  ot_consents_expiring: {
+    label: 'Consents Expiring Soon', group: 'OT Posture', source: 'ot_posture', type: 'metric',
+    extract: d => (d?.protocols || []).reduce((acc, p) => acc + (p.consent_summary?.expiring_soon || 0), 0),
+    color: '#ea580c',
+  },
+  ot_consents_expired: {
+    label: 'Expired Consents', group: 'OT Posture', source: 'ot_posture', type: 'metric',
+    extract: d => (d?.protocols || []).reduce((acc, p) => acc + (p.consent_summary?.expired || 0), 0),
+    color: '#dc2626',
+  },
+  ot_iec_62443_pct: {
+    label: 'IEC 62443 3-3 Coverage', group: 'OT Posture', source: 'ot_posture', type: 'metric',
+    extract: d => d?.iec_62443_coverage?.percent ?? 0, format: 'pct', color: '#0ea5e9',
+  },
+  ot_meti_v3_pct: {
+    label: 'METI v3 Coverage', group: 'OT Posture', source: 'ot_posture', type: 'metric',
+    extract: d => d?.meti_v3_coverage?.percent ?? 0, format: 'pct', color: '#d946ef',
+  },
+
+  // ── OT Posture categories ──
+  ot_consent_breakdown: {
+    label: 'Consent Status Distribution', group: 'OT Posture', source: 'ot_posture', type: 'categories',
+    extract: d => {
+      const totals = { fresh: 0, expiring_soon: 0, expired: 0, missing: 0 }
+      for (const p of d?.protocols || []) {
+        const s = p.consent_summary || {}
+        totals.fresh += s.fresh || 0
+        totals.expiring_soon += s.expiring_soon || 0
+        totals.expired += s.expired || 0
+        totals.missing += s.missing || 0
+      }
+      return [
+        { name: 'Fresh',         value: totals.fresh,         color: '#16a34a' },
+        { name: 'Expiring soon', value: totals.expiring_soon, color: '#ea580c' },
+        { name: 'Expired',       value: totals.expired,       color: '#dc2626' },
+        { name: 'No consent',    value: totals.missing,       color: '#94a3b8' },
+      ].filter(r => r.value > 0)
+    },
+  },
+  ot_consents_by_protocol: {
+    label: 'Fresh Consents by Protocol', group: 'OT Posture', source: 'ot_posture', type: 'categories',
+    extract: d => (d?.protocols || []).map((p, i) => ({
+      name: p.protocol,
+      value: p.consent_summary?.fresh || 0,
+      color: PALETTE[i % PALETTE.length],
+    })).filter(r => r.value > 0),
+  },
+
+  // ── OT Posture tables ──
+  ot_assets_table: {
+    label: 'OT Assets & Consent', group: 'OT Posture', source: 'ot_posture', type: 'table',
+    columns: [
+      { key: 'label', label: 'Asset' },
+      { key: 'ip', label: 'IP' },
+      { key: 'device_type', label: 'Device' },
+      { key: 'ot_tcp_ports_observed', label: 'OT TCP', render: v => (v || []).join(', ') },
+      { key: 'ot_udp_ports_observed', label: 'OT UDP', render: v => (v || []).join(', ') },
+      { key: 'ot_protocol_status', label: 'Active audit', render: v => v || 'no consent' },
+      { key: 'ot_passive_status', label: 'Passive audit', render: v => v || 'no consent' },
+    ],
+    extract: d => (d?.rows || []).map(r => ({
+      ...r,
+      ot_protocol_status: r.consent?.ot_protocol?.status || 'missing',
+      ot_passive_status: r.consent?.ot_passive?.status || 'missing',
+    })).slice(0, 50),
+    rowDrillDown: row => row?.asset_id ? `/assets/${row.asset_id}` : '/inventory',
   },
 
   // ── Categories (pie/donut/bar) ──
@@ -1924,7 +2007,6 @@ const WIDTH_COL = { quarter: 1, third: 1, half: 2, 'two-thirds': 3, full: 4 }
 const DEFAULT_DASHBOARD = {
   id: DEFAULT_REPORT_ID,
   name: 'Security Overview',
-  createdAt: new Date(0).toISOString(),
   widgets: [
     { id: 'dw4', type: 'card', title: 'Assets', width: 'quarter', config: { preset: 'total_assets' } },
     { id: 'dw1', type: 'card',      title: 'Critical',              width: 'quarter', config: { preset: 'critical_count' } },
@@ -1962,7 +2044,6 @@ const DEFAULT_DASHBOARD = {
 const EXECUTIVE_DASHBOARD = {
   id: 'default-executive-overview',
   name: 'Executive Overview',
-  createdAt: new Date(0).toISOString(),
   widgets: [
     { id: 'ex0', type: 'risk_grade', title: 'Organization Risk Grade', width: 'half', config: { preset: 'risk_grade', show_benchmark: true } },
     { id: 'ex5', type: 'pie_chart', title: 'Severity Distribution', width: 'half',    config: { preset: 'severity_breakdown', donut: true } },
@@ -1989,7 +2070,6 @@ const EXECUTIVE_DASHBOARD = {
 const IDENTITY_ACCESS_DASHBOARD = {
   id: 'default-identity-access',
   name: 'Identity & Access Risk',
-  createdAt: new Date(0).toISOString(),
   widgets: [
     { id: 'ia1', type: 'card',      title: 'Domain Admins',          width: 'quarter', config: { preset: 'inv_domain_admins' } },
     { id: 'ia2', type: 'card',      title: 'Local Admins',           width: 'quarter', config: { preset: 'inv_local_admins' } },
@@ -2011,7 +2091,6 @@ const IDENTITY_ACCESS_DASHBOARD = {
 const ATTACK_SURFACE_DASHBOARD = {
   id: 'default-attack-surface',
   name: 'Attack Surface & Hygiene',
-  createdAt: new Date(0).toISOString(),
   widgets: [
     { id: 'as1', type: 'card',      title: 'Expired Certificates',    width: 'quarter', config: { preset: 'inv_expired_certs' } },
     { id: 'as2', type: 'card',      title: 'Expiring Soon',           width: 'quarter', config: { preset: 'inv_expiring_certs' } },
@@ -2034,7 +2113,6 @@ const ATTACK_SURFACE_DASHBOARD = {
 const REMEDIATION_DASHBOARD = {
   id: 'default-remediation-progress',
   name: 'Remediation Progress',
-  createdAt: new Date(0).toISOString(),
   widgets: [
     { id: 'rp1', type: 'risk_grade', title: 'Organization Risk Grade', width: 'half', config: { preset: 'risk_grade' } },
     { id: 'rp2', type: 'pie_chart', title: 'SLA Status',              width: 'half',    config: { preset: 'sla_status', donut: true } },
@@ -2055,7 +2133,6 @@ const REMEDIATION_DASHBOARD = {
 const AI_ML_ATTACK_SURFACE_DASHBOARD = {
   id: 'default-ai-ml-attack-surface',
   name: 'AI/ML Attack Surface',
-  createdAt: new Date(0).toISOString(),
   widgets: [
     // Header
     { id: 'ai1', type: 'header', title: 'AI/ML Attack Surface Report', width: 'full', config: { title: 'AI/ML Attack Surface Report', subtitle: 'Shadow AI, LLM endpoints, and emerging ML risks across your environment' } },
@@ -2077,7 +2154,6 @@ const AI_ML_ATTACK_SURFACE_DASHBOARD = {
 const OS_DISTRIBUTION_DASHBOARD = {
   id: 'default-os-distribution',
   name: 'OS Distribution',
-  createdAt: new Date(0).toISOString(),
   widgets: [
     { id: 'os1', type: 'header', title: 'Operating System Distribution', width: 'full', config: { title: 'Operating System Distribution', subtitle: 'Asset inventory breakdown by OS family, version, and device type' } },
     { id: 'os2', type: 'card',      title: 'Total Assets',     width: 'quarter', config: { preset: 'total_assets' } },
@@ -2100,7 +2176,6 @@ const OS_DISTRIBUTION_DASHBOARD = {
 const SOFTWARE_INVENTORY_DASHBOARD = {
   id: 'default-software-inventory',
   name: 'Software Inventory',
-  createdAt: new Date(0).toISOString(),
   widgets: [
     { id: 'sw1', type: 'header', title: 'Software Inventory Report', width: 'full', config: { title: 'Software Inventory Report', subtitle: 'Installed software across the environment — products, vendors, and categories' } },
     { id: 'sw2', type: 'card',      title: 'Total Software',     width: 'quarter', config: { preset: 'inv_total_software' } },
@@ -2124,7 +2199,6 @@ const SOFTWARE_INVENTORY_DASHBOARD = {
 const EASM_DASHBOARD = {
   id: 'default-easm',
   name: 'External Attack Surface',
-  createdAt: new Date(0).toISOString(),
   widgets: [
     // Header
     { id: 'ea1', type: 'header', title: 'External Attack Surface', width: 'full', config: { title: 'External Attack Surface', subtitle: 'Discovered assets, services, certificates, and change events from EASM scanning' } },
@@ -2173,7 +2247,6 @@ const EASM_DASHBOARD = {
 const OWNER_ACCOUNTABILITY_DASHBOARD = {
   id: 'default-owner-accountability',
   name: 'Owner Accountability',
-  createdAt: new Date(0).toISOString(),
   widgets: [
     { id: 'oa0',  type: 'header',    title: 'Owner Accountability',            width: 'full',    config: { title: 'Owner Accountability Report', subtitle: 'Risk posture and remediation workload broken down by responsible owner — red means action required now' } },
     { id: 'oa1',  type: 'card',      title: 'Total Findings',                  width: 'quarter', config: { preset: 'total_findings' } },
@@ -2192,7 +2265,6 @@ const OWNER_ACCOUNTABILITY_DASHBOARD = {
 const SIEM_OPERATIONS_DASHBOARD = {
   id: 'default-siem-operations',
   name: 'SIEM Operations',
-  createdAt: new Date(0).toISOString(),
   widgets: [
     { id: 'so0',  type: 'header',    title: 'SIEM Operations',                  width: 'full',    config: { title: 'SIEM Operations Dashboard', subtitle: 'Event ingestion, detection rules, alert triage, and mean time to respond' } },
     { id: 'so1',  type: 'card',      title: 'Events (24h)',                     width: 'quarter', config: { preset: 'siem_events_24h' } },
@@ -2204,6 +2276,23 @@ const SIEM_OPERATIONS_DASHBOARD = {
     { id: 'so7',  type: 'bar_chart', title: 'Noisy Rules (FP Rate)',           width: 'half',    config: { preset: 'siem_noisy_rules' } },
     { id: 'so8',  type: 'table',     title: 'Top Assets by Alert Count',      width: 'half',    config: { preset: 'siem_top_assets' } },
     { id: 'so9',  type: 'table',     title: 'Recent Open Alerts',             width: 'full',    config: { preset: 'siem_recent_alerts', limit: 15 } },
+  ],
+}
+
+const OT_POSTURE_DASHBOARD = {
+  id: 'default-ot-posture',
+  name: 'OT Posture',
+  widgets: [
+    { id: 'ot0', type: 'header',    title: 'OT Posture',                       width: 'full',    config: { title: 'OT Posture', subtitle: 'OT/ICS audit consent coverage and IEC 62443 / METI v3 evidence — every PLC/DCS/RTU needs explicit, time-bounded approval' } },
+    { id: 'ot1', type: 'card',      title: 'OT-Eligible Assets',               width: 'quarter', config: { preset: 'ot_asset_count' } },
+    { id: 'ot2', type: 'card',      title: 'Active Consents',                  width: 'quarter', config: { preset: 'ot_consents_fresh' } },
+    { id: 'ot3', type: 'card',      title: 'Expiring Soon',                    width: 'quarter', config: { preset: 'ot_consents_expiring' } },
+    { id: 'ot4', type: 'card',      title: 'Expired',                          width: 'quarter', config: { preset: 'ot_consents_expired' } },
+    { id: 'ot5', type: 'card',      title: 'IEC 62443 3-3 Coverage',           width: 'half',    config: { preset: 'ot_iec_62443_pct' } },
+    { id: 'ot6', type: 'card',      title: 'METI v3 Coverage',                 width: 'half',    config: { preset: 'ot_meti_v3_pct' } },
+    { id: 'ot7', type: 'pie_chart', title: 'Consent Status Distribution',      width: 'half',    config: { preset: 'ot_consent_breakdown', donut: true } },
+    { id: 'ot8', type: 'bar_chart', title: 'Fresh Consents by Protocol',       width: 'half',    config: { preset: 'ot_consents_by_protocol' } },
+    { id: 'ot9', type: 'table',     title: 'OT Assets & Consent State',        width: 'full',    config: { preset: 'ot_assets_table' } },
   ],
 }
 
@@ -4711,6 +4800,10 @@ export default function ReportBuilder() {
   const { reportId: urlReportId } = useParams()
   const navigate = useNavigate()
   const initialLoadRef = useRef(true)
+  // Reentry guard: React 18 StrictMode mounts effects twice in dev. Without
+  // this, two parallel runs would each find no existing OOTB templates and
+  // both POST them, producing duplicates.
+  const loadInFlightRef = useRef(false)
 
   // Sync activeReport → URL
   useEffect(() => {
@@ -4725,6 +4818,8 @@ export default function ReportBuilder() {
   }, [activeReport])
 
   const loadFromApi = useCallback(async () => {
+    if (loadInFlightRef.current) return
+    loadInFlightRef.current = true
     setFetchError(null)
     try {
       await migrateLocalStorageReports()
@@ -4732,22 +4827,28 @@ export default function ReportBuilder() {
       let needsReload = false
 
       // Ensure default dashboards exist and stay up-to-date
-      const ootb = [DEFAULT_DASHBOARD, EXECUTIVE_DASHBOARD, IDENTITY_ACCESS_DASHBOARD, ATTACK_SURFACE_DASHBOARD, REMEDIATION_DASHBOARD, AI_ML_ATTACK_SURFACE_DASHBOARD, OS_DISTRIBUTION_DASHBOARD, SOFTWARE_INVENTORY_DASHBOARD, EASM_DASHBOARD, OWNER_ACCOUNTABILITY_DASHBOARD, SIEM_OPERATIONS_DASHBOARD]
+      const ootb = [DEFAULT_DASHBOARD, EXECUTIVE_DASHBOARD, IDENTITY_ACCESS_DASHBOARD, ATTACK_SURFACE_DASHBOARD, REMEDIATION_DASHBOARD, AI_ML_ATTACK_SURFACE_DASHBOARD, OS_DISTRIBUTION_DASHBOARD, SOFTWARE_INVENTORY_DASHBOARD, EASM_DASHBOARD, OWNER_ACCOUNTABILITY_DASHBOARD, SIEM_OPERATIONS_DASHBOARD, OT_POSTURE_DASHBOARD]
       for (const dash of ootb) {
         const fingerprint = dash.widgets.map(w => `${w.id}:${w.type}:${w.config?.preset || ''}:${w.config?.show_benchmark ? 'bm' : ''}`).join('|')
         const existing = templates.find(t => t.name === dash.name)
         if (!existing) {
-          await createReportTemplate({
-            name: dash.name,
-            config: { widgets: dash.widgets, createdAt: dash.createdAt, _fp: fingerprint },
-            is_default: true,
-          })
-          needsReload = true
+          try {
+            await createReportTemplate({
+              name: dash.name,
+              config: { widgets: dash.widgets, _fp: fingerprint },
+              is_default: true,
+            })
+            needsReload = true
+          } catch (e) {
+            // 409 = another tab/request already seeded this template. Safe to ignore.
+            if (e?.status !== 409) throw e
+            needsReload = true
+          }
         } else if (existing.config?._fp !== fingerprint) {
           // Widget definitions changed — update the template
           await updateReportTemplate(existing.id, {
             name: dash.name,
-            config: { widgets: dash.widgets, createdAt: dash.createdAt, _fp: fingerprint },
+            config: { widgets: dash.widgets, _fp: fingerprint },
           })
           needsReload = true
         }
@@ -4777,6 +4878,7 @@ export default function ReportBuilder() {
       setFetchError('Failed to load report data.')
     } finally {
       setLoading(false)
+      loadInFlightRef.current = false
     }
   }, [urlReportId])
 

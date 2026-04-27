@@ -330,14 +330,15 @@ def _port_change_event(scanner_asset_id: str, new_ports: list[int], hostname: st
     }
 
 
-def test_auto_trigger_does_nothing_without_datastore_family_switch(
+def test_auto_trigger_skipped_when_datastore_family_explicitly_off(
     db_session, test_org, linked_datastore_asset, connected_relay_for_org,
 ):
-    """Even with the legacy ``auto_audit_anon`` switch on, the datastore
-    family rule must NOT fire — its per-family switch is what controls it."""
+    """``auto_audit_datastore=False`` opts out the family even when the
+    legacy ``auto_audit_anon`` switch is on. Confirms the per-family switch
+    overrides the family-level default."""
     from services.audit_auto_trigger import maybe_auto_trigger_anon_audits
 
-    test_org.settings = {"auto_audit_anon": True}  # legacy switch only
+    test_org.settings = {"auto_audit_anon": True, "auto_audit_datastore": False}
     db_session.flush()
 
     with patch("services.audit_auto_trigger.dispatch_audit_run") as mock_dispatch:
@@ -406,12 +407,13 @@ def test_auto_trigger_collapses_multiple_datastore_ports_into_single_run(
 def test_auto_trigger_legacy_and_family_switches_are_independent(
     db_session, test_org, linked_datastore_asset, connected_relay_for_org,
 ):
-    """An org with ``auto_audit_datastore`` on but ``auto_audit_anon`` off
-    must NOT auto-fire SMB/SNMP — and vice versa. Confirms the per-family
-    isolation refactor actually isolates."""
+    """An org with ``auto_audit_datastore`` on but ``auto_audit_anon``
+    explicitly off must NOT auto-fire SMB/SNMP — and vice versa. Confirms
+    the per-family isolation under default-ON semantics: each family's
+    explicit ``False`` wins over the other family's ``True``."""
     from services.audit_auto_trigger import maybe_auto_trigger_anon_audits
 
-    test_org.settings = {"auto_audit_datastore": True}
+    test_org.settings = {"auto_audit_datastore": True, "auto_audit_anon": False}
     # Add 445 (SMB) alongside 6379 (Redis) — only the datastore should fire.
     db_session.flush()
 
@@ -421,7 +423,7 @@ def test_auto_trigger_legacy_and_family_switches_are_independent(
             _port_change_event("scanner-uuid-ds-1", [6379, 445], "redis-prod-1"),
         )
 
-    # One run — the Redis one. SMB rule is gated by auto_audit_anon (off).
+    # One run — the Redis one. SMB rule is gated by auto_audit_anon (False).
     assert n == 1
     types = {s.scan_type for s in db_session.query(Scan).all()}
     assert "exposed_datastore_audit" in types

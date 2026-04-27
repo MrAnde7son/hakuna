@@ -167,6 +167,7 @@ async def setup_easm(
 async def scan_domain_endpoint(
     domain: str = Query(..., min_length=3),
     scan_type: str = Query("full", regex="^(full|discovery|enrichment)$"),
+    suppress_auto_followup: bool = Query(False),
     db: Session = Depends(get_db),
     user: User = Depends(require_auth),
 ):
@@ -174,7 +175,7 @@ async def scan_domain_endpoint(
     org = _get_org(db, user)
     _require_easm_org_id(db, org)
 
-    result = await scan_domain(db, org, domain, scan_type)
+    result = await scan_domain(db, org, domain, scan_type, suppress_auto_followup=suppress_auto_followup)
     if result is None:
         raise HTTPException(502, "Failed to scan domain — hakuna-scanner may be unavailable")
     return result
@@ -206,7 +207,11 @@ async def rescan_by_scan_id(
     if not domain:
         raise HTTPException(400, "No domain associated with this scan")
 
-    result = await scan_domain(db, org, domain, scan_type)
+    # Preserve the original opt-out: if the user unchecked "Run automated
+    # follow-up scans" on the first run, a rescan keeps that posture instead
+    # of silently re-enabling it.
+    suppress = bool((scan.raw_metadata or {}).get("suppress_auto_followup"))
+    result = await scan_domain(db, org, domain, scan_type, suppress_auto_followup=suppress)
     if result is None:
         raise HTTPException(502, "Failed to trigger scan — hakuna-scanner may be unavailable")
     return result

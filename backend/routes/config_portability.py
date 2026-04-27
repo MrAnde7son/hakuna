@@ -333,9 +333,36 @@ async def import_auto_tag_rules(
 # 3. Report Templates CRUD + export/import
 # ─────────────────────────────────────────────
 
+def _effective_org_id(user: User, x_org_context: Optional[str]) -> int:
+    """The org a write should land in: the X-Org-Context header if set,
+    otherwise the user's own org."""
+    return int(x_org_context) if x_org_context else user.org_id
+
+
+def _accessible_template_query(db: Session, user: User, x_org_context: Optional[str]):
+    """Read-side scope: the user's own org plus any legacy rows with
+    org_id IS NULL (which are global pre-multitenancy seeds). Superadmins
+    see everything unless they pin via X-Org-Context."""
+    q = db.query(ReportTemplate)
+    if user.role == "superadmin" and not x_org_context:
+        return q
+    org_id = _effective_org_id(user, x_org_context)
+    return q.filter(
+        (ReportTemplate.org_id == org_id) | (ReportTemplate.org_id.is_(None))
+    )
+
+
 @router.get("/report-templates")
-def list_report_templates(db: Session = Depends(get_db)):
-    templates = db.query(ReportTemplate).order_by(ReportTemplate.created_at.desc()).all()
+def list_report_templates(
+    db: Session = Depends(get_db),
+    user: User = Depends(require_auth),
+    x_org_context: Optional[str] = Header(None, alias="X-Org-Context"),
+):
+    templates = (
+        _accessible_template_query(db, user, x_org_context)
+        .order_by(ReportTemplate.created_at.desc())
+        .all()
+    )
     return [
         {
             "id": t.id, "name": t.name, "description": t.description,
@@ -348,30 +375,67 @@ def list_report_templates(db: Session = Depends(get_db)):
 
 
 @router.post("/report-templates")
-def create_report_template(body: dict, db: Session = Depends(get_db)):
+def create_report_template(
+    body: dict,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_auth),
+    x_org_context: Optional[str] = Header(None, alias="X-Org-Context"),
+):
     name = body.get("name")
     if not name:
         raise HTTPException(400, "name is required")
-    existing = db.query(ReportTemplate).filter(ReportTemplate.name == name).first()
+    org_id = _effective_org_id(user, x_org_context)
+    # The DB-level unique index on (COALESCE(org_id, 0), name) is the source of
+    # truth — this pre-check is a UX nicety so we return 409 with a readable
+    # message instead of a generic IntegrityError.
+    existing = (
+        db.query(ReportTemplate)
+        .filter(
+            ReportTemplate.name == name,
+            (ReportTemplate.org_id == org_id) | (ReportTemplate.org_id.is_(None)),
+        )
+        .first()
+    )
     if existing:
         raise HTTPException(409, f"Report template '{name}' already exists")
     t = ReportTemplate(
+        org_id=org_id,
         name=name,
         description=body.get("description"),
         config=body.get("config", {}),
         is_default=body.get("is_default", False),
     )
     db.add(t)
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        # Concurrent seeders raced past the pre-check and one lost on the
+        # unique index. Surface a clean 409 instead of an IntegrityError.
+        db.rollback()
+        raise HTTPException(409, f"Report template '{name}' already exists")
     db.refresh(t)
     return {"id": t.id, "name": t.name}
 
 
-@router.get("/report-templates/{template_id}")
-def get_report_template(template_id: int, db: Session = Depends(get_db)):
-    t = db.query(ReportTemplate).filter(ReportTemplate.id == template_id).first()
+def _load_owned_template(db, user, x_org_context, template_id: int) -> ReportTemplate:
+    t = (
+        _accessible_template_query(db, user, x_org_context)
+        .filter(ReportTemplate.id == template_id)
+        .first()
+    )
     if not t:
         raise HTTPException(404, "Template not found")
+    return t
+
+
+@router.get("/report-templates/{template_id}")
+def get_report_template(
+    template_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_auth),
+    x_org_context: Optional[str] = Header(None, alias="X-Org-Context"),
+):
+    t = _load_owned_template(db, user, x_org_context, template_id)
     return {
         "id": t.id, "name": t.name, "description": t.description,
         "config": t.config, "is_default": t.is_default,
@@ -381,23 +445,34 @@ def get_report_template(template_id: int, db: Session = Depends(get_db)):
 
 
 @router.patch("/report-templates/{template_id}")
-def update_report_template(template_id: int, body: dict, db: Session = Depends(get_db)):
-    t = db.query(ReportTemplate).filter(ReportTemplate.id == template_id).first()
-    if not t:
-        raise HTTPException(404, "Template not found")
+def update_report_template(
+    template_id: int,
+    body: dict,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_auth),
+    x_org_context: Optional[str] = Header(None, alias="X-Org-Context"),
+):
+    t = _load_owned_template(db, user, x_org_context, template_id)
     for field in ("name", "description", "config", "is_default"):
         if field in body:
             setattr(t, field, body[field])
     t.updated_at = datetime.utcnow()
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise HTTPException(409, "Report template name already exists in this org")
     return {"status": "ok"}
 
 
 @router.delete("/report-templates/{template_id}")
-def delete_report_template(template_id: int, db: Session = Depends(get_db)):
-    t = db.query(ReportTemplate).filter(ReportTemplate.id == template_id).first()
-    if not t:
-        raise HTTPException(404, "Template not found")
+def delete_report_template(
+    template_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_auth),
+    x_org_context: Optional[str] = Header(None, alias="X-Org-Context"),
+):
+    t = _load_owned_template(db, user, x_org_context, template_id)
     db.delete(t)
     db.commit()
     return {"status": "ok"}
@@ -407,15 +482,19 @@ def delete_report_template(template_id: int, db: Session = Depends(get_db)):
 def export_report_template(
     template_id: int = Query(None),
     db: Session = Depends(get_db),
+    user: User = Depends(require_auth),
+    x_org_context: Optional[str] = Header(None, alias="X-Org-Context"),
 ):
     """Export a single template by ID, or all templates if no ID given."""
     if template_id:
-        t = db.query(ReportTemplate).filter(ReportTemplate.id == template_id).first()
-        if not t:
-            raise HTTPException(404, "Template not found")
+        t = _load_owned_template(db, user, x_org_context, template_id)
         templates = [t]
     else:
-        templates = db.query(ReportTemplate).all()
+        templates = (
+            _accessible_template_query(db, user, x_org_context)
+            .order_by(ReportTemplate.created_at.desc())
+            .all()
+        )
 
     data = [
         {
@@ -434,10 +513,13 @@ async def import_report_template(
     file: UploadFile = File(...),
     conflict: str = Query("skip", regex="^(skip|overwrite)$"),
     db: Session = Depends(get_db),
+    user: User = Depends(require_auth),
+    x_org_context: Optional[str] = Header(None, alias="X-Org-Context"),
 ):
     payload = await _read_json_upload(file)
     data = _validate_envelope(payload, "report_template")
     templates = data.get("templates", [])
+    org_id = _effective_org_id(user, x_org_context)
 
     created = 0
     skipped = 0
@@ -446,7 +528,14 @@ async def import_report_template(
         if not name:
             skipped += 1
             continue
-        existing = db.query(ReportTemplate).filter(ReportTemplate.name == name).first()
+        existing = (
+            db.query(ReportTemplate)
+            .filter(
+                ReportTemplate.name == name,
+                (ReportTemplate.org_id == org_id) | (ReportTemplate.org_id.is_(None)),
+            )
+            .first()
+        )
         if existing:
             if conflict == "overwrite":
                 existing.description = spec.get("description")
@@ -458,6 +547,7 @@ async def import_report_template(
                 skipped += 1
         else:
             t = ReportTemplate(
+                org_id=org_id,
                 name=name,
                 description=spec.get("description"),
                 config=spec.get("config", {}),

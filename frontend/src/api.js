@@ -108,7 +108,9 @@ async function _doRequest(path, opts = {}) {
 
       if (!res.ok) {
         const err = await res.json().catch(() => ({ detail: res.statusText }))
-        throw new Error(formatErrorDetail(err.detail) || 'Request failed')
+        const error = new Error(formatErrorDetail(err.detail) || 'Request failed')
+        error.status = res.status
+        throw error
       }
       return res.json()
     } catch (err) {
@@ -1096,7 +1098,7 @@ export const rebuildAggregatedSolutions = (scanId) => request(`/aggregated-solut
 
 // EASM (External Attack Surface)
 export const getEasmStatus = () => request('/easm/status')
-export const scanEasmDomain = (domain, scanType = 'full') => request(`/easm/scan-domain?domain=${encodeURIComponent(domain)}&scan_type=${scanType}`, { method: 'POST' })
+export const scanEasmDomain = (domain, scanType = 'full', suppressAutoFollowup = false) => request(`/easm/scan-domain?domain=${encodeURIComponent(domain)}&scan_type=${scanType}&suppress_auto_followup=${suppressAutoFollowup ? 'true' : 'false'}`, { method: 'POST' })
 export const rescanEasmScan = (scanId, scanType = 'full') => request(`/easm/rescan/${scanId}?scan_type=${scanType}`, { method: 'POST' })
 export const refreshEasmScan = (scanId) => request(`/easm/refresh/${scanId}`, { method: 'POST' })
 export const triggerEasmScan = (scanType = 'full') => request(`/easm/scan?scan_type=${scanType}`, { method: 'POST' })
@@ -1133,6 +1135,18 @@ export const deleteCopilotConversation = (id) => request(`/copilot/conversations
 export const getCopilotSuggestedPrompts = () => request('/copilot/suggested-prompts')
 export const getCopilotAutonomy = () => request('/copilot/autonomy')
 export const setCopilotAutonomy = (level) => request('/copilot/autonomy', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level }) })
+
+export function uploadCopilotAttachment(conversationId, file) {
+  const fd = new FormData()
+  fd.append('file', file)
+  return request(`/copilot/conversations/${conversationId}/attachments`, {
+    method: 'POST',
+    body: fd,
+  })
+}
+
+export const deleteCopilotAttachment = (conversationId, attachmentId) =>
+  request(`/copilot/conversations/${conversationId}/attachments/${attachmentId}`, { method: 'DELETE' })
 
 // ── VM Scanner API (via main backend) ─────────────────────
 export const startVmScan = (data) => request('/vm/scan', {
@@ -1173,6 +1187,12 @@ export const updateAuditScan = (scanId, patch) => request(`/audits/scans/${scanI
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify(patch),
 })
+
+// ── OT Posture (Report Builder source) ──────────────────
+// Backend still exposes /api/ot-posture/consent for grant/revoke; the UI
+// for managing consent will live on the asset detail page. The Report
+// Builder OT Posture template just reads /overview via this fetcher.
+export const getOtPostureOverview = () => request('/ot-posture/overview')
 
 // ── Auth Profiles (authenticated VM scans) ────────────────
 export const listAuthProfiles = () => request('/auth-profiles')

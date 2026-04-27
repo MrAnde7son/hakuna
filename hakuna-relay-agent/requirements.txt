@@ -9,3 +9,7 @@ paramiko>=3.4,<4.0
 # Docker, Kubernetes API, and etcd. Redis + MongoDB need their own clients.
 redis>=5.0,<6.0
 pymongo>=4.6,<5.0
+# Used at startup to enumerate the relay's directly-connected IPv4 networks
+# so the backend can gate LAN-local audits (NetBIOS/LLMNR/mDNS) on
+# relay-and-asset same-subnet. See agent/local_interfaces.py.
+psutil>=5.9,<7.0

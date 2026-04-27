@@ -168,6 +168,13 @@ async def test_login(db: Session, org_id: int, auth_profile_id: str) -> dict:
         bundle = await get_or_create_session(db, org_id, auth_profile_id)
     except SessionBrokerError as e:
         return {"success": False, "error": str(e)}
+    except credential_vault.CredentialDecryptError:
+        logger.exception("test_login failed: credential decrypt error")
+        return {
+            "success": False,
+            "error": "credential cannot be decrypted — the INTEGRATION_SECRET_KEY has changed since this credential was saved. Re-enter the credential to fix.",
+            "code": "credential_decrypt_failed",
+        }
     except Exception as e:
         logger.exception("test_login failed")
         return {"success": False, "error": f"unexpected: {type(e).__name__}"}
