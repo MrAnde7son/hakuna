@@ -39,6 +39,50 @@ VM_SCAN_STALE_THRESHOLD_SECONDS = 3 * 3600
 VM_SCAN_PENDING_ORPHAN_SECONDS = 20 * 60
 
 
+def _emit_vm_scan_failed_notification(
+    db: Session,
+    scan: Scan,
+    error_msg: str,
+    phase: str,
+) -> None:
+    """Fire-and-forget scan_failed notification for a VM scan.
+
+    Mirrors ``services.easm._emit_easm_scan_failed_notification`` so VM scan
+    failures surface in the user-facing notifications panel — without this,
+    timeouts and broker-loss orphans only flipped ``raw_metadata.status`` to
+    "failed" and the user had no signal beyond the badge in the scan list.
+
+    ``phase`` labels which detector tripped: "stale" / "orphan" (refresh path)
+    or "reaper_stale" / "reaper_orphan" (background sweeper).
+    """
+    try:
+        from services.notifications import create_notification
+        meta = scan.raw_metadata or {}
+        targets = meta.get("targets") or []
+        target_label = targets[0] if len(targets) == 1 else (
+            f"{len(targets)} targets" if targets else f"scan #{scan.id}"
+        )
+        scan_label = scan.scan_name or f"VM Scan — {target_label}"
+        create_notification(
+            db, scan.org_id, "scan_failed",
+            f"VM scan '{scan_label}' failed",
+            body=(error_msg or "")[:200],
+            link="/settings?tab=upload",
+            entity_type="scan", entity_id=scan.id,
+            metadata={
+                "scan_name": scan_label,
+                "targets": targets[:10],
+                "source_type": "vm_scanner",
+                "phase": phase,
+                "error": (error_msg or "")[:500],
+            },
+        )
+    except Exception:
+        logger.exception(
+            f"Failed to emit VM scan_failed notification for scan_id={scan.id} (non-fatal)"
+        )
+
+
 def _has_observed_progress(job_statuses: dict) -> bool:
     """True if any job has ever transitioned out of PENDING.
 
@@ -556,6 +600,7 @@ async def refresh_vm_scan(db: Session, scan_id: int) -> Optional[dict]:
             rolled_meta = dict(scan.raw_metadata or {})
             stale_meta = {**rolled_meta, "status": "failed", "error": "Scan timed out — job results may have expired"}
             scan.raw_metadata = stale_meta
+            _emit_vm_scan_failed_notification(db, scan, stale_meta["error"], "stale")
             db.commit()
             return stale_meta
     except Exception:
@@ -707,6 +752,7 @@ async def refresh_vm_scan(db: Session, scan_id: int) -> Optional[dict]:
                 "Rescan to dispatch fresh jobs."
             )
             scan.raw_metadata = orphan_meta
+            _emit_vm_scan_failed_notification(db, scan, orphan_meta["error"], "orphan")
             db.commit()
             return orphan_meta
 
@@ -804,11 +850,13 @@ def reap_stale_vm_scans(db: Session | None = None) -> dict:
                 _revoke_vm_jobs_sync(meta.get("job_ids") or [])
                 _rollback_failed_run(db, scan)
                 rolled = dict(scan.raw_metadata or {})
+                err = "Scan timed out — job results may have expired (reaped by background job)"
                 scan.raw_metadata = {
                     **rolled,
                     "status": "failed",
-                    "error": "Scan timed out — job results may have expired (reaped by background job)",
+                    "error": err,
                 }
+                _emit_vm_scan_failed_notification(db, scan, err, "reaper_stale")
                 reaped += 1
                 continue
 
@@ -830,14 +878,16 @@ def reap_stale_vm_scans(db: Session | None = None) -> dict:
                 _revoke_vm_jobs_sync(meta.get("job_ids") or [])
                 _rollback_failed_run(db, scan)
                 rolled = dict(scan.raw_metadata or {})
+                err = (
+                    "Orphaned — scanner broker lost the job queue (likely restart). "
+                    "Rescan to dispatch fresh jobs."
+                )
                 scan.raw_metadata = {
                     **rolled,
                     "status": "failed",
-                    "error": (
-                        "Orphaned — scanner broker lost the job queue (likely restart). "
-                        "Rescan to dispatch fresh jobs."
-                    ),
+                    "error": err,
                 }
+                _emit_vm_scan_failed_notification(db, scan, err, "reaper_orphan")
                 reaped += 1
                 continue
 

@@ -1930,6 +1930,9 @@ def nlp_report_query(
             "finding_filters": ff,
             "sort": parsed.get("sort"),
         },
+        "widget_hints": parsed.get("widget_hints", []),
+        "metric_intents": parsed.get("metric_intents", []),
+        "inventory_intents": parsed.get("inventory_intents", []),
         "summary": {
             "total_findings": total_findings,
             "total_assets": total_assets,

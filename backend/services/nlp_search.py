@@ -115,6 +115,73 @@ _SOURCE_CTX = r"(?:found|discovered?|seen|reported?)\s+by|source(?:\s+is)?|scann
 # Context words that introduce a source exclusion (negative)
 _EXCLUDE_SOURCE_CTX = r"not\s+(?:scanned?\s+by|found\s+by|discovered?\s+by|from|via)"
 
+# ── Widget / visualization intent ─────────────────────────────────────────────
+# These hints tell the report builder *which kind of widget* the user wants,
+# independent of the data filters. Multiple may apply (e.g. "funnel chart of
+# kev findings"). Keys are stripped from residual text so they don't end up
+# as a free-text search.
+
+WIDGET_INTENT_PATTERNS = [
+    (r"\bfunnels?\b|\bprioritization\s*funnel\b", "funnel"),
+    (r"\bheat\s*maps?\b|\bmatrix\b", "heatmap"),
+    (r"\btree\s*maps?\b", "treemap"),
+    (r"\bradar\s*charts?\b|\bspider\s*charts?\b", "radar"),
+    (r"\bgauges?\b|\bdial\b", "gauge"),
+    (r"\brisk\s*grades?\b|\b(?:org(?:anization)?\s*)?grade\b|\bletter\s*grade\b|\ba.?[-]f\s*grade\b", "risk_grade"),
+    (r"\btrends?\b|\bover\s*time\b|\btimeline\b|\bhistorical\b", "trend"),
+    (r"\bbreakdowns?\b|\bdistributions?\b|\bsplit\s*by\b", "breakdown"),
+    (r"\btables?\b|\blist\b", "table"),
+    (r"\bpie\s*charts?\b|\bdonuts?\b", "pie"),
+    (r"\bbar\s*charts?\b", "bar"),
+]
+
+# ── Metric / topic intent ─────────────────────────────────────────────────────
+# Topics that map directly to specific presets in the widget catalogue.
+
+METRIC_INTENT_PATTERNS = [
+    (r"\bmttr\b|\bmean\s*time\s*to\s*(?:remediate|repair|resolve|fix)\b|\btime\s*to\s*remediate\b", "mttr"),
+    (r"\bremediation\s*velocity\b|\bvelocity\b|\bburn\s*down\b|\bburn[-\s]?up\b", "velocity"),
+    (r"\b(?:assessment|scan)\s*coverage\b|\bcoverage\s*(?:percent|pct|rate)\b|\bcoverage\b", "coverage"),
+    (r"\bcredential(?:l?ed)?\s*(?:assets?|scans?)\b|\bauthenticated\s*scans?\b", "credentialed"),
+    (r"\bzombie\s*(?:vulns?|findings?|vulnerabilit(?:y|ies))?\b", "zombie"),
+    (r"\b(?:finding|vulnerabilit(?:y|ies)|vuln)\s*age\b|\baging\b|\bage\s*distribution\b", "age"),
+    (r"\bby\s*owner\b|\bper\s*owner\b|\bowners?\s*breakdown\b", "by_owner"),
+    (r"\bby\s*business\s*unit\b|\bby\s*bu\b|\bby\s*team\b|\bby\s*department\b|\bby\s*tag\b", "by_business_unit"),
+    (r"\btop\s*(?:risky\s*)?assets?\b|\briskiest\s*assets?\b|\bmost\s*at[-\s]?risk\s*assets?\b", "top_assets"),
+    (r"\btop\s*(?:remediation\s*)?actions?\b|\baggregated\s*solutions?\b|\bsolutions?\s*by\s*owner\b", "remediation_actions"),
+    (r"\bquick\s*win\s*actions?\b", "quick_win_actions"),
+    (r"\bremediation\s*queue\b", "remediation_queue"),
+]
+
+# ── Inventory / asset-attribute intent ────────────────────────────────────────
+# These map to inv_* presets. They imply an inventory drill-down rather than a
+# findings query.
+
+INVENTORY_INTENT_PATTERNS = [
+    (r"\bdomain\s*admins?\b", "domain_admins"),
+    (r"\blocal\s*admins?\b", "local_admins"),
+    (r"\bkerberoast(?:able|ing)?\b", "kerberoastable"),
+    (r"\bpassword\s*never\s*expires?\b|\bpw\s*never\s*expires?\b", "pw_never_expires"),
+    (r"\bnever\s*changed\s*passwords?\b|\bstale\s*passwords?\b", "pw_never_changed"),
+    (r"\bweak\s*password\s*polic(?:y|ies)\b", "weak_pw_policies"),
+    (r"\bdomain\s*controllers?\b|\bdcs?\b", "domain_controllers"),
+    (r"\bprivileged\s*(?:users?|accounts?|groups?)\b", "privileged"),
+    (r"\bexpired\s*certificates?\b|\bexpired\s*certs?\b", "expired_certs"),
+    (r"\bexpiring\s*certificates?\b|\bexpiring\s*certs?\b|\bcerts?\s*expiring\s*soon\b", "expiring_certs"),
+    (r"\bself.?signed\s*certs?\b|\bself.?signed\s*certificates?\b", "self_signed_certs"),
+    (r"\bcertificates?\b|\bcerts?\b|\bssl\b|\btls\b", "certificates"),
+    (r"\bwriteable\s*shares?\b|\bwritable\s*shares?\b", "writeable_shares"),
+    (r"\bnetwork\s*shares?\b|\bsmb\s*shares?\b", "shares"),
+    (r"\blateral\s*movement\b|\blateral\s*paths?\b", "lateral_paths"),
+    (r"\bantivirus\b|\bav\s*coverage\b|\bendpoint\s*protection\b|\bedr\b", "av_coverage"),
+    (r"\bmissing\s*patch(?:es)?\b|\bunpatched\b", "missing_patches"),
+    (r"\bsoftware\s*vendors?\b|\binstalled\s*software\b|\bsoftware\s*inventory\b", "software_inventory"),
+    (r"\bos\s*(?:family|families|distribution|breakdown)\b|\boperating\s*system(?:s)?\s*(?:family|families|distribution|breakdown)\b", "os_distribution"),
+    (r"\bdevice\s*types?\b", "device_types"),
+    (r"\b(?:ai|ml|llm|gen.?ai)\s*(?:tools?|risks?|attack\s*surface|findings?|vulns?|vulnerabilit(?:y|ies))?\b|"
+     r"\bartificial\s*intelligence\b|\bmachine\s*learning\b|\bshadow\s*ai\b", "ai_ml"),
+]
+
 # ── Sort / ordering ────────────────────────────────────────────────────────────
 
 SORT_PATTERNS = [
@@ -503,6 +570,62 @@ def parse_nlp_query(query: str) -> dict:
         asset_filters["search"] = ip_val
         chip("IP", ip_val, "#06b6d4")
 
+    # ── Widget / visualization intent ─────────────────────────────────────────
+    widget_hints: list[str] = []
+    intent_strip_patterns: list[str] = []
+    for pattern, hint in WIDGET_INTENT_PATTERNS:
+        if re.search(pattern, ql, re.IGNORECASE):
+            if hint not in widget_hints:
+                widget_hints.append(hint)
+            intent_strip_patterns.append(pattern)
+
+    # ── Metric topic intent ───────────────────────────────────────────────────
+    metric_intents: list[str] = []
+    for pattern, intent in METRIC_INTENT_PATTERNS:
+        if re.search(pattern, ql, re.IGNORECASE):
+            if intent not in metric_intents:
+                metric_intents.append(intent)
+            intent_strip_patterns.append(pattern)
+    if metric_intents:
+        # Show one chip per topic — keeps the "Interpreted as" panel honest
+        topic_label = {
+            "mttr": "MTTR", "velocity": "Velocity", "coverage": "Coverage",
+            "credentialed": "Credentialed", "zombie": "Zombie Vulns",
+            "age": "Finding Age", "by_owner": "By Owner",
+            "by_business_unit": "By Business Unit", "top_assets": "Top Assets",
+            "remediation_actions": "Top Actions", "quick_win_actions": "Quick Win Actions",
+            "remediation_queue": "Remediation Queue",
+        }
+        for m in metric_intents:
+            chip("Topic", topic_label.get(m, m), "#0ea5e9")
+
+    # ── Inventory topic intent ────────────────────────────────────────────────
+    inventory_intents: list[str] = []
+    for pattern, intent in INVENTORY_INTENT_PATTERNS:
+        if re.search(pattern, ql, re.IGNORECASE):
+            if intent not in inventory_intents:
+                inventory_intents.append(intent)
+            intent_strip_patterns.append(pattern)
+    if inventory_intents:
+        inv_label = {
+            "domain_admins": "Domain Admins", "local_admins": "Local Admins",
+            "kerberoastable": "Kerberoastable", "pw_never_expires": "Password Never Expires",
+            "pw_never_changed": "Password Never Changed", "weak_pw_policies": "Weak PW Policies",
+            "domain_controllers": "Domain Controllers", "privileged": "Privileged",
+            "expired_certs": "Expired Certs", "expiring_certs": "Expiring Certs",
+            "self_signed_certs": "Self-Signed Certs", "certificates": "Certificates",
+            "writeable_shares": "Writeable Shares", "shares": "Network Shares",
+            "lateral_paths": "Lateral Paths", "av_coverage": "AV Coverage",
+            "missing_patches": "Missing Patches", "software_inventory": "Software Inventory",
+            "os_distribution": "OS Distribution", "device_types": "Device Types",
+            "ai_ml": "AI / ML",
+        }
+        for i in inventory_intents:
+            chip("Inventory", inv_label.get(i, i), "#14b8a6")
+        # AI/ML implies a plugin_family filter on findings as well as inventory
+        if "ai_ml" in inventory_intents and "plugin_family" not in finding_filters:
+            finding_filters["plugin_family"] = "Artificial Intelligence"
+
     # ── Sort preference ───────────────────────────────────────────────────────
     sort_pref = _first_match(ql, SORT_PATTERNS)
     sort_result = None
@@ -541,6 +664,9 @@ def parse_nlp_query(query: str) -> dict:
         r"source(?:\s+is)?|scanned?\s+by|found\s+by|discovered?\s+by)\b",
         " ", residual, flags=re.IGNORECASE
     )
+    # Strip widget/metric/inventory intent tokens so they don't leak into text search
+    for ip in intent_strip_patterns:
+        residual = re.sub(ip, " ", residual, flags=re.IGNORECASE)
     # Remove standalone numbers (args to parsed patterns) but keep numbers
     # attached to words via hyphens (e.g. "MS17-010")
     residual = re.sub(r"(?<![\w-])#?\d+(?:\.\d+)?%?(?![\w-])", " ", residual)
@@ -558,5 +684,8 @@ def parse_nlp_query(query: str) -> dict:
         "finding_filters": finding_filters,
         "sort": sort_result,
         "explanation": chips,
+        "widget_hints": widget_hints,
+        "metric_intents": metric_intents,
+        "inventory_intents": inventory_intents,
         "original_query": q,
     }

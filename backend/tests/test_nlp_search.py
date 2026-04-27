@@ -385,3 +385,148 @@ def test_gibberish_becomes_text_search():
 def test_min_critical_count():
     r = parse_nlp_query("assets with more than 5 critical findings")
     assert r["asset_filters"]["min_critical"] == 5
+
+
+# ── Widget intents ───────────────────────────────────────────────────────────
+
+def test_funnel_intent():
+    r = parse_nlp_query("funnel of critical vulnerabilities")
+    assert "funnel" in r["widget_hints"]
+    # "funnel" must NOT leak into text search
+    assert r["finding_filters"].get("search") in (None, "")
+    assert r["finding_filters"].get("severity") == 4
+
+def test_heatmap_intent():
+    r = parse_nlp_query("heatmap of severities")
+    assert "heatmap" in r["widget_hints"]
+    assert "heatmap" not in (r["finding_filters"].get("search") or "")
+
+def test_treemap_intent():
+    r = parse_nlp_query("treemap of vulnerabilities")
+    assert "treemap" in r["widget_hints"]
+
+def test_radar_intent():
+    r = parse_nlp_query("radar chart of risk dimensions")
+    assert "radar" in r["widget_hints"]
+
+def test_gauge_intent():
+    r = parse_nlp_query("gauge for SLA compliance")
+    assert "gauge" in r["widget_hints"]
+
+def test_risk_grade_intent():
+    r = parse_nlp_query("show me my organization risk grade")
+    assert "risk_grade" in r["widget_hints"]
+
+def test_trend_intent():
+    r = parse_nlp_query("severity trend over time")
+    assert "trend" in r["widget_hints"]
+
+
+# ── Metric intents ───────────────────────────────────────────────────────────
+
+def test_mttr_intent():
+    r = parse_nlp_query("MTTR by severity")
+    assert "mttr" in r["metric_intents"]
+    assert "search" not in r["finding_filters"]
+
+def test_mttr_phrase():
+    r = parse_nlp_query("mean time to remediate trend")
+    assert "mttr" in r["metric_intents"]
+
+def test_velocity_intent():
+    r = parse_nlp_query("remediation velocity over the past quarter")
+    assert "velocity" in r["metric_intents"]
+
+def test_coverage_intent():
+    r = parse_nlp_query("assessment coverage")
+    assert "coverage" in r["metric_intents"]
+
+def test_credentialed_intent():
+    r = parse_nlp_query("credentialed assets")
+    assert "credentialed" in r["metric_intents"]
+
+def test_zombie_intent():
+    r = parse_nlp_query("zombie vulnerabilities")
+    assert "zombie" in r["metric_intents"]
+
+def test_age_intent():
+    r = parse_nlp_query("finding age distribution")
+    assert "age" in r["metric_intents"]
+
+def test_by_owner_intent():
+    r = parse_nlp_query("remediation actions by owner")
+    assert "by_owner" in r["metric_intents"]
+
+def test_by_business_unit_intent():
+    r = parse_nlp_query("risk by business unit")
+    assert "by_business_unit" in r["metric_intents"]
+
+def test_top_assets_intent():
+    r = parse_nlp_query("top risky assets")
+    assert "top_assets" in r["metric_intents"]
+
+def test_remediation_actions_intent():
+    r = parse_nlp_query("top remediation actions")
+    assert "remediation_actions" in r["metric_intents"]
+
+
+# ── Inventory intents ────────────────────────────────────────────────────────
+
+def test_domain_admins_intent():
+    r = parse_nlp_query("show domain admins")
+    assert "domain_admins" in r["inventory_intents"]
+    assert "search" not in r["asset_filters"]
+
+def test_kerberoastable_intent():
+    r = parse_nlp_query("kerberoastable accounts")
+    assert "kerberoastable" in r["inventory_intents"]
+
+def test_expired_certs_intent():
+    r = parse_nlp_query("expired certificates")
+    assert "expired_certs" in r["inventory_intents"]
+
+def test_writeable_shares_intent():
+    r = parse_nlp_query("writeable shares")
+    assert "writeable_shares" in r["inventory_intents"]
+
+def test_lateral_movement_intent():
+    r = parse_nlp_query("lateral movement paths")
+    assert "lateral_paths" in r["inventory_intents"]
+
+def test_os_distribution_intent():
+    r = parse_nlp_query("OS family distribution")
+    assert "os_distribution" in r["inventory_intents"]
+
+def test_ai_ml_intent_sets_plugin_family():
+    r = parse_nlp_query("AI tools and ML risks")
+    assert "ai_ml" in r["inventory_intents"]
+    # AI/ML implies plugin_family = Artificial Intelligence on findings
+    assert r["finding_filters"].get("plugin_family") == "Artificial Intelligence"
+
+
+# ── Intent-vs-text-search isolation ──────────────────────────────────────────
+
+def test_intent_words_do_not_pollute_search():
+    """Widget/metric/inventory keywords must not show up as text search."""
+    queries = [
+        "funnel critical",
+        "heatmap of findings",
+        "MTTR trend",
+        "domain admins",
+        "expired certs",
+    ]
+    for q in queries:
+        r = parse_nlp_query(q)
+        search = r["finding_filters"].get("search")
+        if search:
+            for bad in ["funnel", "heatmap", "mttr", "domain admin", "expired cert"]:
+                assert bad not in search.lower(), f"'{bad}' leaked into search for query: {q}"
+
+
+# ── Result shape ─────────────────────────────────────────────────────────────
+
+def test_widget_hints_field_always_present():
+    r = parse_nlp_query("critical findings")
+    assert isinstance(r["widget_hints"], list)
+    assert isinstance(r["metric_intents"], list)
+    assert isinstance(r["inventory_intents"], list)
