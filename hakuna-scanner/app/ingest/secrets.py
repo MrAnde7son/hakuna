@@ -12,6 +12,8 @@ from datetime import datetime, timezone
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ingest.managed_ai_keys import classify_trufflehog_detector
+
 logger = logging.getLogger(__name__)
 
 # Trufflehog detector types that are high-confidence
@@ -75,9 +77,30 @@ async def store_trufflehog_results(
         if detector in CRITICAL_DETECTORS and verified:
             severity = 4
 
+        # Phase 3.5 slice 4 — managed-AI providers get reclassified with a
+        # provider-specific plugin_id and admin-scope severity bump. This
+        # runs *before* the generic trufflehog finding shape so the plugin
+        # family/title reflect the AI-governance angle rather than a
+        # generic "OpenAI secret".
+        managed_ai = classify_trufflehog_detector(detector, raw)
+        if managed_ai is not None:
+            ai_provider, ai_severity, ai_plugin_id = managed_ai
+            # Admin-scope keys are critical regardless of trufflehog's
+            # verification status — the scope is the threat, not the
+            # current liveness.
+            if ai_severity > severity:
+                severity = ai_severity
+        else:
+            ai_provider = None
+            ai_plugin_id = None
+
         finding_title = f"Leaked {detector} secret in JS bundle"
         if verified:
             finding_title += " (verified)"
+        if ai_provider:
+            finding_title = f"Leaked managed-AI key ({ai_provider}) in JS bundle"
+            if verified:
+                finding_title += " (verified)"
 
         description = (
             f"Trufflehog detected a {detector} secret in a JavaScript bundle "
@@ -98,6 +121,12 @@ async def store_trufflehog_results(
         )
 
         finding_id = uuid.uuid4()
+        plugin_id = (
+            f"{ai_plugin_id}-{dedup_key}"
+            if ai_plugin_id
+            else f"trufflehog-{detector.lower()}-{dedup_key}"
+        )
+        plugin_family = "AI Governance" if ai_provider else "Secret Detection"
         await db.execute(
             text("""
                 INSERT INTO findings (
@@ -108,7 +137,7 @@ async def store_trufflehog_results(
                 ) VALUES (
                     :id, :org_id, :asset_id, 'easm', :plugin_id, :plugin_name,
                     :severity, :severity_label, :description, :solution,
-                    'Secret Detection', :plugin_output,
+                    :plugin_family, :plugin_output,
                     :now, :now, 1, 'open'
                 )
                 ON CONFLICT DO NOTHING
@@ -117,12 +146,13 @@ async def store_trufflehog_results(
                 "id": finding_id,
                 "org_id": org_id,
                 "asset_id": asset_id,
-                "plugin_id": f"trufflehog-{detector.lower()}-{dedup_key}",
+                "plugin_id": plugin_id,
                 "plugin_name": finding_title,
                 "severity": severity,
                 "severity_label": "Critical" if severity == 4 else "High",
                 "description": description,
                 "solution": solution,
+                "plugin_family": plugin_family,
                 "plugin_output": f"Detector: {detector}, Verified: {verified}, Redacted: {redacted}",
                 "now": now,
             },

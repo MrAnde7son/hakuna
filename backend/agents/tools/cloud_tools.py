@@ -383,8 +383,6 @@ _AZURE_CREDENTIAL_CONNECTORS = [
     "azure_ad_identities", "azure_role_assignments", "azure_role_definitions",
     "azure_storage_accounts", "azure_virtual_machines", "azure_function_apps",
     "azure_defender_findings",
-    # Phase 3.5 — managed AI (Azure OpenAI + Cognitive Services). Same SP /
-    # client_credentials shape as the rest of Azure.
     "azure_cognitive_services_accounts", "azure_openai_deployments",
 ]
 
@@ -392,13 +390,9 @@ _GCP_CREDENTIAL_CONNECTORS = [
     "gcp_iam_service_accounts", "gcp_project_iam_bindings",
     "gcp_storage_buckets", "gcp_compute_instances", "gcp_cloud_functions",
     "gcp_scc_findings",
+    "gcp_vertex_endpoints", "gcp_vertex_models", "gcp_vertex_endpoint_iam",
 ]
 
-# `managed_ai_saas` is multi-vendor — connector ids prefix by vendor
-# (`openai_admin_*`, `anthropic_admin_*`) rather than by audit name. The
-# kickoff UI uses this list to filter which saved credentials are valid;
-# it's enumerated rather than auto-discovered so the picker is stable when
-# new connectors get added in this family later.
 _MANAGED_AI_SAAS_CREDENTIAL_CONNECTORS = [
     "openai_admin_projects", "openai_admin_api_keys",
     "openai_admin_users", "openai_admin_audit_logs",
@@ -452,6 +446,15 @@ def _cloud_missions(provider: str) -> list[MissionTemplate]:
             label="Managed AI (Azure OpenAI + Cognitive Services)",
             description="Local key auth still enabled, public network access without IP allowlist, missing private endpoints, Cognitive Services RBAC granted at subscription scope.",
             prompt_key="azure_audit_managed_ai",
+            suggested_budget=25,
+            cost_hint="medium",
+        ))
+    elif provider == "gcp":
+        base.append(MissionTemplate(
+            key="managed_ai",
+            label="Managed AI (Vertex AI)",
+            description="Vertex endpoints with allUsers / allAuthenticatedUsers IAM bindings, aiplatform.endpoints.predict granted at project scope, default Compute SA used by Vertex inference.",
+            prompt_key="gcp_audit_managed_ai",
             suggested_budget=25,
             cost_hint="medium",
         ))

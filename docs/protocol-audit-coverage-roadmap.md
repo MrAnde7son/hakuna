@@ -1,7 +1,7 @@
 # Protocol Audit Coverage Expansion — Roadmap
 
 **Last updated:** 2026-04-27
-**Status:** Phase 0, 1a, 1b, 2, 3 shipped. Phase 3.5 in progress (managed_ai_saas first). Phase 4–5 planned.
+**Status:** Phase 0, 1a, 1b, 2, 3, 3.5 shipped. Phase 4–5 planned.
 
 ## The big picture
 
@@ -22,7 +22,7 @@ Hakuna started with two anonymous-capable agentic audits (SMB null-session, SNMP
 | 1b | `exposed_datastore` (4 more) | ✅ shipped | 2636 backend + 23 relay | 1 PR |
 | 2 | F: EASM fingerprinter (gap-fill only) | ✅ shipped | 49 (19 backend + 30 scanner) | ~3 days |
 | 3 | B: `exposed_ai_service` (Option D: gap-fill only) | ✅ shipped | 56 (29 backend + 27 relay) | ~1 wk |
-| 3.5 | B': Managed AI governance (saas + cloud + secrets) | 🚧 in progress | — | ~1 wk |
+| 3.5 | B': Managed AI governance (saas + cloud + secrets) | ✅ shipped | 258 (235 backend + 23 scanner) | ~1 wk |
 | 4 | C+D: IPMI + small anon | 📋 planned | — | ~1 wk |
 | 5 | E: OT/ICS (JP-only protocols) | 📋 planned | — | ~2 wk |
 
@@ -263,18 +263,30 @@ Missions: `keys_hygiene` (stale, unused, no-expiry, broad-scope keys), `identity
 |---|---|---|
 | AWS ✅ | `aws_bedrock_invocation_logging`, `aws_bedrock_foundation_models`, `aws_bedrock_guardrails`, `aws_sagemaker_endpoints`, `aws_sagemaker_endpoint_configs` (+ `managed_ai` mission on existing `aws` audit; IAM-walking reuses `aws_iam_policies` / `aws_iam_roles`) | "Bedrock invocation logging disabled", "Bedrock account has no guardrails configured", "IAM policy grants `bedrock:*` at wildcard scope", "SageMaker endpoint without VPC isolation", "SageMaker `InvokeEndpoint` granted to public principal" |
 | Azure ✅ | `azure_cognitive_services_accounts`, `azure_openai_deployments` (+ `managed_ai` mission on existing `azure` audit; RBAC walking reuses `azure_role_assignments`) | "Azure OpenAI key auth allowed (no Entra)", "Cognitive Services account publicly reachable + key auth = critical", "Cognitive Services User / OpenAI User RBAC granted at subscription scope", "AOAI account has no privateEndpointConnections" |
-| GCP | `vertex_list_endpoints`, `vertex_endpoint_iam_audit`, `vertex_workload_identity_check` | "Vertex endpoint allUsers/allAuthenticatedUsers binding", "Vertex `aiplatform.endpoints.predict` granted org-wide" |
+| GCP ✅ | `gcp_vertex_endpoints`, `gcp_vertex_models`, `gcp_vertex_endpoint_iam` (+ `managed_ai` mission on existing `gcp` audit; project IAM walks reuse `gcp_project_iam_bindings`) | "Vertex endpoint `allUsers` / `allAuthenticatedUsers` binding (critical/high)", "`aiplatform.endpoints.predict` granted at project scope", "Default Compute SA used by Vertex inference" |
 
-**2. Secrets-scan extension** — extend [`secrets.py`](../hakuna-scanner/app/ingest/secrets.py) + trufflehog custom rules with managed-AI key patterns:
-- `sk-[A-Za-z0-9]{48,}` — OpenAI
-- `sk-ant-(api|admin)\d+-[A-Za-z0-9_-]{93}` — Anthropic
+**2. Secrets-scan extension** ✅ — new module [`managed_ai_keys.py`](../hakuna-scanner/app/ingest/managed_ai_keys.py) wired into [`secrets.py`](../hakuna-scanner/app/ingest/secrets.py) trufflehog post-processing. Two entry points:
+
+- `scan_for_managed_ai_keys(text)` — pure regex scan over arbitrary text. Catches providers trufflehog doesn't natively cover (Groq) and edge cases like the latest admin-key formats.
+- `classify_trufflehog_detector(detector_name, raw)` — re-tags trufflehog hits with provider-specific plugin_id (`leaked_managed_ai_key_<provider>`) and bumps severity for admin-scope variants.
+
+Patterns shipped:
+- `sk-[A-Za-z0-9]{48,}` — OpenAI user
+- `sk-proj-[A-Za-z0-9_-]{40,}` — OpenAI project key
+- `sk-admin-[A-Za-z0-9_-]{40,}` — OpenAI admin (severity 4 — org-wide visibility)
+- `sk-ant-api\d{2}-[A-Za-z0-9_-]{93}` — Anthropic API
+- `sk-ant-admin\d{2}-[A-Za-z0-9_-]{93}` — Anthropic admin (severity 4)
 - `csk_[A-Za-z0-9]{50,}` — Cohere
-- `cohere-[A-Za-z0-9-]{40}` — Cohere v2
+- `cohere-[A-Za-z0-9-]{40}` — Cohere legacy
 - `r8_[A-Za-z0-9]{40}` — Replicate
-- AWS keys with Bedrock-only IAM scope (post-process via `aws_get_key_iam_scope` if accessible)
-- GCP service-account JSONs with Vertex-only roles
+- `hf_[A-Za-z0-9]{34}` — HuggingFace
+- `gsk_[A-Za-z0-9]{52}` — Groq (no upstream trufflehog detector)
 
-Findings: `leaked_managed_ai_key_<provider>` with severity tied to scope (key pinned to one model = medium; key with full org access = critical).
+Severity scale: provider key without admin scope = high (3); admin/org-scope key = critical (4) regardless of trufflehog's `Verified` status — scope is the threat, liveness can't be untracked.
+
+Findings emitted as `plugin_family="AI Governance"` with `plugin_id=leaked_managed_ai_key_<provider>` so they group with cloud audit findings instead of the generic Secret Detection family.
+
+**Deferred (not blocking GA):** AWS Bedrock-only IAM scope post-processor and GCP service-account-Vertex-only role detector. Both require an inline cloud API call from the scanner to the customer's account, which adds a credential-vault dependency to the scanner pipeline that the cloud audit (Slice 1/3) already covers from the credentialed side. Re-evaluate after first 30 days of customer findings.
 
 **3. Defer the LLM-driven `managed_ai_governance` audit** until customers explicitly ask for cross-account narrative ("walk every Bedrock model invocation across our 12 accounts"). Until then, deterministic findings from the cloud audits + secrets scan are enough. Re-evaluate at GA + 90 days.
 
@@ -426,7 +438,7 @@ Kickoff menu groups by `safety_class`, not alphabetically. Tiers:
 - **6 `safety_class` tiers** driving dispatch validation, cooldowns, gating, and UI grouping
 - **1 dispatch pipeline** (`dispatch_audit_run`), 1 auto-trigger evaluator, 1 relay handler per protocol family
 
-**Total estimated effort remaining:** ~4 weeks for Phases 3.5 → 5 (Phase 2 ✅ shipped; Phase 3 ✅ shipped; ~1 wk each for 3.5, 4; ~2 wk for 5). Handoff gates between phases (internal flag → design partners → GA per family).
+**Total estimated effort remaining:** ~3 weeks for Phases 4 → 5 (Phase 2, 3, 3.5 ✅ shipped; ~1 wk for 4; ~2 wk for 5). Handoff gates between phases (internal flag → design partners → GA per family).
 
 ---
 

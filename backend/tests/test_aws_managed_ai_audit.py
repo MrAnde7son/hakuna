@@ -60,18 +60,6 @@ def test_aws_audit_has_managed_ai_mission():
     assert "SageMaker" in managed_ai.label
 
 
-def test_gcp_unaffected_by_aws_managed_ai():
-    """managed_ai is wired per-provider with a provider-specific prompt.
-    GCP hasn't received it yet (slice 3) — lock the staging so we don't
-    accidentally surface a non-functional kickoff option for GCP customers.
-    Azure has its own slice-2 managed_ai mission with a different prompt;
-    that's covered in test_azure_managed_ai_audit.py."""
-    from agents.audit_registry import get_audit
-
-    keys = {m.key for m in get_audit("gcp").missions}
-    assert keys == {"exposure", "identity", "explore"}
-
-
 def test_aws_managed_ai_prompt_resolves_with_preamble():
     """The managed_ai prompt must inline the AWS preamble at import time
     and self-identify so an emit_finding has correct (protocol, mission)."""

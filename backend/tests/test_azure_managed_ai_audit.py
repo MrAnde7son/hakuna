@@ -46,16 +46,6 @@ def test_azure_audit_has_managed_ai_mission():
     assert "Cognitive Services" in managed_ai.label
 
 
-def test_gcp_still_has_no_managed_ai_mission():
-    """managed_ai is wired per-provider — GCP hasn't received it yet
-    (slice 3). Lock the staging so we don't accidentally surface a
-    non-functional kickoff option for GCP customers in the meantime."""
-    from agents.audit_registry import get_audit
-
-    keys = {m.key for m in get_audit("gcp").missions}
-    assert keys == {"exposure", "identity", "explore"}
-
-
 def test_azure_managed_ai_prompt_resolves_with_preamble():
     """The prompt must inline the Azure preamble at import time and
     self-identify so emit_finding gets the right (protocol, mission)."""

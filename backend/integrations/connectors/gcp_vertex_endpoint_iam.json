@@ -1,0 +1,41 @@
+{
+  "id": "gcp_vertex_endpoint_iam",
+  "name": "GCP Vertex AI — Endpoint IAM Policy",
+  "description": "Get the IAM policy for one Vertex AI endpoint. Used by the managed_ai mission to flag endpoints with `allUsers` / `allAuthenticatedUsers` bindings or `aiplatform.endpoints.predict` granted org-wide.",
+  "category": "AI Governance",
+  "logo": "/logos/vendors/gcp.svg",
+  "direction": "pull",
+  "entity": "audit_only",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://{{params.location}}-aiplatform.googleapis.com",
+    "method": "POST",
+    "path": "/v1/projects/{{params.project_id}}/locations/{{params.location}}/endpoints/{{params.endpoint_id}}:getIamPolicy",
+    "headers": {
+      "Content-Type": "application/json",
+      "Accept": "application/json"
+    },
+    "body": {},
+    "auth_strategy": "gcp_service_account",
+    "gcp_scopes": [
+      "https://www.googleapis.com/auth/cloud-platform.read-only"
+    ],
+    "pagination": {"strategy": "none"}
+  },
+  "records_path": "bindings",
+  "credential_acquisition": {
+    "pattern": "shared_credential",
+    "shared_with": "gcp_iam_service_accounts"
+  },
+  "default_field_map": [],
+  "dedup_key": ["source_system", "source_id"],
+  "params_schema": {
+    "project_id": {"type": "string", "required": true},
+    "location": {"type": "string", "required": true},
+    "endpoint_id": {
+      "type": "string",
+      "required": true,
+      "description": "Endpoint numeric id (the leaf of the endpoint resource name)."
+    }
+  }
+}
