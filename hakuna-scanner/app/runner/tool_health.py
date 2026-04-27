@@ -52,6 +52,7 @@ REQUIRED_TOOLS: tuple[ToolSpec, ...] = (
     ToolSpec("httpx",      "enrichment.httpx",        required=True),
     ToolSpec("cdncheck",   "enrichment.cdncheck",     required=False),
     ToolSpec("katana",     "enrichment.katana",       required=False),
+    ToolSpec("kr",         "enrichment.kiterunner",   required=False),
     ToolSpec("nmap",       "enrichment.nmap",         required=True),
 )
 
@@ -61,6 +62,12 @@ REQUIRED_TOOLS: tuple[ToolSpec, ...] = (
 REQUIRED_FILES: tuple[tuple[str, str], ...] = (
     ("/opt/hakuna/wordlists/subdomains.txt", "discovery.bruteforce wordlist"),
     ("/opt/hakuna/wordlists/resolvers.txt",  "discovery.bruteforce resolvers"),
+)
+
+# Optional data files — logged as a warning when missing, not treated as a
+# required failure. Pair with the matching ToolSpec(required=False).
+OPTIONAL_FILES: tuple[tuple[str, str], ...] = (
+    ("/opt/hakuna/wordlists/kiterunner-routes.kite", "enrichment.kiterunner wordlist"),
 )
 
 
@@ -77,6 +84,10 @@ def check_tools() -> tuple[list[str], list[str]]:
     for path, label in REQUIRED_FILES:
         if not os.path.isfile(path):
             missing_required.append(f"{path} ({label})")
+
+    for path, label in OPTIONAL_FILES:
+        if not os.path.isfile(path):
+            missing_optional.append(f"{path} ({label})")
 
     return missing_required, missing_optional
 

@@ -55,6 +55,14 @@ RUN git clone --depth 1 https://github.com/blechschmidt/massdns.git /tmp/massdns
 # Puredns (Go binary, wraps massdns + handles wildcard filtering natively)
 RUN go install github.com/d3mondev/puredns/v2@latest
 
+# Kiterunner (assetnote) — API endpoint brute-forcing. Built from source
+# because there's no `go install` entry point: the binary is named `kr` and
+# lives under cmd/kiterunner with a custom build target.
+RUN git clone --depth 1 https://github.com/assetnote/kiterunner.git /tmp/kiterunner \
+    && cd /tmp/kiterunner \
+    && go build -o /root/go/bin/kr ./cmd/kiterunner \
+    && rm -rf /tmp/kiterunner
+
 # Clean up Go module cache to save image space
 RUN go clean -modcache
 
@@ -74,6 +82,15 @@ RUN mkdir -p /opt/hakuna/wordlists \
 # the image at build time — re-pulled on every rebuild.
 RUN wget -q "https://raw.githubusercontent.com/trickest/resolvers/main/resolvers.txt" \
        -O /opt/hakuna/wordlists/resolvers.txt
+
+# Kiterunner routes wordlist (assetnote's compiled `.kite` format, ~34MB).
+# Distributed as a gzipped tarball — extract and rename. Path is referenced
+# by settings.kiterunner_wordlist in app/config.py; keep them in sync.
+RUN wget -q "https://wordlists-cdn.assetnote.io/data/kiterunner/routes-large.kite.tar.gz" \
+       -O /tmp/kiterunner-routes.tar.gz \
+    && tar -xzf /tmp/kiterunner-routes.tar.gz -C /tmp \
+    && mv /tmp/routes-large.kite /opt/hakuna/wordlists/kiterunner-routes.kite \
+    && rm /tmp/kiterunner-routes.tar.gz
 
 # Python deps
 WORKDIR /app

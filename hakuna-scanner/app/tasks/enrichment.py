@@ -948,6 +948,18 @@ async def _do_katana(sf, org_id: str, target_scope: str | None = None) -> dict:
 
 async def _do_kiterunner(sf, org_id: str, target_scope: str | None = None) -> dict:
     """Run kiterunner API endpoint brute-forcing on confirmed_alive HTTP assets (skip CDN)."""
+    import shutil
+
+    if shutil.which("kr") is None:
+        logger.warning("org=%s kiterunner: 'kr' binary missing, skipping stage", org_id)
+        return {"bruted": 0, "skipped_missing_binary": True}
+    if not os.path.isfile(settings.kiterunner_wordlist):
+        logger.warning(
+            "org=%s kiterunner: wordlist %s missing, skipping stage",
+            org_id, settings.kiterunner_wordlist,
+        )
+        return {"bruted": 0, "skipped_missing_wordlist": True}
+
     assets = await _get_confirmed_alive_assets(
         sf, org_id, target_scope=target_scope, apply_stale=True,
     )
