@@ -623,10 +623,12 @@ export default function Compliance() {
     await load()
   }
 
+  const currentFramework = slug ? frameworks.find(f => f.slug === slug) : null
+
   return (
     <div>
       <PageHeader
-        title={t('compliance.title')}
+        title={currentFramework?.name || t('compliance.title')}
         subtitle={slug
           ? <Button variant="ghost" size="sm" onClick={() => navigate('/compliance')}>← {t('compliance.frameworks')}</Button>
           : t('compliance.subtitle')
