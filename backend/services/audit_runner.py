@@ -138,6 +138,13 @@ def _validate_dispatch_inputs(
     if protocol not in AUDITS:
         raise AuditDispatchError(f"unknown protocol {protocol!r}; registered: {sorted(AUDITS.keys())}")
     audit = AUDITS[protocol]
+    # Fingerprint-mode audits are scanner-driven (Phase 2 EASM family) — they
+    # exist in the registry for UI grouping + compliance tagging only and have
+    # no LLM tools/missions to dispatch. Refuse before resolving a mission.
+    if audit.mode == "fingerprint":
+        raise AuditDispatchError(
+            f"protocol {protocol!r} is fingerprint-mode (scanner-driven); not dispatchable"
+        )
     m = audit.mission(mission)
     if m is None:
         raise AuditDispatchError(

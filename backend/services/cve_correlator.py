@@ -22,6 +22,7 @@ over a CVE database.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -31,6 +32,102 @@ from models.threat_intel_models import MSRCPatch, ProductLifecycle
 from services.downstream_impact import _query_threat_intel_cves
 
 logger = logging.getLogger(__name__)
+
+
+# ── Banner → (component, version) extraction ───────────────────────────────
+#
+# The Phase-2 EASM fingerprinter writes per-protocol banner findings to
+# ``Asset.easm_data['banner_findings']``. For protocols where the banner
+# carries a clean version string (SSH, PostgreSQL, MySQL, TR-069 RomPager),
+# we map to the (component, version) tuple the threat-intel matcher expects.
+#
+# Protocols with free-form banners (SMTP/IMAP/POP3 software field, IPP
+# make-and-model, UPnP model_number) are intentionally skipped — the
+# false-positive rate of substring-matching against ThreatCVE.affected_products
+# would dwarf the signal. Their banner data still rides through to the
+# agent for narrative purposes but doesn't seed CVE candidates.
+
+# OpenSSH: "OpenSSH_8.4p1" → version="8.4p1"
+# Dropbear: "dropbear_2020.81" → version="2020.81"
+# libssh:   "libssh-0.10.4"   → version="0.10.4"
+_SSH_SOFTWARE_RE = re.compile(
+    r"^(?P<product>OpenSSH|dropbear|libssh)[_\-](?P<version>[\d][\w\.\-+]*)$",
+    re.IGNORECASE,
+)
+
+# RomPager (TR-069 stack with multiple public CVEs): "RomPager/4.07"
+_ROMPAGER_RE = re.compile(r"\bRomPager/(?P<version>\d+(?:\.\d+){0,3})", re.IGNORECASE)
+
+# MySQL banners look like "8.0.32-0ubuntu0.20.04.2" or "5.7.41-log".
+# Take the leading semver-ish prefix; the trailing build/OS suffix is noise
+# for CPE matching.
+_MYSQL_VERSION_RE = re.compile(r"^(\d+\.\d+(?:\.\d+)?)")
+
+
+def _banner_components(easm_data: dict | None) -> list[dict]:
+    """Map ``easm_data['banner_findings']`` entries to the (component,
+    version) shape consumed by ``_query_threat_intel_cves``.
+
+    Returns a list of dicts: ``{component, version, source_protocol, port,
+    raw_banner}``. Empty for assets without banner_findings or for banners
+    we can't reliably parse (RDP, mail, IPP, UPnP).
+    """
+    if not isinstance(easm_data, dict):
+        return []
+    banners = easm_data.get("banner_findings")
+    if not isinstance(banners, list):
+        return []
+
+    out: list[dict] = []
+    for b in banners:
+        if not isinstance(b, dict):
+            continue
+        protocol = b.get("protocol")
+        version_data = b.get("version")
+        # Coerce explicitly: a banner module bug or schema drift could put
+        # a string/None where we expect a dict; ``or {}`` only handles None.
+        if not isinstance(version_data, dict):
+            version_data = {}
+        port = b.get("port")
+        raw_banner = b.get("banner")
+
+        component: str | None = None
+        version: str | None = None
+
+        if protocol == "ssh":
+            software = version_data.get("software") or ""
+            m = _SSH_SOFTWARE_RE.match(software)
+            if m:
+                component = m.group("product").lower()
+                version = m.group("version")
+        elif protocol == "postgresql":
+            sv = version_data.get("server_version")
+            if sv and isinstance(sv, str):
+                component = "postgresql"
+                version = sv.strip()
+        elif protocol == "mysql":
+            sv = version_data.get("server_version")
+            if sv and isinstance(sv, str):
+                m = _MYSQL_VERSION_RE.match(sv.strip())
+                if m:
+                    component = "mysql"
+                    version = m.group(1)
+        elif protocol == "tr069":
+            server = version_data.get("server") or raw_banner or ""
+            m = _ROMPAGER_RE.search(server)
+            if m:
+                component = "rompager"
+                version = m.group("version")
+
+        if component and version:
+            out.append({
+                "component": component,
+                "version": version,
+                "source_protocol": protocol,
+                "port": port,
+                "raw_banner": raw_banner,
+            })
+    return out
 
 
 # Ordering knobs used when sorting candidates for LLM consumption. KEV
@@ -51,6 +148,7 @@ def correlate_asset(
     include_software: bool = True,
     include_patches: bool = True,
     include_eol: bool = True,
+    include_banners: bool = True,
     top_n: int = 40,
 ) -> dict[str, Any]:
     """Run the full correlation pass for one asset.
@@ -143,20 +241,64 @@ def correlate_asset(
                 m["component_vendor"] = sw.vendor
                 m["component_version"] = version
                 m["mitigated"] = cve_id.upper() in mitigated_cves
+                m["source"] = "inventory_software"
+                candidates.append(m)
+
+    # ── Banner-derived candidates from EASM fingerprinter (Phase 2) ────
+    #
+    # Banners are remote fingerprints — lower confidence than installed
+    # software (honeypots can spoof them; reverse proxies can hide the
+    # real version). We tag them with source="banner" so the agent can
+    # weigh them differently. Mitigation status is *not* derivable from a
+    # banner, so always False here.
+    banner_components_scanned = 0
+    banner_components_matched = 0
+    if include_banners:
+        for entry in _banner_components(asset.easm_data):
+            banner_components_scanned += 1
+            matches = _query_threat_intel_cves(
+                db, entry["component"], entry["version"], exclude_cve_ids=[],
+            )
+            if matches:
+                banner_components_matched += 1
+            for m in matches:
+                cve_id = m.get("cve_id")
+                if not cve_id:
+                    continue
+                m["component"] = entry["component"]
+                m["component_vendor"] = None
+                m["component_version"] = entry["version"]
+                m["mitigated"] = False
+                m["source"] = "banner"
+                m["banner_protocol"] = entry["source_protocol"]
+                m["banner_port"] = entry["port"]
                 candidates.append(m)
 
     # Dedup candidates by CVE id — the same CVE can match via multiple
-    # components (e.g., two installed packages that share a bundled lib).
-    # Keep the first match per CVE but surface all affected components.
+    # components (e.g., two installed packages that share a bundled lib),
+    # or via both inventory + banner. When sources disagree, prefer
+    # ``inventory_software`` (it carries patch-mitigation truth). Surface
+    # all source tags so the agent can reason about confidence.
     dedup: dict[str, dict] = {}
     for c in candidates:
         cve_id = c["cve_id"]
         if cve_id not in dedup:
-            dedup[cve_id] = {**c, "matched_components": [c["component"]]}
+            dedup[cve_id] = {
+                **c,
+                "matched_components": [c["component"]],
+                "sources": [c.get("source", "inventory_software")],
+            }
         else:
-            comps = dedup[cve_id]["matched_components"]
-            if c["component"] not in comps:
-                comps.append(c["component"])
+            existing = dedup[cve_id]
+            if c["component"] not in existing["matched_components"]:
+                existing["matched_components"].append(c["component"])
+            src = c.get("source", "inventory_software")
+            if src not in existing["sources"]:
+                existing["sources"].append(src)
+            # Prefer inventory mitigation truth.
+            if c.get("source") == "inventory_software" and existing.get("source") != "inventory_software":
+                existing["mitigated"] = c["mitigated"]
+                existing["source"] = "inventory_software"
     merged = list(dedup.values())
     merged.sort(key=_candidate_sort_key)
 
@@ -176,6 +318,9 @@ def correlate_asset(
             "epss_percentile": c.get("epss_percentile"),
             "trending_in_news": bool(c.get("trending_in_news")),
             "mitigated": bool(c.get("mitigated")),
+            "sources": c.get("sources") or [c.get("source", "inventory_software")],
+            "banner_protocol": c.get("banner_protocol"),
+            "banner_port": c.get("banner_port"),
             "description": (c.get("description") or "")[:180],
         }
 
@@ -187,6 +332,14 @@ def correlate_asset(
     result.update({
         "software_scanned": software_scanned,
         "components_with_cves": components_matched,
+        "banner_components_scanned": banner_components_scanned,
+        "banner_components_with_cves": banner_components_matched,
+        "banner_only_cves": sum(
+            1 for c in merged
+            if c.get("sources") == ["banner"] or (
+                c.get("source") == "banner" and "inventory_software" not in (c.get("sources") or [])
+            )
+        ),
         "total_candidate_cves": total,
         "missing_patch_cves": len(missing),
         "already_mitigated_cves": already_mitigated,

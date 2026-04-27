@@ -27,7 +27,7 @@ def register_enrichment_scanners() -> None:
     Current hardcoded layout (for reference):
       Group 0: tlsx, httpx, cdncheck
       Group 1: js_fingerprint, favicon_fingerprint, endpoint_probe,
-               protocol_probe, katana, kiterunner
+               protocol_probe, banner_grab, katana, kiterunner
       Group 2: trufflehog, llm_js_extraction
       Group 3: classify_assets
       Group 4: ai_exposure (depends on classify_assets setting asset_type)
@@ -44,6 +44,7 @@ def register_enrichment_scanners() -> None:
     )
     from app.tasks.enrichment import (
         _do_ai_exposure,
+        _do_banner_grab,
         _do_cdncheck,
         _do_classify_assets,
         _do_endpoint_probe,
@@ -146,6 +147,18 @@ def register_enrichment_scanners() -> None:
         port_filter=None,  # checks OT/IoT/AI ports specifically (see PROTOCOL_PROBES)
         cdn_safe=True,
         estimated_cost="low",
+    ))
+
+    register_scanner(ScannerSpec(
+        name="banner_grab",
+        stage="enrichment",
+        group=1,
+        stage_fn=_do_banner_grab,
+        inputs=["hostname", "open_ports"],
+        outputs=["banner_findings"],
+        port_filter=None,  # filters internally to {22, 25, 110, 143, ...} — see _BANNER_PORTS
+        cdn_safe=True,
+        estimated_cost="medium",
     ))
 
     register_scanner(ScannerSpec(

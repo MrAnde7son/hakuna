@@ -1,0 +1,69 @@
+{
+  "id": "azure_cognitive_services_accounts",
+  "name": "Azure — Cognitive Services / OpenAI Accounts",
+  "description": "List Cognitive Services accounts in the subscription (kind=OpenAI for Azure OpenAI). Account properties expose disableLocalAuth (Entra-only enforcement), publicNetworkAccess, networkAcls, and privateEndpointConnections — the audit's managed_ai mission reads these directly.",
+  "category": "AI Governance",
+  "logo": "/logos/vendors/azure.svg",
+  "direction": "pull",
+  "entity": "audit_only",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://management.azure.com",
+    "method": "GET",
+    "path": "/subscriptions/{{params.subscription_id}}/providers/Microsoft.CognitiveServices/accounts",
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "query_params": {
+      "api-version": "2023-05-01"
+    },
+    "pagination": {
+      "strategy": "cursor",
+      "cursor_field": "nextLink",
+      "cursor_param": "_next_link_url",
+      "page_size": 100
+    }
+  },
+  "records_path": "value",
+  "credential_acquisition": {
+    "pattern": "client_credentials",
+    "token_url": "https://login.microsoftonline.com/{{credentials.tenant_id}}/oauth2/v2.0/token",
+    "grant_type": "client_credentials",
+    "scopes": ["https://management.azure.com/.default"],
+    "fields": [
+      {
+        "field": "client_id",
+        "label": "Application (Client) ID",
+        "type": "text",
+        "help": "From Entra ID → App registrations → your app → Overview"
+      },
+      {
+        "field": "client_secret",
+        "label": "Client Secret",
+        "type": "password",
+        "help": "From Entra ID → App registrations → your app → Certificates & secrets"
+      },
+      {
+        "field": "tenant_id",
+        "label": "Directory (Tenant) ID",
+        "type": "text"
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/subscriptions/{{params.subscription_id}}/providers/Microsoft.CognitiveServices/accounts",
+      "query_params": {"api-version": "2023-05-01"},
+      "success_condition": "status == 200",
+      "error_message": "Could not connect to Microsoft.CognitiveServices. Verify the service principal has at least Reader on the subscription."
+    }
+  },
+  "default_field_map": [],
+  "dedup_key": ["source_system", "source_id"],
+  "params_schema": {
+    "subscription_id": {
+      "type": "string",
+      "required": true,
+      "description": "Azure Subscription ID (UUID). Cognitive Services accounts are subscription-scoped — repeat per subscription if the customer has many."
+    }
+  }
+}

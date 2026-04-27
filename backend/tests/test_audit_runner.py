@@ -38,6 +38,9 @@ def test_registry_populates_all_audits():
         "wmi", "ldap", "smb", "snmp", "ssh",
         "aws", "azure", "gcp",
         "exposed_datastore",  # Phase 1a
+        "easm_fingerprint",  # Phase 2 (scanner-driven, mode=fingerprint)
+        "exposed_ai_service",  # Phase 3 (gap-fill AI service audit)
+        "managed_ai_saas",  # Phase 3.5 slice 0 (OpenAI / Anthropic admin APIs)
     }
 
     wmi = get_audit("wmi")

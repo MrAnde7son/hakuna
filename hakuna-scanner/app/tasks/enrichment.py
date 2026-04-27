@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import text
 
-ENRICHMENT_STEP_COUNT = 16  # tlsx, httpx, cdncheck, js_fingerprint, favicon, endpoint_probe, katana, protocol_probe, kiterunner, trufflehog, llm_js_extraction, openapi_discovery, graphql_introspection, classify_assets, ai_exposure, nmap_dispatch
+ENRICHMENT_STEP_COUNT = 17  # tlsx, httpx, cdncheck, js_fingerprint, favicon, endpoint_probe, katana, protocol_probe, banner_grab, kiterunner, trufflehog, llm_js_extraction, openapi_discovery, graphql_introspection, classify_assets, ai_exposure, nmap_dispatch
 
 from app.celery_app import celery
 from app.config import settings
@@ -38,6 +38,12 @@ from app.ingest.endpoint_probe import probe_assets
 from app.ingest.favicon_fingerprint import fingerprint_assets as favicon_fingerprint_assets
 from app.ingest.js_fingerprint import fingerprint_assets
 from app.ingest.protocol_probe import probe_batch as protocol_probe_batch
+from app.ingest.ssh_banner import probe_batch as ssh_banner_batch
+from app.ingest.rdp_nla_probe import probe_batch as rdp_nla_batch
+from app.ingest.mail_banner import probe_batch as mail_banner_batch
+from app.ingest.printer_banner import probe_batch as printer_banner_batch
+from app.ingest.tr069_upnp_probe import probe_batch as tr069_upnp_batch
+from app.ingest.db_banner import probe_batch as db_banner_batch
 from app.runner.base import BaseRunner, batch_hosts, run_batches_parallel
 from app.runner.tools import CdncheckRunner, HttpxRunner, KatanaRunner, KiterunnerRunner, TlsxRunner, TrufflehogRunner
 from app.tasks.scoping import (
@@ -686,6 +692,139 @@ async def _do_protocol_probe(sf, org_id: str, target_scope: str | None = None) -
         "probed": len(candidates),
         "assets_with_detections": len(probe_results),
         "total_detections": total_detections,
+        "findings_created": findings_created,
+    }
+
+
+async def _do_banner_grab(sf, org_id: str, target_scope: str | None = None) -> dict:
+    """Phase-2 EASM fingerprinter — banner-depth probes for SSH/RDP/mail/IPP/TR-069/UPnP/DB.
+
+    Each protocol module returns ``{hostname: [banner_finding, ...]}``. We
+    merge them and write the union to ``assets.easm_data.banner_findings``
+    for the backend's CVE correlator to consume. Banner_findings that carry
+    ``severity`` + ``finding_title`` (e.g. RDP without NLA, SMTP missing
+    STARTTLS, UPnP descriptor exposed) also produce a row in ``findings``.
+
+    Banner-grab is best-effort by design: any module/asset failure returns
+    an empty result rather than raising, so partial coverage still ships.
+    """
+    assets = await _get_confirmed_alive_assets(
+        sf, org_id, target_scope=target_scope, apply_stale=False,
+    )
+    if not assets:
+        return {"probed": 0}
+
+    # Union of every port any banner module cares about. Pre-filter so
+    # modules don't iterate the full asset list looking for matches.
+    _BANNER_PORTS = {22, 25, 110, 143, 465, 587, 631, 993, 995,
+                     1900, 3306, 3389, 5432, 7547}
+    candidates = [
+        a for a in assets
+        if set(a.get("open_ports") or []) & _BANNER_PORTS
+    ]
+    if not candidates:
+        return {"probed": 0, "no_banner_ports": True}
+
+    logger.info(
+        "org=%s banner_grab: probing %d assets across 6 protocol families",
+        org_id, len(candidates),
+    )
+
+    # Run all six modules in parallel — they target disjoint port sets so
+    # there's no contention on a single asset.
+    module_results = await asyncio.gather(
+        ssh_banner_batch(candidates),
+        rdp_nla_batch(candidates),
+        mail_banner_batch(candidates),
+        printer_banner_batch(candidates),
+        tr069_upnp_batch(candidates),
+        db_banner_batch(candidates),
+        return_exceptions=True,
+    )
+
+    # Merge {hostname: [banner_finding, ...]} dicts.
+    per_host: dict[str, list[dict]] = {}
+    for module_result in module_results:
+        if isinstance(module_result, Exception):
+            logger.debug("banner_grab module errored: %s", module_result)
+            continue
+        for hostname, hits in module_result.items():
+            per_host.setdefault(hostname, []).extend(hits)
+
+    if not per_host:
+        return {"probed": len(candidates), "assets_with_banners": 0}
+
+    total_banners = 0
+    findings_created = 0
+    async with sf() as db:
+        for hostname, banners in per_host.items():
+            total_banners += len(banners)
+            row = await db.execute(
+                text("SELECT id FROM assets WHERE org_id = :org_id AND hostname = :host"),
+                {"org_id": org_id, "host": hostname},
+            )
+            asset_row = row.fetchone()
+            if not asset_row:
+                continue
+
+            # Merge into easm_data.banner_findings via JSONB || semantics.
+            await db.execute(
+                text("""
+                    UPDATE assets
+                    SET easm_data = (
+                        coalesce(easm_data::jsonb, '{}'::jsonb)
+                        || jsonb_build_object('banner_findings', cast(:banners as jsonb))
+                    )::json
+                    WHERE id = :id
+                """),
+                {"banners": json.dumps(banners), "id": asset_row.id},
+            )
+
+            # Severity-tagged banners → findings (RDP-no-NLA, SMTP missing
+            # STARTTLS, UPnP exposed, etc.).
+            for banner in banners:
+                if "severity" not in banner or "finding_title" not in banner:
+                    continue
+                await db.execute(
+                    text("""
+                        INSERT INTO findings (
+                            id, org_id, asset_id, finding_type, severity,
+                            title, description, metadata, status, created_at
+                        ) VALUES (
+                            :id, :org_id, :aid, :ftype, :sev, :title, :desc,
+                            cast(:meta as jsonb), 'open', :now
+                        )
+                        ON CONFLICT DO NOTHING
+                    """),
+                    {
+                        "id": uuid.uuid4(),
+                        "org_id": org_id,
+                        "aid": asset_row.id,
+                        "ftype": f"banner_{banner['protocol']}",
+                        "sev": banner["severity"],
+                        "title": banner["finding_title"],
+                        "desc": (
+                            f"Banner-grab on port {banner['port']} "
+                            f"({banner['protocol']}) flagged: {banner['finding_title']}."
+                        ),
+                        "meta": json.dumps({
+                            "protocol": banner["protocol"],
+                            "port": banner["port"],
+                            "banner": banner.get("banner"),
+                            "version": banner.get("version"),
+                            "metadata": banner.get("metadata"),
+                        }),
+                        "now": datetime.now(timezone.utc),
+                    },
+                )
+                findings_created += 1
+
+        await db.commit()
+
+    return {
+        "probed": len(candidates),
+        "assets_with_banners": len(per_host),
+        "total_banners": total_banners,
         "findings_created": findings_created,
     }
 
@@ -1427,6 +1566,7 @@ def run_enrichment_chain(self, org_id: str, scan_run_id: str | None = None) -> d
                     ("favicon_fingerprint", _do_favicon_fingerprint),
                     ("endpoint_probe", _do_endpoint_probe),
                     ("protocol_probe", _do_protocol_probe),
+                    ("banner_grab", _do_banner_grab),
                     ("katana", _do_katana),
                     ("kiterunner", _do_kiterunner),
                 ],

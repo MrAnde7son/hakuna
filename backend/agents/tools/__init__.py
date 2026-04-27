@@ -15,3 +15,5 @@ from agents.tools import snmp_tools  # noqa: F401
 from agents.tools import ssh_tools  # noqa: F401
 from agents.tools import cloud_tools  # noqa: F401
 from agents.tools import exposed_datastore_tools  # noqa: F401
+from agents.tools import exposed_ai_service_tools  # noqa: F401
+from agents.tools import easm_fingerprint_tools  # noqa: F401

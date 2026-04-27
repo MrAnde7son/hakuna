@@ -17,7 +17,8 @@ from pathlib import Path
 PROMPTS_DIR = Path(__file__).parent / "prompts"
 AUDIT_PROTOCOLS = (
     "wmi", "ldap", "smb", "snmp", "ssh",
-    "aws", "azure", "gcp", "exposed_datastore",
+    "aws", "azure", "gcp", "managed_ai_saas",
+    "exposed_datastore", "exposed_ai_service",
 )
 
 

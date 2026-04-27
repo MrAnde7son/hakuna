@@ -1,0 +1,34 @@
+{
+  "id": "aws_bedrock_foundation_models",
+  "name": "AWS Bedrock — Foundation Models",
+  "description": "List foundation models available in the region. Used by the managed_ai mission to scope which models the account is paying for / could be invoked against.",
+  "category": "AI Governance",
+  "logo": "/logos/vendors/aws.svg",
+  "direction": "pull",
+  "entity": "audit_only",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://bedrock.{{credentials.region}}.amazonaws.com",
+    "method": "GET",
+    "path": "/foundation-models",
+    "headers": {},
+    "query_params": {},
+    "auth_strategy": "aws_sigv4",
+    "aws_service": "bedrock",
+    "pagination": {"strategy": "none"}
+  },
+  "records_path": "modelSummaries",
+  "credential_acquisition": {
+    "pattern": "shared_credential",
+    "shared_with": "aws_iam_users"
+  },
+  "default_field_map": [],
+  "dedup_key": ["source_system", "source_id"],
+  "params_schema": {
+    "region": {
+      "type": "string",
+      "required": true,
+      "default": "us-east-1"
+    }
+  }
+}

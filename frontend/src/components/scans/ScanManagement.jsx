@@ -196,12 +196,16 @@ function NewScanModal({ onClose, onFile, uploading, easmEnabled, onScanDomain, o
   // Load registered protocol audits so each gets its own top-level card.
   // Cards render immediately for EASM/VM/Import; audit cards append as the
   // list arrives (one round-trip, silently ignored on failure).
+  // ``mode==='fingerprint'`` audits (Phase 2 EASM family) are scanner-driven
+  // and not dispatchable from this kickoff modal — filter them out so users
+  // can't select something the dispatch guard will refuse.
   useEffect(() => {
     let cancelled = false
     listAuditProtocols()
       .then(resp => {
         if (cancelled) return
-        setAuditProtocols(resp?.audits || [])
+        const audits = (resp?.audits || []).filter(a => a.mode !== 'fingerprint')
+        setAuditProtocols(audits)
       })
       .catch(() => { /* empty list — audit cards simply don't appear */ })
     return () => { cancelled = true }
@@ -951,7 +955,8 @@ function AuditScanPanel({
           getBillingUsage().catch(() => null),
         ])
         if (cancelled) return
-        const audits = protoResp?.audits || []
+        // Filter out fingerprint-mode audits (scanner-driven, not dispatchable).
+        const audits = (protoResp?.audits || []).filter(a => a.mode !== 'fingerprint')
         setProtocols(audits)
         // Preselect mission: prefer first mission of the (possibly preselected) protocol,
         // else first mission of the first protocol.

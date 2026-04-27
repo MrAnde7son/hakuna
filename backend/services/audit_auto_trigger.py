@@ -117,7 +117,70 @@ AUTO_TRIGGER_RULES: list[AutoTriggerRule] = [
         cooldown=timedelta(hours=24),
         enabled_setting_key="auto_audit_datastore",
     ),
+    # ── Family: anon_ai_exposure (Phase 3, gap-fill scope) ──
+    # Phase 3 is "Option D": the EASM scanner already covers Ollama (11434),
+    # vLLM (8000), and the eight other native ai_exposure_* services. The
+    # auto-trigger fires only on the gap-fill ports the scanner does not
+    # already classify. 11434/8000 are deliberately excluded from the rule
+    # because the scanner emits findings for them at scan time — the audit
+    # would just double-emit.
+    #
+    # Ports 3000/5000/8080 collide with generic web frameworks (Grafana,
+    # Flask apps, web admin UIs). The predicate gates the rule on the
+    # scanner's classifier output: only fire if asset_classifier tagged the
+    # asset as one of the AI-shaped types. Other gap-fill ports (8888 for
+    # Jupyter, 8265 for Ray, 6006 for TensorBoard, 1234 for LM Studio) are
+    # AI-specific and don't need the predicate — but the same rule covers
+    # them, so the predicate is "AI-typed OR port is unambiguous." We pick
+    # the simpler form: require AI-typed for the colliding ports, allow
+    # unambiguous ports through.
+    AutoTriggerRule(
+        protocol="exposed_ai_service",
+        mission="triage",
+        ports=(8888, 8265, 5000, 6006, 8080, 1234, 3000),
+        cooldown=timedelta(hours=24),
+        enabled_setting_key="auto_audit_ai",
+        predicate=lambda asset: _ai_service_predicate(asset),
+    ),
 ]
+
+
+# Ports where the rule fires regardless of asset_type — these are
+# AI-specific ports with no realistic non-AI service collision.
+_AI_UNAMBIGUOUS_PORTS = frozenset({8888, 8265, 6006, 1234})
+
+# AI-typed asset_type values produced by the scanner's asset_classifier.
+_AI_ASSET_TYPES = frozenset({"ai_inference", "ai_gateway", "ai_agent", "vector_db"})
+
+
+def _ai_service_predicate(asset: Asset) -> bool:
+    """Gate the exposed-AI auto-trigger on classifier-confirmed AI shape.
+
+    Fires when EITHER:
+      * any of the new ports is unambiguously AI (8888, 8265, 6006, 1234), OR
+      * the scanner's classifier tagged this asset as an AI/vector type.
+
+    Without this predicate, dropping a generic web app on port 3000 would
+    burn LLM budget on a probe destined to return ``auth_required: true``
+    or non-200. The classifier already disambiguates these ports during
+    enrichment; reuse it.
+    """
+    open_ports = set()
+    easm = asset.easm_data or {}
+    if isinstance(easm, dict):
+        for p in easm.get("open_ports") or []:
+            try:
+                open_ports.add(int(p))
+            except (TypeError, ValueError):
+                continue
+    if open_ports & _AI_UNAMBIGUOUS_PORTS:
+        return True
+    # asset_type lives on the column; scanners that haven't propagated yet
+    # may stash it in easm_data. Check both.
+    asset_type = (asset.asset_type or "").strip()
+    if not asset_type and isinstance(easm, dict):
+        asset_type = str(easm.get("asset_type") or "").strip()
+    return asset_type in _AI_ASSET_TYPES
 
 
 def _rule_enabled_for_org(rule: AutoTriggerRule, org: Organization) -> bool:
