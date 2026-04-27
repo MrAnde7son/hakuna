@@ -35,6 +35,7 @@ export default function NotificationBell({ bottomOffset = 20, rightOffset = 120 
   const [open, setOpen] = useState(false)
   const [unreadCount, setUnreadCount] = useState(0)
   const [notifications, setNotifications] = useState([])
+  const [hasFetched, setHasFetched] = useState(false)
   const [loading, setLoading] = useState(false)
   const panelRef = useRef(null)
 
@@ -51,15 +52,18 @@ export default function NotificationBell({ bottomOffset = 20, rightOffset = 120 
     return () => clearInterval(interval)
   }, [fetchCount])
 
-  // Fetch notifications when panel opens
+  // Fetch notifications when panel opens — show stale list while refreshing
   useEffect(() => {
     if (!open) return
-    setLoading(true)
+    if (!hasFetched) setLoading(true)
     getNotifications({ page_size: 30 })
-      .then(data => setNotifications(data.items || []))
+      .then(data => {
+        setNotifications(data.items || [])
+        setHasFetched(true)
+      })
       .catch(() => {})
       .finally(() => setLoading(false))
-  }, [open])
+  }, [open, hasFetched])
 
   // Close on click outside
   useEffect(() => {
@@ -173,7 +177,7 @@ export default function NotificationBell({ bottomOffset = 20, rightOffset = 120 
 
           {/* List */}
           <div style={{ overflowY: 'auto', flex: 1 }}>
-            {loading && (
+            {loading && notifications.length === 0 && (
               <div style={{ padding: 24, textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>
                 Loading...
               </div>
@@ -183,7 +187,7 @@ export default function NotificationBell({ bottomOffset = 20, rightOffset = 120 
                 {t('notifications.noNotifications', 'No notifications yet')}
               </div>
             )}
-            {!loading && notifications.map(n => {
+            {notifications.map(n => {
               const cfg = CATEGORY_CONFIG[n.category] || { icon: Bell, color: 'var(--text-muted)' }
               const Icon = cfg.icon
               return (

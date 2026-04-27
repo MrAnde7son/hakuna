@@ -1652,6 +1652,8 @@ def compute_funnel(
                 q = q.filter(Finding.is_regression == True)
             if _is_true(f.get("has_exception")):
                 q = q.filter(Finding.exception_id.isnot(None))
+            if _is_true(f.get("is_reachable")):
+                q = q.filter(Finding.ctx_reachability.in_(("internal_only", "internet_facing")))
             # Effort & ownership
             if f.get("effort_level"):
                 q = q.filter(Finding.effort_level == f["effort_level"])

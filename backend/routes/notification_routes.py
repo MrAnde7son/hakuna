@@ -62,7 +62,6 @@ async def list_notifications(
     if unread_only:
         query = query.filter(~Notification.id.in_(db.query(read_ids_sq.c.notification_id)))
 
-    total = query.count()
     items = (
         query.order_by(desc(Notification.created_at))
         .offset((page - 1) * page_size)
@@ -85,7 +84,6 @@ async def list_notifications(
         read_set = {r[0] for r in read_rows}
 
     return {
-        "total": total,
         "page": page,
         "page_size": page_size,
         "items": [

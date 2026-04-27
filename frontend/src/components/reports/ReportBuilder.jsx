@@ -1931,18 +1931,26 @@ const DEFAULT_DASHBOARD = {
     { id: 'dw2', type: 'card',      title: 'High',                  width: 'quarter', config: { preset: 'high_count' } },
     { id: 'dw3', type: 'card',      title: 'With Exploit',          width: 'quarter', config: { preset: 'exploit_count' } },
     { id: 'dw4', type: 'card',      title: 'Assets',                width: 'quarter', config: { preset: 'total_assets' } },
-    // ── Row 2: Risk grade with actionable tips + solutions ──
+    // ── Row 2: Prioritization funnel — narrows total findings to what to fix first ──
+    { id: 'dw21',type: 'funnel',    title: 'Prioritization Funnel', width: 'full',    config: { base_entity: 'findings', steps: [
+      { label: 'All findings', filters: {} },
+      { label: 'CVSS ≥ 7.0', filters: { min_cvss3: 7.0 } },
+      { label: 'In CISA KEV', filters: { is_kev: true } },
+      { label: 'On critical assets', filters: { on_critical_assets: true } },
+      { label: 'Validated reachable', filters: { is_reachable: true } },
+    ] } },
+    // ── Row 3: Risk grade with actionable tips + solutions ──
     { id: 'dw17',type: 'risk_grade', title: 'How to Improve Risk Score', width: 'full', config: { preset: 'risk_grade', show_tips: true } },
-    // ── Row 3: Quick win actions (low-effort, high-impact) ──
+    // ── Row 4: Quick win actions (low-effort, high-impact) ──
     { id: 'dw19',type: 'table',      title: 'Quick Win Actions',         width: 'full', config: { preset: 'quick_wins_actions', limit: 5 } },
-    // ── Row 4: Full remediation actions + owner breakdown ──
+    // ── Row 5: Full remediation actions + owner breakdown ──
     { id: 'dw18',type: 'table',      title: 'Top Remediation Actions',   width: 'full', config: { preset: 'aggregated_solutions_table', limit: 10 } },
     { id: 'dw20',type: 'table',      title: 'Actions by Owner',          width: 'half', config: { preset: 'solutions_by_owner', limit: 5 } },
-    { id: 'dw10',type: 'pie_chart', title: 'SLA Status',            width: 'half',    config: { preset: 'sla_status', donut: true } },
-    // ── Row 5: Trends & context ──
+    { id: 'dw22',type: 'heatmap',   title: 'Owner × SLA Status',         width: 'half', config: { preset: 'heatmap_owner_sla' } },
+    // ── Row 6: Trends & context ──
     { id: 'dw6', type: 'line_chart',title: 'Vulnerability Trend',   width: 'half',    config: { preset: 'severity_trend', trending_mode: 'cumulative' } },
     { id: 'dw5', type: 'pie_chart', title: 'Severity Breakdown',    width: 'half',    config: { preset: 'severity_breakdown', donut: true } },
-    // ── Row 6: Assets & age ──
+    // ── Row 7: Assets & age ──
     { id: 'dw11',type: 'table',     title: 'Top Risky Assets',      width: 'full',    config: { preset: 'top_assets', limit: 5 } },
     { id: 'dw14',type: 'card',      title: 'Zombie Vulns',          width: 'quarter', config: { preset: 'zombie_count' } },
     { id: 'dw15',type: 'card',      title: 'Regressions',           width: 'quarter', config: { preset: 'regression_count' } },
@@ -3289,6 +3297,7 @@ const FUNNEL_FINDING_FILTERS = [
   { key: 'sla_status', label: 'SLA Status', type: 'select', options: [{ value: '', label: '—' }, { value: 'breached', label: 'Breached' }, { value: 'at_risk', label: 'At Risk' }, { value: 'on_track', label: 'On Track' }] },
   { key: 'is_regression', label: 'Is Regression', type: 'toggle' },
   { key: 'has_exception', label: 'Has Exception', type: 'toggle' },
+  { key: 'is_reachable', label: 'Validated Reachable', type: 'toggle' },
   // Effort & ownership
   { key: 'effort_level', label: 'Effort', type: 'select', options: [{ value: '', label: '—' }, { value: 'quick_win', label: 'Quick Win' }, { value: 'medium', label: 'Medium' }, { value: 'complex', label: 'Complex' }] },
   { key: 'owner_suggestion', label: 'Owner', type: 'select', options: [{ value: '', label: '—' }, { value: 'IT', label: 'IT' }, { value: 'DevOps', label: 'DevOps' }, { value: 'SecOps', label: 'SecOps' }, { value: 'AppSec', label: 'AppSec' }] },
