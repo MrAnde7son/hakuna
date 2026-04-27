@@ -11,7 +11,7 @@ DATABASE_URL = os.environ.get(
 CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", "redis://redis:6379/1")
 CELERY_RESULT_BACKEND = os.environ.get("CELERY_RESULT_BACKEND", "redis://redis:6379/1")
 
-NUCLEI_BIN = os.environ.get("NUCLEI_BIN", "/root/go/bin/nuclei")
+NUCLEI_BIN = os.environ.get("NUCLEI_BIN", "/usr/local/bin/nuclei")
 NUCLEI_TIMEOUT = int(os.environ.get("NUCLEI_TIMEOUT", "10"))
 NUCLEI_RATE_LIMIT = int(os.environ.get("NUCLEI_RATE_LIMIT", "300"))
 NUCLEI_RETRIES = int(os.environ.get("NUCLEI_RETRIES", "1"))

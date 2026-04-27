@@ -192,7 +192,7 @@ resource "google_compute_instance" "scanners" {
           CELERY_RESULT_BACKEND: "redis://$${VM_REDIS_HOST}:$${VM_REDIS_PORT}/0"
           PYTHONPATH: "/app"
           TEMPLATES_DIR: "/app/templates"
-          NUCLEI_BIN: "/root/go/bin/nuclei"
+          NUCLEI_BIN: "/usr/local/bin/nuclei"
           NUCLEI_TIMEOUT: "30"
           NUCLEI_RATE_LIMIT: "150"
           SCAN_TIMEOUT_SECONDS: "600"
@@ -211,7 +211,7 @@ resource "google_compute_instance" "scanners" {
           CELERY_RESULT_BACKEND: "redis://$${VM_REDIS_HOST}:$${VM_REDIS_PORT}/0"
           PYTHONPATH: "/app"
           TEMPLATES_DIR: "/app/templates"
-          NUCLEI_BIN: "/root/go/bin/nuclei"
+          NUCLEI_BIN: "/usr/local/bin/nuclei"
           NUCLEI_RATE_LIMIT: "150"
           # Vertex AI / Gemini — agent_worker resolves the LLM provider
           # from env + integration_configs. On GCE the scanner SA's ADC

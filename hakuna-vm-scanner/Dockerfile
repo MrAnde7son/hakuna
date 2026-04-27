@@ -38,6 +38,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Compiled Go binaries
 COPY --from=builder /root/go/bin/nuclei /usr/local/bin/nuclei
 COPY --from=builder /root/go/bin/ffuf   /usr/local/bin/ffuf
+ENV NUCLEI_BIN=/usr/local/bin/nuclei
 
 # Nuclei template store — default location is $HOME/nuclei-templates
 COPY --from=builder /root/nuclei-templates /root/nuclei-templates
