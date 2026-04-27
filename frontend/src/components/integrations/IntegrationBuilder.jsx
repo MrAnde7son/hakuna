@@ -727,10 +727,19 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 12 }}>
             {connectors.map(c => (
               <Card key={c.id} onClick={() => handleSelectConnector(c.id)} style={{ cursor: 'pointer', padding: 16 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 8 }}>
                   <VendorLogo src={c.logo} size={32} />
-                  <div>
-                    <div style={{ fontWeight: 600, fontSize: 13 }}>{c.name}</div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                      <div style={{ fontWeight: 600, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.name}</div>
+                      {c.category && (
+                        <span style={{
+                          fontSize: 9, fontWeight: 600, letterSpacing: 0.3, textTransform: 'uppercase',
+                          color: 'var(--text-muted)', padding: '2px 6px', borderRadius: 4,
+                          border: '1px solid var(--border)', whiteSpace: 'nowrap', flexShrink: 0,
+                        }}>{c.category}</span>
+                      )}
+                    </div>
                     <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{c.description}</div>
                   </div>
                 </div>
