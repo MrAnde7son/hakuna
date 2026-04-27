@@ -1926,21 +1926,22 @@ const DEFAULT_DASHBOARD = {
   name: 'Security Overview',
   createdAt: new Date(0).toISOString(),
   widgets: [
-    // ── Row 1: At-a-glance KPIs ──
+    { id: 'dw4', type: 'card', title: 'Assets', width: 'quarter', config: { preset: 'total_assets' } },
     { id: 'dw1', type: 'card',      title: 'Critical',              width: 'quarter', config: { preset: 'critical_count' } },
     { id: 'dw2', type: 'card',      title: 'High',                  width: 'quarter', config: { preset: 'high_count' } },
     { id: 'dw3', type: 'card',      title: 'With Exploit',          width: 'quarter', config: { preset: 'exploit_count' } },
-    { id: 'dw4', type: 'card',      title: 'Assets',                width: 'quarter', config: { preset: 'total_assets' } },
-    // ── Row 2: Prioritization funnel — narrows total findings to what to fix first ──
-    { id: 'dw21',type: 'funnel',    title: 'Prioritization Funnel', width: 'full',    config: { base_entity: 'findings', steps: [
-      { label: 'All findings', filters: {} },
-      { label: 'CVSS ≥ 7.0', filters: { min_cvss3: 7.0 } },
-      { label: 'In CISA KEV', filters: { is_kev: true } },
-      { label: 'On critical assets', filters: { on_critical_assets: true } },
-      { label: 'Validated reachable', filters: { is_reachable: true } },
-    ] } },
-    // ── Row 3: Risk grade with actionable tips + solutions ──
     { id: 'dw17',type: 'risk_grade', title: 'How to Improve Risk Score', width: 'full', config: { preset: 'risk_grade', show_tips: true } },
+    {
+      id: 'dw21', type: 'funnel', title: 'Prioritization Funnel', width: 'full', config: {
+        base_entity: 'findings', steps: [
+          { label: 'All findings', filters: {} },
+          { label: 'CVSS ≥ 7.0', filters: { min_cvss3: 7.0 } },
+          { label: 'In CISA KEV', filters: { is_kev: true } },
+          { label: 'On critical assets', filters: { on_critical_assets: true } },
+          { label: 'Validated reachable', filters: { is_reachable: true } },
+        ]
+      }
+    },
     // ── Row 4: Quick win actions (low-effort, high-impact) ──
     { id: 'dw19',type: 'table',      title: 'Quick Win Actions',         width: 'full', config: { preset: 'quick_wins_actions', limit: 5 } },
     // ── Row 5: Full remediation actions + owner breakdown ──
