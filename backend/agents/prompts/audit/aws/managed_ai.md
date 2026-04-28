@@ -1,31 +1,37 @@
 {preamble}
 
-## Mission: Managed AI (Bedrock + SageMaker)
-Hunt for managed-AI governance and exposure risks specific to Amazon Bedrock and SageMaker. The risk vocabulary differs from generic compute/storage exposure: it's about model invocation logging, IAM scope on `bedrock:InvokeModel` / `sagemaker:InvokeEndpoint`, network isolation of inference endpoints, and guardrail enforcement.
+## Mission: Find the Worst Managed-AI Exposures (Bedrock + SageMaker)
+Hunt direct paths to model invocation by external principals or unaudited inference first. Coverage is secondary — five critical findings beat twenty hygiene mediums. The risk vocabulary here is *who can invoke* and *who can read the audit trail*, not generic compute/storage.
 
-### Bedrock checklist
-1. **Model invocation logging** — call `aws_bedrock_invocation_logging` for each region the customer uses. If the response is empty / `loggingConfig` is null / both `s3Config` and `cloudWatchConfig` are missing, that's a **high** finding: Bedrock invocations are unauditable in this region. Quote the empty config in evidence.
-2. **Guardrails** — list `aws_bedrock_guardrails`. An account that lists Bedrock foundation models but has zero guardrails configured is medium-severity: prompt-injection and content-filtering policy is absent. Cross-reference: if `aws_bedrock_foundation_models` returns a populated list and guardrails is empty, emit the finding.
-3. **IAM principals with `bedrock:InvokeModel`** — list `aws_iam_policies` and `aws_iam_roles`. For each policy document, look at the `Action` and `Resource` elements. Flag:
-   - any policy granting `bedrock:*` (overly broad — high)
-   - any policy granting `bedrock:InvokeModel` with `Resource: "*"` (org-wide invoke — medium; high if attached to a service role with public trust)
-   - any role with `bedrock:InvokeModel` whose trust policy allows `Principal: {"AWS": "*"}` or an external account (critical — public model invocation path)
+### Tier 1 — direct compromise paths (always run; emit on hit, then move on)
+1. **Bedrock role with public trust + `bedrock:InvokeModel`** — IAM role whose trust policy allows `Principal: {"AWS": "*"}` (or external/unknown account) AND has `bedrock:InvokeModel` in an attached policy. Anyone can assume → invoke models. Critical.
+2. **SageMaker endpoint with no VPC config + wildcard invoker** — endpoint config `VpcConfig` absent AND any IAM principal holds `sagemaker:InvokeEndpoint` on `Resource: "*"` with public-trust assumption path. Critical (anonymous-to-internal inference).
+3. **`bedrock:*` granted broadly to a non-admin** — wildcard Bedrock action on a service or workload role that doesn't deliberately operate the AI surface. Critical when the role's trust is also broad; high otherwise.
+4. **Model invocation logging absent** — `aws_bedrock_invocation_logging` returns null/empty for a region where Bedrock is in active use (foundation models listed, guardrails configured, or recent invocation activity inferred). Inference traffic is unauditable — no detection of prompt injection, data exfil via prompts, or model misuse. High flat; critical when combined with public-trust above.
+5. **Bedrock guardrails absent on a populated account** — `aws_bedrock_foundation_models` returns a populated list but `aws_bedrock_guardrails` is empty. No content filtering or PII redaction. High in regulated subscriptions, medium otherwise.
 
-### SageMaker checklist
-1. **Endpoints** — `aws_sagemaker_endpoints` lists active endpoints with `EndpointStatus`, `EndpointArn`, `EndpointName`. For each non-trivial endpoint, drill into `aws_sagemaker_endpoint_configs` (use `cloud_inspect`) to read the VPC config:
-   - **No VPC config** (i.e. `VpcConfig` absent on the endpoint config) → endpoint is on the default AWS-managed network, reachable from any IAM principal who can `sagemaker:InvokeEndpoint`. Flag medium.
-   - **Combined with a public-IAM-scope** (the principals analysis below) → high.
-2. **IAM principals with `sagemaker:InvokeEndpoint`** — same pattern as Bedrock. Look at attached IAM policies for principals who can call `sagemaker:InvokeEndpoint` with `Resource: "*"`. Cross-reference against the endpoint list — a wildcard invoker on a no-VPC endpoint is a real exposure path.
+If Tier 1 is fully probed and **clean**, continue to Tier 2. If Tier 1 produced a critical, do one Tier-2 enrichment pass (resolve the role's actual trust principals, sample one endpoint config) and stop.
+
+### Tier 2 — broader managed-AI surface
+- `bedrock:InvokeModel` with `Resource: "*"` on a service role with non-public trust — high.
+- SageMaker endpoint without VPC config attached to a model that processes sensitive data (training data labels imply PII/PHI) — high.
+- `sagemaker:CreateEndpoint` / `CreatePresignedNotebookInstanceUrl` granted to non-admin principals — high (chain to model substitution / notebook escape).
+- SageMaker notebook instance with `DirectInternetAccess=Enabled` and IAM role with broad data perms — high.
+- Cross-account model imports without explicit allowlist — high.
+- KMS-key policy on Bedrock/SageMaker resources missing the service principal restriction (`kms:ViaService`) — medium.
+
+### Tier 3 — hygiene (skip unless Tier 1+2 are exhausted and budget remains)
+Bedrock guardrails configured but in `report` mode rather than `block`, SageMaker training jobs without intra-job network isolation, deprecated model versions still pinned in production deployments, missing tag taxonomy on AI resources. Cap at medium.
+
+### Skip rules
+- If Bedrock isn't enabled (foundation-models list returns empty AND no invocation logging configured), skip the entire Bedrock checklist.
+- If SageMaker has zero endpoints, skip the endpoint checklist.
+- Don't enumerate every model version — the signal is in IAM and endpoint config, not the model registry.
 
 ### Compliance evidence
-Findings auto-tag with `nist_ai_rmf` and `iso_42001` (AWS audit's `compliance_tags`). When emitting, also include in `evidence`:
-  - resource ARN (endpoint ARN, model ARN, role ARN)
-  - exact policy element that proves the IAM finding (quote the JSON Action/Resource block)
-  - region (Bedrock/SageMaker are regional — a finding in us-east-1 doesn't tell you anything about eu-west-1)
+Findings auto-tag with `nist_ai_rmf` and `iso_42001`. In `evidence`, always include resource ARN, the exact policy element (quote `Action`/`Resource`/`Principal`), and region (Bedrock/SageMaker are regional — a finding in us-east-1 says nothing about eu-west-1).
 
-### Tools You'll Use Most
-`cloud_invoke` against `aws_bedrock_invocation_logging`, `aws_bedrock_guardrails`, `aws_bedrock_foundation_models`, `aws_sagemaker_endpoints`, `aws_sagemaker_endpoint_configs`, `aws_iam_policies`, `aws_iam_roles`. `cloud_inspect` for full policy documents and VPC configs. `emit_finding`.
-
-Skip `aws_bedrock_foundation_models` enumeration if the customer hasn't enabled Bedrock — the API returns 200 with an empty list, treat that as "Bedrock not in use, skip the rest of the Bedrock checklist".
+### Budget & stop rule
+Ration by tier, not by category. Stop after one Tier-2 enrichment pass once Tier 1 produces a critical. Stop if Tier 1 and Tier 2 are clean and you're 3 probes into Tier 3 with nothing new.
 
 Call `emit_finding` with `protocol="aws"` and `mission="managed_ai"`.

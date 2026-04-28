@@ -28,6 +28,26 @@ from agents.agent_context import compress_tool_result, build_context_section
 logger = logging.getLogger(__name__)
 
 
+def _commit_quiet(db: Session) -> None:
+    """Best-effort commit used to release the implicit transaction before a
+    long LLM round-trip. Postgres' ``idle_in_transaction_session_timeout``
+    will close a connection that sits in a tx longer than 60s, and a single
+    Anthropic/Vertex call can exceed that with retries — leaving the
+    connection dead by the time the next ``db.commit()`` fires.
+
+    A commit on a session with no pending writes is a no-op other than
+    ending the tx, so this is cheap. Errors are swallowed: this is a
+    safety release, not a meaningful unit of work.
+    """
+    try:
+        db.commit()
+    except Exception:  # pragma: no cover — defensive
+        try:
+            db.rollback()
+        except Exception:
+            pass
+
+
 # ── Router-backed shims ───────────────────────────────────────────────
 #
 # Provider/model resolution and client construction live in
@@ -409,6 +429,29 @@ class ApprovalRequired(Exception):
         super().__init__(f"Approval required for tool '{tool_name}' (approval_id={approval_id})")
 
 
+def _is_auto_approved_for_run(run: AgentRun, tool_name: str) -> bool:
+    """True if the user has bulk-approved ``tool_name`` for the rest of this run.
+
+    Backed by ``AgentRun.auto_approved_tools`` (set when an approval is decided
+    with ``grant_scope='run'`` — see ``record_approval_decision``). Future
+    calls of these tools skip both the HITL gate and the per-call NeedsApproval
+    gate; the tool body sees ``_approved=True`` so its own classifier
+    short-circuits.
+    """
+    if not run:
+        return False
+    granted = run.auto_approved_tools or []
+    return tool_name in granted
+
+
+def _maybe_inject_auto_approval(run: AgentRun, tool_name: str, tool_input: dict) -> dict:
+    """If ``tool_name`` is auto-approved for this run, inject ``_approved=True``
+    into the tool input so the tool body skips its NeedsApproval classifier."""
+    if _is_auto_approved_for_run(run, tool_name):
+        return {**(tool_input or {}), "_approved": True}
+    return tool_input or {}
+
+
 def _create_approval(
     agent: Agent,
     run: AgentRun,
@@ -439,6 +482,33 @@ def _create_approval(
     )
     db.add(approval)
     db.flush()  # get id without committing yet
+
+    # Emit a global notification so users see gated actions in the bell
+    # without having to know they live under Agents → Approval Queue.
+    if agent.org_id:
+        try:
+            from services.notifications import create_notification
+            reason = (tool_input or {}).get("_approval_reason")
+            agent_label = agent.name or f"agent {agent.id}"
+            title = f"{agent_label}: action needs approval"
+            body = f"{tool_name}" + (f" — {reason}" if reason else "")
+            create_notification(
+                db,
+                agent.org_id,
+                "approval_required",
+                title,
+                body=body,
+                link=f"/agents?approvals=1&run={run.id}",
+                entity_type="agent_approval",
+                entity_id=approval.id,
+                metadata={
+                    "agent_id": agent.id,
+                    "agent_run_id": run.id,
+                    "tool_name": tool_name,
+                },
+            )
+        except Exception:
+            logger.exception("failed to emit approval_required notification")
     return approval
 
 
@@ -536,6 +606,12 @@ def _run_anthropic(agent: Agent, user_input: str, db: Session, run: AgentRun, mo
         if tools:
             create_kwargs["tools"] = tools
 
+        # Release the open transaction before each LLM round-trip. Postgres
+        # closes connections that sit idle_in_transaction past 60s
+        # (core/database.py), and a single Anthropic call can run longer
+        # than that with retries — leaving the connection dead by the time
+        # we commit progress at the end of the step.
+        _commit_quiet(db)
         try:
             response = cl.messages.create(**create_kwargs)
         except Exception as exc:
@@ -601,7 +677,12 @@ def _run_anthropic(agent: Agent, user_input: str, db: Session, run: AgentRun, mo
             if block.type != "tool_use":
                 continue
             # HITL: pause before any write tool that needs human approval
-            if approval_mode == "hitl" and block.name in effective_hitl_tools:
+            # (skip if the user has bulk-approved this tool for the run).
+            if (
+                approval_mode == "hitl"
+                and block.name in effective_hitl_tools
+                and not _is_auto_approved_for_run(run, block.name)
+            ):
                 approval = _create_approval(
                     agent=agent, run=run, db=db,
                     tool_name=block.name, tool_input=block.input or {},
@@ -614,8 +695,9 @@ def _run_anthropic(agent: Agent, user_input: str, db: Session, run: AgentRun, mo
                 run.trace = trace
                 db.commit()
                 raise ApprovalRequired(approval.id, block.name)
+            tool_input = _maybe_inject_auto_approval(run, block.name, block.input or {})
             try:
-                result_str = _execute_tool(agent, db, block.name, block.input or {}, step, trace)
+                result_str = _execute_tool(agent, db, block.name, tool_input, step, trace)
             except NeedsApproval as exc:
                 _pause_for_per_call_approval(
                     agent=agent, run=run, db=db, exc=exc,
@@ -738,8 +820,12 @@ def _run_openai_compat(agent: Agent, user_input: str, db: Session, run: AgentRun
         messages.append(assistant_msg)
         for tc in msg.tool_calls:
             tool_input = json.loads(tc.function.arguments) if tc.function.arguments else {}
-            # HITL: pause before write tool
-            if approval_mode == "hitl" and tc.function.name in effective_hitl_tools:
+            # HITL: pause before write tool (unless auto-approved for this run)
+            if (
+                approval_mode == "hitl"
+                and tc.function.name in effective_hitl_tools
+                and not _is_auto_approved_for_run(run, tc.function.name)
+            ):
                 approval = _create_approval(
                     agent=agent, run=run, db=db,
                     tool_name=tc.function.name, tool_input=tool_input,
@@ -752,6 +838,7 @@ def _run_openai_compat(agent: Agent, user_input: str, db: Session, run: AgentRun
                 run.trace = trace
                 db.commit()
                 raise ApprovalRequired(approval.id, tc.function.name)
+            tool_input = _maybe_inject_auto_approval(run, tc.function.name, tool_input)
             try:
                 result_str = _execute_tool(agent, db, tc.function.name, tool_input, step, trace)
             except NeedsApproval as exc:
@@ -919,6 +1006,7 @@ def _run_gemini(agent: Agent, user_input: str, db: Session, run: AgentRun, model
         function_responses = []
         for fc in function_calls:
             tool_input = dict(fc.args) if fc.args else {}
+            tool_input = _maybe_inject_auto_approval(run, fc.name, tool_input)
             try:
                 result_str = _execute_tool(agent, db, fc.name, tool_input, step, trace)
             except NeedsApproval as exc:
@@ -1182,6 +1270,8 @@ def _stream_anthropic(agent, user_input, db, run, model, *, conversation_message
         create_kwargs = {"model": api_model, "max_tokens": 4096, "system": system, "messages": _sanitize_messages(compressed_messages)}
         if tools:
             create_kwargs["tools"] = tools
+        # See _run_anthropic for rationale.
+        _commit_quiet(db)
         try:
             response = cl.messages.create(**create_kwargs)
         except Exception as exc:
@@ -1232,7 +1322,11 @@ def _stream_anthropic(agent, user_input, db, run, model, *, conversation_message
         for block in response.content:
             if block.type != "tool_use":
                 continue
-            if approval_mode == "hitl" and block.name in effective_hitl_tools:
+            if (
+                approval_mode == "hitl"
+                and block.name in effective_hitl_tools
+                and not _is_auto_approved_for_run(run, block.name)
+            ):
                 approval = _create_approval(
                     agent=agent, run=run, db=db,
                     tool_name=block.name, tool_input=block.input or {},
@@ -1245,8 +1339,9 @@ def _stream_anthropic(agent, user_input, db, run, model, *, conversation_message
                 run.trace = trace
                 db.commit()
                 raise ApprovalRequired(approval.id, block.name)
+            tool_input = _maybe_inject_auto_approval(run, block.name, block.input or {})
             try:
-                result_str = _execute_tool(agent, db, block.name, block.input or {}, step, trace)
+                result_str = _execute_tool(agent, db, block.name, tool_input, step, trace)
             except NeedsApproval as exc:
                 _pause_for_per_call_approval(
                     agent=agent, run=run, db=db, exc=exc,
@@ -1345,7 +1440,11 @@ def _stream_openai_compat(agent, user_input, db, run, model, provider, *, conver
         messages.append(assistant_msg)
         for tc in msg.tool_calls:
             tool_input = json.loads(tc.function.arguments) if tc.function.arguments else {}
-            if approval_mode == "hitl" and tc.function.name in HITL_TOOLS:
+            if (
+                approval_mode == "hitl"
+                and tc.function.name in HITL_TOOLS
+                and not _is_auto_approved_for_run(run, tc.function.name)
+            ):
                 approval = _create_approval(
                     agent=agent, run=run, db=db,
                     tool_name=tc.function.name, tool_input=tool_input,
@@ -1358,6 +1457,7 @@ def _stream_openai_compat(agent, user_input, db, run, model, provider, *, conver
                 run.trace = trace
                 db.commit()
                 raise ApprovalRequired(approval.id, tc.function.name)
+            tool_input = _maybe_inject_auto_approval(run, tc.function.name, tool_input)
             try:
                 result_str = _execute_tool(agent, db, tc.function.name, tool_input, step, trace)
             except NeedsApproval as exc:
@@ -1457,6 +1557,7 @@ def _stream_gemini(agent, user_input, db, run, model, *, conversation_messages=N
         function_responses = []
         for fc in function_calls:
             tool_input = dict(fc.args) if fc.args else {}
+            tool_input = _maybe_inject_auto_approval(run, fc.name, tool_input)
             try:
                 result_str = _execute_tool(agent, db, fc.name, tool_input, step, trace)
             except NeedsApproval as exc:
@@ -1509,11 +1610,25 @@ def update_run_ctx(db: Session, agent_id: int, updates: dict) -> None:
 
 # ── HITL Resume ───────────────────────────────────────────────────────
 
-def resume_agent_run(run_id: int, decision: str, reason: Optional[str], decider_id: Optional[int], db: Session) -> AgentRun:
-    """Resume a paused agent run after a human approval decision.
+def record_approval_decision(
+    run_id: int,
+    decision: str,
+    reason: Optional[str],
+    decider_id: Optional[int],
+    db: Session,
+    grant_scope: Optional[str] = None,
+) -> tuple[AgentRun, AgentApproval]:
+    """Record a human's approve/reject decision and flip the run to 'running'.
 
-    decision: "approved" | "rejected"
-    reason:   optional rejection reason shown to the agent
+    Cheap and synchronous — does NOT execute the gated tool or continue the
+    agent loop. Pair with :func:`continue_after_decision` (typically run on a
+    background thread) for the heavy work. Splitting the two lets the HTTP
+    handler return immediately so the UI can show the decision without
+    waiting on multi-second SSH/LLM round-trips.
+
+    If ``grant_scope='run'`` and the decision is ``approved``, registers a
+    standing grant on the run so future calls of the same tool skip the
+    HITL gate and per-call approval.
     """
     run = db.query(AgentRun).filter(AgentRun.id == run_id).first()
     if not run:
@@ -1530,16 +1645,53 @@ def resume_agent_run(run_id: int, decision: str, reason: Optional[str], decider_
     if not approval:
         raise ValueError(f"No pending approval found for run {run_id}")
 
-    # Record the decision
     approval.status = decision  # "approved" or "rejected"
     approval.decided_at = datetime.utcnow()
     approval.decided_by = decider_id
     approval.rejection_reason = reason
-    db.flush()
 
-    agent = db.query(Agent).filter(Agent.id == run.agent_id).first()
+    if decision == "approved" and grant_scope == "run":
+        # Register a run-scoped grant so future calls of this tool skip the
+        # gate. SQLAlchemy doesn't detect in-place mutation of JSON columns,
+        # so reassign the list to flag the attribute dirty.
+        granted = list(run.auto_approved_tools or [])
+        if approval.tool_name not in granted:
+            granted.append(approval.tool_name)
+        run.auto_approved_tools = granted
+
     run.status = "running"
     db.commit()
+    db.refresh(run)
+    db.refresh(approval)
+    return run, approval
+
+
+def continue_after_decision(run_id: int, db: Session) -> AgentRun:
+    """Execute the decided tool and continue the agent loop.
+
+    Expects :func:`record_approval_decision` to have already committed —
+    the run is in ``running`` state and the most-recent approval row is
+    no longer ``pending``. Safe to call from a background worker.
+    """
+    run = db.query(AgentRun).filter(AgentRun.id == run_id).first()
+    if not run:
+        raise ValueError(f"Run {run_id} not found")
+
+    approval = (
+        db.query(AgentApproval)
+        .filter(
+            AgentApproval.agent_run_id == run_id,
+            AgentApproval.status.in_(("approved", "rejected")),
+        )
+        .order_by(AgentApproval.decided_at.desc())
+        .first()
+    )
+    if not approval:
+        raise ValueError(f"No decided approval found for run {run_id}")
+
+    decision = approval.status
+    reason = approval.rejection_reason
+    agent = db.query(Agent).filter(Agent.id == run.agent_id).first()
 
     try:
         provider = approval.provider
@@ -1567,7 +1719,37 @@ def resume_agent_run(run_id: int, decision: str, reason: Optional[str], decider_
     run.finished_at = datetime.utcnow()
     db.commit()
     db.refresh(run)
+
+    # If this run belongs to an audit Scan, flip the Scan's status now that
+    # we've reached a terminal AgentRun state. The Celery worker's
+    # _finalize_scan_if_complete only fires on the *initial* dispatch — when
+    # the run paused at awaiting_approval it short-circuited. Without this
+    # call the Scan row would stay status='running' indefinitely after the
+    # human approval lets the agent finish.
+    if run.status in ("done", "failed", "cancelled"):
+        try:
+            from services.audit_worker import _finalize_scan_if_complete
+            _finalize_scan_if_complete(db, run.agent_id)
+        except Exception:
+            logger.exception(
+                "continue_after_decision: scan finalize failed for run=%s (non-fatal)",
+                run.id,
+            )
+            db.rollback()
+
     return run
+
+
+def resume_agent_run(run_id: int, decision: str, reason: Optional[str], decider_id: Optional[int], db: Session) -> AgentRun:
+    """Synchronously record the decision and continue the agent run.
+
+    Kept for callers that want the legacy blocking behavior. New code
+    (notably the HTTP decide endpoint) should call
+    :func:`record_approval_decision` and dispatch
+    :func:`continue_after_decision` to a background job instead.
+    """
+    record_approval_decision(run_id, decision, reason, decider_id, db)
+    return continue_after_decision(run_id, db)
 
 
 def _resume_anthropic(agent, run, approval, decision, reason, model, trace, db):
@@ -1645,6 +1827,10 @@ def _resume_anthropic(agent, run, approval, decision, reason, model, trace, db):
         create_kwargs = {"model": api_model, "max_tokens": 4096, "system": system, "messages": _sanitize_messages(compressed_messages)}
         if tools:
             create_kwargs["tools"] = tools
+        # Release the open transaction before each LLM round-trip — see the
+        # matching comment in _run_anthropic for the idle_in_transaction
+        # rationale.
+        _commit_quiet(db)
         try:
             response = cl.messages.create(**create_kwargs)
         except Exception as exc:
@@ -1687,7 +1873,11 @@ def _resume_anthropic(agent, run, approval, decision, reason, model, trace, db):
         for block in response.content:
             if block.type != "tool_use":
                 continue
-            if approval_mode == "hitl" and block.name in HITL_TOOLS:
+            if (
+                approval_mode == "hitl"
+                and block.name in HITL_TOOLS
+                and not _is_auto_approved_for_run(run, block.name)
+            ):
                 new_approval = _create_approval(
                     agent=agent, run=run, db=db,
                     tool_name=block.name, tool_input=block.input or {},
@@ -1700,8 +1890,9 @@ def _resume_anthropic(agent, run, approval, decision, reason, model, trace, db):
                 run.trace = trace
                 db.commit()
                 raise ApprovalRequired(new_approval.id, block.name)
+            tool_input = _maybe_inject_auto_approval(run, block.name, block.input or {})
             try:
-                result_str = _execute_tool(agent, db, block.name, block.input or {}, step, trace)
+                result_str = _execute_tool(agent, db, block.name, tool_input, step, trace)
             except NeedsApproval as exc:
                 _pause_for_per_call_approval(
                     agent=agent, run=run, db=db, exc=exc,
@@ -1815,7 +2006,11 @@ def _resume_openai_compat(agent, run, approval, decision, reason, model, provide
         messages.append(clean_msg)
         for tc in msg.tool_calls:
             tool_input = json.loads(tc.function.arguments) if tc.function.arguments else {}
-            if approval_mode == "hitl" and tc.function.name in HITL_TOOLS:
+            if (
+                approval_mode == "hitl"
+                and tc.function.name in HITL_TOOLS
+                and not _is_auto_approved_for_run(run, tc.function.name)
+            ):
                 new_approval = _create_approval(
                     agent=agent, run=run, db=db,
                     tool_name=tc.function.name, tool_input=tool_input,
@@ -1828,6 +2023,7 @@ def _resume_openai_compat(agent, run, approval, decision, reason, model, provide
                 run.trace = trace
                 db.commit()
                 raise ApprovalRequired(new_approval.id, tc.function.name)
+            tool_input = _maybe_inject_auto_approval(run, tc.function.name, tool_input)
             try:
                 result_str = _execute_tool(agent, db, tc.function.name, tool_input, step, trace)
             except NeedsApproval as exc:

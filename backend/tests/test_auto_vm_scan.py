@@ -225,6 +225,102 @@ class TestTriggerVmScanForEasmAssets:
         assert result is None
         mock_start.assert_not_called()
 
+    def test_shodan_vulns_asset_bypasses_top_n(self, db_session):
+        """An asset with shodan_vulns is queued even when 30 higher-scoring
+        web apps would otherwise consume the MAX_AUTO_VM_TARGETS slots.
+
+        This is the exposed-VPN-with-RCE flow — the whole reason the bypass
+        exists. Without it a Fortinet/Pulse box surfaced by Shodan loses to
+        N web apps with richer tech stacks in the score sort.
+        """
+        from models.models import Asset
+
+        session, org = db_session
+        scan = _make_easm_scan(session, org)
+
+        # 25 web apps, each with multiple high-value ports + tech stacks —
+        # all would beat a port-22-only VPN box on the score sort.
+        for i in range(25):
+            _make_easm_asset(
+                session, scan.id, f"app{i}.example.com",
+                ports=[443, 8080, 8443], tech=["nginx", "React", "Express"],
+            )
+
+        # The exposed VPN box. Lone port, no tech stack, but Shodan reported
+        # a known CVE banner. It must be queued.
+        vpn_asset = Asset(
+            scan_id=scan.id,
+            hostname="vpn",
+            fqdn="vpn.example.com",
+            is_internet_facing=True,
+            environment_tag="external",
+            criticality=5,
+            easm_data={
+                "open_ports": [443],
+                "shodan_vulns": ["CVE-2024-21762"],
+                "tech_stack": [],
+                "http_status": 200,
+            },
+            source_systems=["easm"],
+        )
+        session.add(vpn_asset)
+        session.flush()
+
+        with patch("services.vm_scanner.start_vm_scan", new_callable=AsyncMock) as mock_start:
+            mock_start.return_value = {"scan_id": 999, "job_ids": ["j1"], "status": "running"}
+            from services.vm_scanner import trigger_vm_scan_for_easm_assets
+            _run(trigger_vm_scan_for_easm_assets(session, org, scan.id, "example.com"))
+
+        targets = mock_start.call_args[0][2]
+        asset_ids = mock_start.call_args[1]["asset_ids"]
+
+        # vpn.example.com must be in the queued set despite losing the score
+        # sort to 25 richer web apps.
+        assert "vpn.example.com" in targets
+        assert vpn_asset.id in asset_ids
+        # vpn comes first (bypass list is prepended).
+        assert targets[0] == "vpn.example.com"
+
+    def test_shodan_bypass_capped(self, db_session):
+        """Bypass list is capped at MAX_AUTO_VM_BYPASS_TARGETS to keep one bad
+        EASM run from blowing up the VM scan budget."""
+        from models.models import Asset
+
+        session, org = db_session
+        scan = _make_easm_scan(session, org)
+
+        # 60 shodan_vulns assets — bypass cap is 50.
+        for i in range(60):
+            asset = Asset(
+                scan_id=scan.id,
+                hostname=f"vpn{i}",
+                fqdn=f"vpn{i}.example.com",
+                is_internet_facing=True,
+                environment_tag="external",
+                criticality=5,
+                easm_data={
+                    "open_ports": [443],
+                    "shodan_vulns": ["CVE-2024-21762"],
+                    "http_status": 200,
+                },
+                source_systems=["easm"],
+            )
+            session.add(asset)
+        session.flush()
+
+        with patch("services.vm_scanner.start_vm_scan", new_callable=AsyncMock) as mock_start:
+            mock_start.return_value = {"scan_id": 999, "job_ids": ["j1"], "status": "running"}
+            from services.vm_scanner import (
+                trigger_vm_scan_for_easm_assets,
+                MAX_AUTO_VM_BYPASS_TARGETS,
+            )
+            _run(trigger_vm_scan_for_easm_assets(session, org, scan.id, "example.com"))
+
+        targets = mock_start.call_args[0][2]
+        # No more than the bypass cap (the score-sort list is empty since
+        # every asset is in the bypass set).
+        assert len(targets) == MAX_AUTO_VM_BYPASS_TARGETS
+
 
 class TestPostIngestAutoVmStep:
     """Tests that the post-ingest pipeline triggers VM scan only for EASM scans."""

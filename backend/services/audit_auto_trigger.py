@@ -369,15 +369,39 @@ def _resolve_backend_asset(
     return None
 
 
-def _pick_relay(db: Session, org_id: int) -> Optional[RelayAgent]:
-    """Most-recently-seen connected relay for the org. Audits run over the
-    relay; without one we have nowhere to send the request."""
-    return (
-        db.query(RelayAgent)
-        .filter(RelayAgent.org_id == org_id, RelayAgent.status == "connected")
+def _pick_relay(
+    db: Session, org_id: int, asset: Optional[Asset] = None,
+) -> Optional[RelayAgent]:
+    """Pick a connected relay for ``org_id``, biased by asset reachability.
+
+    Selection rules:
+      * Internet-facing assets prefer ``relay_type='cloud_scanner'`` (Hakuna
+        runs one in GCP per org — no customer deployment required for public
+        targets).
+      * Everything else prefers ``relay_type='agent'`` (customer-deployed
+        on-prem relays — only those can reach private networks).
+      * If the preferred type isn't connected, fall back to whatever is —
+        better to dispatch through a non-ideal relay than skip the audit.
+
+    Within a type, most-recently-seen wins (matches prior behavior).
+    """
+    base = db.query(RelayAgent).filter(
+        RelayAgent.org_id == org_id, RelayAgent.status == "connected",
+    )
+
+    prefer_cloud = bool(asset and getattr(asset, "is_internet_facing", False))
+    preferred_type = "cloud_scanner" if prefer_cloud else "agent"
+
+    preferred = (
+        base.filter(RelayAgent.relay_type == preferred_type)
         .order_by(RelayAgent.last_seen_at.desc().nullslast())
         .first()
     )
+    if preferred:
+        return preferred
+
+    # Fallback: any connected relay, most-recently-seen first.
+    return base.order_by(RelayAgent.last_seen_at.desc().nullslast()).first()
 
 
 def _within_cooldown(asset: Asset, protocol: str, cooldown: timedelta, now: datetime) -> bool:
@@ -487,7 +511,7 @@ def maybe_auto_trigger_anon_audits(
         )
         return 0
 
-    relay = _pick_relay(db, org.id)
+    relay = _pick_relay(db, org.id, asset)
     if not relay:
         logger.info(
             "auto-audit: org=%d skipped — no connected relay for asset %d",

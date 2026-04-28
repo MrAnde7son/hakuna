@@ -1843,6 +1843,87 @@ const DATA_PRESETS = {
   },
 }
 
+// Build a drill-down URL for a heatmap cell. Each row × col combination is
+// translated to either FindingExplorer URL params (preferred — shows simple
+// filter chips) or rule-engine conditions on the `q=` advanced query (used when
+// any dimension lacks a direct URL param, e.g. owner/asset/os/environment).
+const _HM_SEV_TO_NUM = { Critical: 4, High: 3, Medium: 2, Low: 1, Info: 0 }
+const _HM_EFFORT_TO_SLUG = { 'Quick Win': 'quick_win', Medium: 'medium', Complex: 'complex' }
+const _HM_SLA_TO_SLUG = { Breached: 'breached', 'At Risk': 'at_risk', 'On Track': 'on_track', Resolved: 'resolved' }
+
+function _heatmapDrillUrl(rowDim, rowKey, colDim, colKey) {
+  const params = {}
+  const conds = []
+
+  if (rowKey && rowKey !== 'Unknown' && rowKey !== 'Unassigned') {
+    switch (rowDim) {
+      case 'family': params.family = rowKey; break
+      case 'effort': {
+        const slug = _HM_EFFORT_TO_SLUG[rowKey] || rowKey.toLowerCase().replace(/\s+/g, '_')
+        if (slug) params.effort_level = slug
+        break
+      }
+      case 'owner':       conds.push({ field: 'finding.owner',     op: 'eq',       value: rowKey }); break
+      case 'asset':       conds.push({ field: 'hostname',          op: 'eq',       value: rowKey }); break
+      case 'os':          conds.push({ field: 'os',                op: 'contains', value: rowKey }); break
+      case 'environment': conds.push({ field: 'environment_tag',   op: 'eq',       value: rowKey }); break
+      // criticality: label→number mapping is ambiguous (multiple numbers map to
+      // the same label) — skip the row filter rather than emit a wrong condition.
+    }
+  }
+
+  if (colKey) {
+    switch (colDim) {
+      case 'severity': {
+        const n = _HM_SEV_TO_NUM[colKey]
+        if (n != null) params.severity = String(n)
+        break
+      }
+      case 'effort': {
+        const slug = _HM_EFFORT_TO_SLUG[colKey]
+        if (slug) params.effort_level = slug
+        break
+      }
+      case 'exploit':
+        if (colKey === 'Exploit Available') params.exploit = 'true'
+        else if (colKey === 'No Exploit')   conds.push({ field: 'finding.exploit', op: 'is_false', value: null })
+        break
+      case 'kev':
+        if (colKey === 'In KEV')      params.is_kev = 'true'
+        else if (colKey === 'Not in KEV') conds.push({ field: 'finding.is_kev', op: 'is_false', value: null })
+        break
+      case 'sla_status': {
+        const slug = _HM_SLA_TO_SLUG[colKey]
+        if (slug) params.sla_status = slug
+        break
+      }
+      // age_bucket and priority_bucket: no direct rule-engine field — col filter dropped
+    }
+  }
+
+  // FindingExplorer runs in advanced mode if `q` is present (and ignores the
+  // simple URL params). So when any condition exists we must convert all the
+  // simple params to conditions too, otherwise they'd be silently dropped.
+  if (conds.length > 0) {
+    if (params.family)       conds.push({ field: 'finding.plugin_family', op: 'eq',      value: params.family })
+    if (params.effort_level) conds.push({ field: 'finding.effort',        op: 'eq',      value: params.effort_level })
+    if (params.severity)     conds.push({ field: 'finding.severity',      op: 'eq',      value: Number(params.severity) })
+    if (params.exploit === 'true') conds.push({ field: 'finding.exploit', op: 'is_true', value: null })
+    if (params.is_kev === 'true')  conds.push({ field: 'finding.is_kev',  op: 'is_true', value: null })
+    if (params.sla_status)   conds.push({ field: 'finding.sla_status',    op: 'eq',      value: params.sla_status })
+
+    const sp = new URLSearchParams()
+    sp.set('q', JSON.stringify(conds))
+    sp.set('q_logic', 'AND')
+    return `/findings?${sp.toString()}`
+  }
+
+  const sp = new URLSearchParams()
+  Object.entries(params).forEach(([k, v]) => sp.set(k, v))
+  const qs = sp.toString()
+  return qs ? `/findings?${qs}` : '/findings'
+}
+
 // Normalises the /api/reports/heatmap response into the shape the renderer consumes.
 function _heatmapFromPayload(d) {
   if (!d) return { cols: [], rows: [], rowLabel: '', colLabel: '' }
@@ -3163,15 +3244,27 @@ function WidgetRenderer({ widget, scanId, preview, globalTags, globalTagLogic })
                     const v = r.cells?.[c.key] || 0
                     const intensity = v > 0 ? 0.15 + 0.7 * (v / maxPerCol[ci]) : 0
                     const bgAlpha = Math.round(intensity * 255).toString(16).padStart(2, '0')
+                    const clickable = v > 0 && heatmapRows && heatmapCols
+                    const onCellClick = clickable
+                      ? () => navigate(_heatmapDrillUrl(heatmapRows, r.key, heatmapCols, c.key))
+                      : undefined
                     return (
                       <td key={c.key} style={{ padding: 3, textAlign: 'center' }}>
-                        <div style={{
-                          display: 'flex', alignItems: 'center', justifyContent: 'center',
-                          height: 30, borderRadius: 4,
-                          background: v > 0 ? `${colColor[ci]}${bgAlpha}` : 'transparent',
-                          color: v > 0 ? (intensity > 0.5 ? '#fff' : colColor[ci]) : 'var(--text-muted)',
-                          fontWeight: 600, fontSize: 11,
-                        }}>{v || ''}</div>
+                        <div
+                          onClick={onCellClick}
+                          title={clickable ? `View ${v} finding${v === 1 ? '' : 's'}: ${r.label} × ${c.label}` : undefined}
+                          style={{
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            height: 30, borderRadius: 4,
+                            background: v > 0 ? `${colColor[ci]}${bgAlpha}` : 'transparent',
+                            color: v > 0 ? (intensity > 0.5 ? '#fff' : colColor[ci]) : 'var(--text-muted)',
+                            fontWeight: 600, fontSize: 11,
+                            cursor: clickable ? 'pointer' : 'default',
+                            transition: 'transform 0.1s ease, box-shadow 0.1s ease',
+                          }}
+                          onMouseEnter={clickable ? (e) => { e.currentTarget.style.boxShadow = '0 0 0 2px var(--accent)' } : undefined}
+                          onMouseLeave={clickable ? (e) => { e.currentTarget.style.boxShadow = 'none' } : undefined}
+                        >{v || ''}</div>
                       </td>
                     )
                   })}
@@ -3295,8 +3388,121 @@ function WidgetRenderer({ widget, scanId, preview, globalTags, globalTagLogic })
 
 const FUNNEL_COLORS = ['#6366f1', '#818cf8', '#a5b4fc', '#c7d2fe', '#e0e7ff', '#93c5fd', '#60a5fa', '#3b82f6']
 
+// Translate one funnel finding filter into either a FindingExplorer URL param
+// (preferred — keeps the simple filter UI) or a rule-engine condition (used
+// when the filter has no direct URL counterpart, e.g. min_cvss3, owner_suggestion).
+// Returns { param: [k, v] } or { cond: { field, op, value } } or null.
+const _isTrue = (v) => v === true || v === 'true'
+
+function _translateFunnelFindingFilter(key, val) {
+  if (val == null || val === '') return null
+  switch (key) {
+    // Direct URL params
+    case 'severity':       return { param: ['severity', String(val)] }
+    case 'sla_status':     return { param: ['sla_status', val] }
+    case 'effort_level':   return { param: ['effort_level', val] }
+    case 'workflow_status':return { param: ['workflow_status', val] }
+    case 'cve':            return { param: ['cve', val] }
+    case 'tactic':         return { param: ['tactic', val] }
+    case 'technique_id':   return { param: ['technique_id', val] }
+    case 'search':         return { param: ['search', val] }
+    case 'is_kev':            return _isTrue(val) ? { param: ['is_kev', 'true'] } : null
+    case 'has_exploit':       return _isTrue(val) ? { param: ['exploit', 'true'] } : null
+    case 'ransomware_linked': return _isTrue(val) ? { param: ['ransomware', 'true'] } : null
+    case 'trending_in_news':  return _isTrue(val) ? { param: ['trending', 'true'] } : null
+    case 'has_ttps':          return _isTrue(val) ? { param: ['has_ttps', 'true'] } : null
+    case 'has_exception':     return _isTrue(val) ? { param: ['has_exception', 'true'] } : null
+    // Rule-engine conditions
+    case 'min_severity':   return { cond: { field: 'finding.severity',         op: 'gte', value: Number(val) } }
+    case 'min_cvss3':      return { cond: { field: 'finding.cvss3',            op: 'gte', value: Number(val) } }
+    case 'min_cvss4':      return { cond: { field: 'finding.cvss4',            op: 'gte', value: Number(val) } }
+    case 'min_vpr':        return { cond: { field: 'finding.vpr',              op: 'gte', value: Number(val) } }
+    case 'min_epss':       return { cond: { field: 'finding.epss_score',       op: 'gte', value: Number(val) } }
+    case 'zero_day':            return _isTrue(val) ? { cond: { field: 'finding.zero_day',         op: 'is_true', value: null } } : null
+    case 'is_regression':       return _isTrue(val) ? { cond: { field: 'finding.is_regression',    op: 'is_true', value: null } } : null
+    case 'exploit_maturity':    return { cond: { field: 'finding.exploit_maturity',     op: 'eq',       value: val } }
+    case 'vulnerability_state': return { cond: { field: 'finding.vulnerability_state',  op: 'eq',       value: val } }
+    case 'risk_factor':         return { cond: { field: 'finding.risk_factor',          op: 'eq',       value: val } }
+    case 'owner_suggestion':    return { cond: { field: 'finding.owner',                op: 'eq',       value: val } }
+    case 'plugin_family':       return { cond: { field: 'finding.plugin_family',        op: 'contains', value: val } }
+    case 'plugin_name':         return { cond: { field: 'finding.plugin_name',          op: 'contains', value: val } }
+    case 'port':                return { cond: { field: 'finding.port',                 op: 'eq',       value: Number(val) } }
+    case 'protocol':            return { cond: { field: 'finding.protocol',             op: 'eq',       value: val } }
+    case 'on_critical_assets':  return _isTrue(val) ? { cond: { field: 'criticality',  op: 'gte',     value: 8 } } : null
+    case 'asset_min_risk':      return { cond: { field: 'risk_score',                  op: 'gte',     value: Number(val) } }
+    // Filters without a clean translation (on_internet_facing, is_reachable) are skipped.
+    default: return null
+  }
+}
+
+// Promote a URL-param mapping into an equivalent rule-engine condition. Used
+// when at least one filter requires advanced query — FindingExplorer's
+// advanced mode ignores simple URL params, so everything must be in conds.
+function _paramToCond(key, val) {
+  switch (key) {
+    case 'severity':        return { field: 'finding.severity',         op: 'eq',       value: Number(val) }
+    case 'sla_status':      return { field: 'finding.sla_status',       op: 'eq',       value: val }
+    case 'effort_level':    return { field: 'finding.effort',           op: 'eq',       value: val }
+    case 'workflow_status': return { field: 'finding.workflow_status',  op: 'eq',       value: val }
+    case 'cve':             return { field: 'finding.cve',              op: 'contains', value: val }
+    case 'tactic':          return { field: 'finding.tactic',           op: 'eq',       value: val }
+    case 'is_kev':          return { field: 'finding.is_kev',           op: 'is_true',  value: null }
+    case 'exploit':         return { field: 'finding.exploit',          op: 'is_true',  value: null }
+    case 'ransomware':      return { field: 'finding.ransomware_linked',op: 'is_true',  value: null }
+    case 'trending':        return { field: 'finding.trending_in_news', op: 'is_true',  value: null }
+    case 'has_ttps':        return { field: 'finding.has_ttps',         op: 'is_true',  value: null }
+    case 'search':          return { field: 'finding.plugin_name',      op: 'contains', value: val }
+    default: return null
+  }
+}
+
+// Combine cumulative filters from steps[0..idx] into a drill-down URL.
+function _funnelDrillUrl(baseEntity, steps, idx) {
+  if (baseEntity === 'assets') {
+    // Asset funnel: pass all filters straight through as URL params; the assets
+    // page can ignore unknown ones. Asset filters mostly have no rule-engine
+    // analogue available to FindingExplorer, so simple URL is the best we can do.
+    const sp = new URLSearchParams()
+    for (let i = 0; i <= idx && i < (steps?.length || 0); i++) {
+      for (const [k, v] of Object.entries(steps[i]?.filters || {})) {
+        if (v != null && v !== '') sp.set(k, String(v))
+      }
+    }
+    const qs = sp.toString()
+    return qs ? `/assets?${qs}` : '/assets'
+  }
+
+  const params = {}
+  const conds = []
+  for (let i = 0; i <= idx && i < (steps?.length || 0); i++) {
+    for (const [k, v] of Object.entries(steps[i]?.filters || {})) {
+      const t = _translateFunnelFindingFilter(k, v)
+      if (!t) continue
+      if (t.param) params[t.param[0]] = t.param[1]
+      else if (t.cond) conds.push(t.cond)
+    }
+  }
+
+  if (conds.length > 0) {
+    for (const [k, v] of Object.entries(params)) {
+      const c = _paramToCond(k, v)
+      if (c) conds.push(c)
+    }
+    const sp = new URLSearchParams()
+    sp.set('q', JSON.stringify(conds))
+    sp.set('q_logic', 'AND')
+    return `/findings?${sp.toString()}`
+  }
+
+  const sp = new URLSearchParams()
+  Object.entries(params).forEach(([k, v]) => sp.set(k, v))
+  const qs = sp.toString()
+  return qs ? `/findings?${qs}` : '/findings'
+}
+
 function FunnelWidget({ widget, scanId }) {
   const { t } = useTranslation()
+  const navigate = useNavigate()
   const cfg = widget.config || {}
   const [funnelData, setFunnelData] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -3315,6 +3521,7 @@ function FunnelWidget({ widget, scanId }) {
 
   const steps = funnelData.steps
   const maxCount = steps[0]?.count || 1
+  const baseEntity = cfg.base_entity || 'findings'
 
   return (
     <div style={{ padding: '4px 0' }}>
@@ -3323,24 +3530,34 @@ function FunnelWidget({ widget, scanId }) {
         const color = FUNNEL_COLORS[i % FUNNEL_COLORS.length]
         const prevCount = i > 0 ? steps[i - 1].count : null
         const dropPct = prevCount ? Math.round((1 - step.count / prevCount) * 100) : null
+        const clickable = step.count > 0
+        const onStepClick = clickable
+          ? () => navigate(_funnelDrillUrl(baseEntity, cfg.steps || [], i))
+          : undefined
         return (
           <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
             <div style={{ width: 130, flexShrink: 0, textAlign: 'right', fontSize: 12, color: 'var(--text-secondary)', fontWeight: 500 }}>
               {step.label}
             </div>
             <div style={{ flex: 1, position: 'relative' }}>
-              <div style={{
-                width: `${widthPct}%`,
-                margin: '0 auto',
-                background: `linear-gradient(135deg, ${color}, ${color}cc)`,
-                borderRadius: 6,
-                padding: '8px 12px',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                minHeight: 32,
-                transition: 'width 0.4s ease',
-              }}>
+              <div
+                onClick={onStepClick}
+                title={clickable ? `View ${step.count.toLocaleString()} ${baseEntity} matching: ${step.label}` : undefined}
+                onMouseEnter={clickable ? (e) => { e.currentTarget.style.transform = 'translateY(-1px)'; e.currentTarget.style.boxShadow = '0 4px 12px rgba(99, 102, 241, 0.35)' } : undefined}
+                onMouseLeave={clickable ? (e) => { e.currentTarget.style.transform = 'none'; e.currentTarget.style.boxShadow = 'none' } : undefined}
+                style={{
+                  width: `${widthPct}%`,
+                  margin: '0 auto',
+                  background: `linear-gradient(135deg, ${color}, ${color}cc)`,
+                  borderRadius: 6,
+                  padding: '8px 12px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  minHeight: 32,
+                  cursor: clickable ? 'pointer' : 'default',
+                  transition: 'width 0.4s ease, transform 0.1s ease, box-shadow 0.1s ease',
+                }}>
                 <span style={{ color: '#fff', fontWeight: 700, fontSize: 14 }}>
                   {step.count.toLocaleString()}
                 </span>

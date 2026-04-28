@@ -45,6 +45,12 @@ _PROBE_TIMEOUT_S = 10  # IPMI BMCs can be sluggish; 8s is too tight
 
 
 def _run_async(coro):
+    # See agents/tools/ssh_tools.py for the cross-loop-future rationale.
+    from core.event_loop import get_main_loop, is_on_main_loop
+    main_loop = get_main_loop()
+    if main_loop is not None and main_loop.is_running() and not is_on_main_loop():
+        fut = asyncio.run_coroutine_threadsafe(coro, main_loop)
+        return fut.result(timeout=_PROBE_TIMEOUT_S + 15)
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:

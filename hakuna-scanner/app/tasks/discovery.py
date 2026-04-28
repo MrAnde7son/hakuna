@@ -19,7 +19,11 @@ from app.celery_app import celery
 from app.config import settings
 from app.database import get_task_session
 from app.ingest.assets import upsert_discovered_hosts, update_dns_records, update_ports
-from app.ingest.delta import emit_new_asset_events, detect_gone_assets
+from app.ingest.delta import (
+    apply_shodan_observations,
+    detect_gone_assets,
+    emit_new_asset_events,
+)
 from app.ingest.liveness import (
     check_dns_resolution,
     create_dangling_dns_finding,
@@ -328,8 +332,19 @@ async def _do_shodan(sf, org_id: str, target_scope: str | None = None) -> dict:
     async with sf() as db:
         total, new_ids = await upsert_discovered_hosts(db, uuid.UUID(org_id), all_hosts, "shodan")
         await emit_new_asset_events(db, uuid.UUID(org_id), new_ids)
+        # Merge Shodan port/banner/CVE data and synthesize port_change events
+        # for newly-observed ports. Lets the audit auto-trigger fire on
+        # Shodan-discovered services (exposed SMB, SNMP, datastore, etc.) the
+        # same way it fires on naabu-discovered ports — without waiting for an
+        # internal port sweep that may never reach an orphan IP.
+        shodan_meta = await apply_shodan_observations(db, uuid.UUID(org_id), all_hosts)
 
-    return {"hosts_found": len(all_hosts), "upserted": total, "new": len(new_ids)}
+    return {
+        "hosts_found": len(all_hosts),
+        "upserted": total,
+        "new": len(new_ids),
+        "shodan_observations": shodan_meta,
+    }
 
 
 async def _do_crtsh(sf, org_id: str, target_scope: str | None = None) -> dict:

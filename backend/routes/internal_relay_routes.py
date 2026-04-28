@@ -18,18 +18,25 @@ Scoped to process-to-process dispatch. Not exposed to the browser — the
 
 from __future__ import annotations
 
+import hmac
 import logging
+import os
+from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, WebSocket
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
 
 from core.auth import require_internal_token
+from core.database import get_db
+from models.models import Organization, RelayAgent
 from services.relay_broker import get_relay_broker
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/internal/relay", tags=["internal"])
+cloud_ws_router = APIRouter()
 
 
 class RelayDispatchRequest(BaseModel):
@@ -82,3 +89,162 @@ async def presence(
     """Cheap liveness probe. Workers use this for `broker.is_connected(...)`
     without round-tripping a full dispatch. Expected latency <5ms."""
     return {"connected": get_relay_broker().is_connected(agent_id)}
+
+
+# ─────────────────────────────────────────────────────────────────
+# Cloud relay (Hakuna-managed scanner running in GCP)
+# ─────────────────────────────────────────────────────────────────
+#
+# The cloud scanner is a single multi-tenant container that holds one
+# WebSocket per org and dispatches public-asset audits without needing a
+# customer deployment. It authenticates with INTERNAL_SHARED_SECRET (the
+# same shared secret the audit-worker uses for /internal/relay/dispatch)
+# rather than per-org bearer tokens — the cloud relay runs inside the same
+# trust boundary as the API.
+#
+# Flow:
+#   1. Cloud relay polls GET /internal/cloud-relay/registrations.
+#      Backend ensures every org has a relay_type='cloud_scanner' row,
+#      returns the list of (agent_id, org_id, name).
+#   2. For each agent_id, the cloud relay opens a WebSocket to
+#      /ws/relay/cloud?agent_id=<id>&token=<INTERNAL_SHARED_SECRET>.
+#   3. Backend validates the secret, looks up the agent, and registers it
+#      with the in-process RelayBroker — same as a customer agent.
+#
+# When auto-trigger fires for an internet-facing asset, _pick_relay
+# returns the cloud_scanner row and dispatch goes through the cloud
+# relay's WebSocket. Customer-deployed agents continue to handle private
+# assets unchanged.
+
+
+class CloudRegistration(BaseModel):
+    agent_id: str
+    org_id: int
+    name: str
+
+
+def _ensure_cloud_relay_for_org(db: Session, org: Organization) -> RelayAgent:
+    """Idempotently create the cloud_scanner row for ``org``.
+
+    One row per org. Token fields are set to a sentinel — the cloud relay
+    authenticates via INTERNAL_SHARED_SECRET on /ws/relay/cloud, not a
+    bearer token, so token_hash never gets verified for these rows.
+    """
+    existing = (
+        db.query(RelayAgent)
+        .filter(RelayAgent.org_id == org.id, RelayAgent.relay_type == "cloud_scanner")
+        .first()
+    )
+    if existing:
+        return existing
+
+    agent = RelayAgent(
+        org_id=org.id,
+        name="Hakuna Cloud Scanner",
+        relay_type="cloud_scanner",
+        token_hash="cloud-managed",   # never verified; see _ws_auth_check below
+        token_prefix=None,
+        credentials_mode="cloud_managed",
+        labels={"managed_by": "hakuna"},
+        created_by="system",
+    )
+    db.add(agent)
+    db.commit()
+    db.refresh(agent)
+    logger.info("auto-provisioned cloud_scanner relay for org %d (%s)", org.id, agent.id)
+    return agent
+
+
+@router.get("/cloud-relay/registrations")
+async def cloud_relay_registrations(
+    db: Session = Depends(get_db),
+    _: None = Depends(require_internal_token),
+) -> list[dict[str, Any]]:
+    """Return cloud_scanner agent IDs for every org. Auto-provisions missing rows."""
+    out: list[dict[str, Any]] = []
+    for org in db.query(Organization).all():
+        agent = _ensure_cloud_relay_for_org(db, org)
+        out.append({
+            "agent_id": agent.id,
+            "org_id": org.id,
+            "name": agent.name,
+        })
+    return out
+
+
+def _internal_secret() -> str:
+    return os.environ.get("INTERNAL_SHARED_SECRET", "")
+
+
+@cloud_ws_router.websocket("/ws/relay/cloud")
+async def cloud_relay_websocket(ws: WebSocket, db: Session = Depends(get_db)):
+    """WebSocket endpoint for the Hakuna-managed cloud scanner.
+
+    Authenticates via the same INTERNAL_SHARED_SECRET used for
+    /internal/relay/* — the cloud relay runs in the same trust boundary as
+    the API, so it doesn't need per-agent bearer tokens. The agent_id is
+    passed as a query param and must reference a relay_type='cloud_scanner'
+    row.
+    """
+    token = ws.query_params.get("token", "")
+    agent_id = ws.query_params.get("agent_id", "")
+
+    secret = _internal_secret()
+    if not secret or not token or not hmac.compare_digest(token, secret):
+        await ws.accept()
+        await ws.send_json({"type": "error", "message": "Unauthorized"})
+        await ws.close(code=4001, reason="Unauthorized")
+        return
+
+    agent = db.query(RelayAgent).filter(
+        RelayAgent.id == agent_id,
+        RelayAgent.relay_type == "cloud_scanner",
+    ).first()
+    if not agent:
+        await ws.accept()
+        await ws.send_json({"type": "error", "message": "Unknown cloud_scanner agent"})
+        await ws.close(code=4004, reason="Unknown agent")
+        return
+
+    await ws.accept()
+
+    agent.status = "connected"
+    agent.last_seen_at = datetime.utcnow()
+    agent.ip_address = ws.client.host if ws.client else None
+    db.commit()
+
+    broker = get_relay_broker()
+    await broker.register(agent.id, ws, info={
+        "org_id": agent.org_id,
+        "name": agent.name,
+        "relay_type": "cloud_scanner",
+    })
+
+    await ws.send_json({
+        "type": "welcome",
+        "agent_id": agent.id,
+        "agent_name": agent.name,
+        "credentials_mode": agent.credentials_mode,
+        "allowed_hosts": agent.allowed_hosts or [],
+    })
+
+    try:
+        from fastapi import WebSocketDisconnect
+        while True:
+            msg = await ws.receive_json()
+            await broker.handle_agent_message(agent.id, msg)
+            agent.last_seen_at = datetime.utcnow()
+            if msg.get("type") == "pong":
+                v = msg.get("agent_version")
+                if isinstance(v, str) and v:
+                    agent.agent_version = v
+            db.commit()
+    except WebSocketDisconnect:
+        logger.info("Cloud relay agent %s disconnected", agent.id)
+    except Exception:
+        logger.exception("Cloud relay WebSocket error for agent %s", agent.id)
+    finally:
+        await broker.unregister(agent.id)
+        agent.status = "disconnected"
+        agent.last_seen_at = datetime.utcnow()
+        db.commit()

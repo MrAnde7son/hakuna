@@ -1056,3 +1056,66 @@ def test_dispatch_proceeds_when_required_port_open(db_session, test_org, audit_a
 
     assert mock_dispatch.call_count == 1
     assert result["runs"][0]["status"] == "pending"
+
+
+def test_preflight_passes_when_user_supplied_audit_target_port(db_session, audit_asset):
+    """User typed ``ssh:2222`` — _upsert_asset_by_target persists
+    ``audit_target_port=2222`` on the asset. Preflight must treat that as
+    authoritative even though required_ports=[22] doesn't intersect [2222].
+    Without the short-circuit, every non-standard-port audit dispatched via
+    free-form target gets blocked by preflight and never reaches the relay."""
+    from services.audit_runner import _preflight_audit_asset
+    from agents.audit_registry import AUDITS
+
+    audit_asset.easm_data = {"open_ports": [2222], "audit_target_port": 2222}
+    db_session.flush()
+
+    ok, reason = _preflight_audit_asset(audit_asset, AUDITS["ssh"])
+    assert ok is True
+    assert reason is None
+
+
+def test_dispatch_proceeds_with_host_port_target(db_session, test_org):
+    """End-to-end: dispatching ``ssh:2222`` against a host whose only
+    discovered port is 2222 must enqueue the Celery task, not preflight-skip.
+    Regression for the user-reported "doesn't work with ssh:2222" case."""
+    from services.audit_runner import dispatch_audit_run
+
+    with patch("services.audit_runner._dispatch_background_run") as mock_dispatch:
+        result = dispatch_audit_run(
+            db=db_session, org=test_org,
+            protocol="ssh", mission="exposure_audit",
+            targets=["10.20.30.40:2222"],
+            relay_agent_id="relay-1", credential_id="ssh-cred",
+        )
+
+    assert mock_dispatch.call_count == 1
+    assert result["runs"][0]["status"] == "pending"
+
+
+def test_dispatch_finalizes_scan_when_all_assets_preflight_skipped(
+    db_session, test_org, audit_asset,
+):
+    """Regression: when every asset is preflight-skipped, no Celery task
+    runs, so the worker's _finalize_scan_if_complete never fires from the
+    task body. Without an in-line finalize call the Scan is wedged at
+    status='running' forever. Dispatch must mark it 'failed' synchronously."""
+    from services.audit_runner import dispatch_audit_run
+
+    audit_asset.easm_data = {"open_ports": [80]}  # 445 missing → preflight skips
+    db_session.flush()
+
+    with patch("services.audit_runner._dispatch_background_run") as mock_dispatch:
+        result = dispatch_audit_run(
+            db=db_session, org=test_org,
+            protocol="smb", mission="exposure_audit",
+            asset_ids=[audit_asset.id],
+            relay_agent_id="relay-1", credential_id=None,
+        )
+
+    assert mock_dispatch.call_count == 0
+    assert result["runs"][0]["status"] == "unreachable"
+
+    scan = db_session.query(Scan).filter_by(id=result["scan_id"]).first()
+    assert scan.status == "failed"
+    assert (scan.raw_metadata or {}).get("status") == "failed"

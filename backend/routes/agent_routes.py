@@ -18,7 +18,14 @@ from core.time_utils import iso_utc
 from models.models import Agent, AgentRun, AgentSchedule, AgentDocument, AgentApproval, LLMInteraction, User
 from core.auth import get_current_user, get_accessible_org_ids, apply_org_filter
 from agents.agent_tools import get_tool_catalog
-from agents.agent_engine import run_agent, run_agent_streaming, update_agent_memory, resume_agent_run
+from agents.agent_engine import (
+    run_agent,
+    run_agent_streaming,
+    update_agent_memory,
+    resume_agent_run,
+    record_approval_decision,
+    continue_after_decision,
+)
 from agents.agent_pipeline import get_available_pipelines, PIPELINE_REGISTRY
 from agents.agent_prompts import ENHANCED_PROMPTS
 
@@ -470,6 +477,11 @@ def _doc_to_dict(d: AgentDocument):
 class ApprovalDecide(BaseModel):
     decision: str          # "approved" | "rejected"
     reason: Optional[str] = None
+    # When set to "run", an "approved" decision also auto-approves any future
+    # calls of the same tool for the rest of this agent run, and bulk-approves
+    # any other pending rows in the queue for the same tool. Omit (or pass
+    # null) for the default per-call behavior.
+    grant_scope: Optional[str] = None
 
 
 @router.get("/approvals")
@@ -520,6 +532,8 @@ def decide_approval(
     """Approve or reject a pending tool call. Resumes the agent run."""
     if body.decision not in ("approved", "rejected"):
         raise HTTPException(400, "decision must be 'approved' or 'rejected'")
+    if body.grant_scope is not None and body.grant_scope != "run":
+        raise HTTPException(400, "grant_scope must be 'run' if provided")
 
     q = (
         db.query(AgentApproval)
@@ -531,14 +545,41 @@ def decide_approval(
     if not approval:
         raise HTTPException(404, "Pending approval not found")
 
-    run = resume_agent_run(
-        run_id=approval.agent_run_id,
+    approval_id_for_cleanup = approval.id
+    run_id = approval.agent_run_id
+
+    # Record the decision synchronously so the queue/UI sees the new
+    # status immediately. The actual tool execution + LLM continuation
+    # can take many seconds and runs in the background below.
+    record_approval_decision(
+        run_id=run_id,
         decision=body.decision,
         reason=body.reason,
         decider_id=current_user.id if current_user else None,
         db=db,
+        grant_scope=body.grant_scope,
     )
-    return {"ok": True, "run": _run_to_dict(run)}
+
+    # The notification that pointed at this approval is no longer
+    # actionable — drop it so the bell stops surfacing stale work.
+    from services.approval_lifecycle import clear_approval_notification
+    if clear_approval_notification(db, approval_id_for_cleanup):
+        db.commit()
+
+    # Continue the agent loop on a worker thread — keeps the HTTP
+    # response fast even when the approved tool is slow (SSH commands,
+    # multi-step LLM round-trips, further tool executions).
+    from services.job_manager import dispatch
+
+    def _continue():
+        bg_db = SessionLocal()
+        try:
+            continue_after_decision(run_id, bg_db)
+        finally:
+            bg_db.close()
+
+    job = dispatch(f"agent_resume_{run_id}", _continue)
+    return {"ok": True, "run_id": run_id, "job_id": job.id}
 
 
 # ── Agent by ID (parameterized routes last) ──────────────────────────
@@ -1220,6 +1261,10 @@ def _approval_to_dict(a: AgentApproval, include_snapshot: bool = False):
         "decided_at": iso_utc(a.decided_at),
         "decided_by": a.decided_by,
         "rejection_reason": a.rejection_reason,
+        # Tool names already bulk-approved for this run — lets the UI hide
+        # the "Approve all <tool>" affordance for tools the user has
+        # already granted.
+        "run_auto_approved_tools": list((a.run.auto_approved_tools or [])) if a.run else [],
     }
     if include_snapshot:
         d["assistant_content"] = a.assistant_content

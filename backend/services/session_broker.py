@@ -263,8 +263,16 @@ async def _run_login_flow(
             if not steps or steps[0].get("action") != "goto":
                 steps = [{"action": "goto", "url": login_url}] + steps
 
-            for step in steps:
-                await _execute_step(page, step, creds)
+            for idx, step in enumerate(steps):
+                try:
+                    await _execute_step(page, step, creds)
+                except SessionBrokerError:
+                    raise
+                except Exception as e:
+                    target = step.get("selector") or step.get("url") or step.get("pattern") or ""
+                    raise SessionBrokerError(
+                        f"step {idx} ({step.get('action')} {target}) failed: {type(e).__name__}: {e}"
+                    )
 
             await _assert_success(page, success_condition)
 

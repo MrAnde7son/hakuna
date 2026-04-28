@@ -93,15 +93,16 @@ function ApprovalCard({ approval, onDecide }) {
 
   const isPending = approval.status === 'pending'
   const toolLabel = TOOL_LABELS[approval.tool_name] || approval.tool_name
+  const alreadyGranted = (approval.run_auto_approved_tools || []).includes(approval.tool_name)
 
-  const handleDecide = async (decision) => {
+  const handleDecide = async (decision, opts = {}) => {
     if (decision === 'rejected' && !showReject) {
       setShowReject(true)
       return
     }
     setLoading(true)
     try {
-      await onDecide(approval.id, decision, rejectReason || undefined)
+      await onDecide(approval.id, decision, rejectReason || undefined, opts)
     } finally {
       setLoading(false)
       setShowReject(false)
@@ -187,49 +188,74 @@ function ApprovalCard({ approval, onDecide }) {
 
       {/* Approve / Reject buttons */}
       {isPending && !showReject && (
-        <div style={{ display: 'flex', gap: 8, marginTop: 2 }}>
-          <button
-            onClick={() => handleDecide('approved')}
-            disabled={loading}
-            style={{
-              flex: 1, padding: '7px 0', borderRadius: 6, border: 'none',
-              background: 'var(--success, #16a34a)', color: '#fff',
-              cursor: loading ? 'not-allowed' : 'pointer', fontSize: 13, fontWeight: 600,
-              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-            }}
-          >
-            <CheckCircle size={14} />
-            {loading ? 'Approving…' : 'Approve'}
-          </button>
-          <button
-            onClick={() => handleDecide('rejected')}
-            disabled={loading}
-            style={{
-              flex: 1, padding: '7px 0', borderRadius: 6,
-              border: '1px solid var(--danger)', background: 'transparent',
-              color: 'var(--danger)', cursor: loading ? 'not-allowed' : 'pointer',
-              fontSize: 13, fontWeight: 600,
-              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-            }}
-          >
-            <XCircle size={14} />
-            Reject
-          </button>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 2 }}>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              onClick={() => handleDecide('approved')}
+              disabled={loading}
+              style={{
+                flex: 1, padding: '7px 0', borderRadius: 6, border: 'none',
+                background: 'var(--success, #16a34a)', color: '#fff',
+                cursor: loading ? 'not-allowed' : 'pointer', fontSize: 13, fontWeight: 600,
+                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+              }}
+            >
+              <CheckCircle size={14} />
+              {loading ? 'Approving…' : 'Approve'}
+            </button>
+            <button
+              onClick={() => handleDecide('rejected')}
+              disabled={loading}
+              style={{
+                flex: 1, padding: '7px 0', borderRadius: 6,
+                border: '1px solid var(--danger)', background: 'transparent',
+                color: 'var(--danger)', cursor: loading ? 'not-allowed' : 'pointer',
+                fontSize: 13, fontWeight: 600,
+                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+              }}
+            >
+              <XCircle size={14} />
+              Reject
+            </button>
+          </div>
+          {!alreadyGranted && (
+            <button
+              onClick={() => handleDecide('approved', { grantScope: 'run' })}
+              disabled={loading}
+              title={`Skip future ${toolLabel} approvals for this agent run`}
+              style={{
+                padding: '6px 0', borderRadius: 6,
+                border: '1px solid var(--success-border, #bbf7d0)',
+                background: 'var(--success-subtle, #dcfce7)',
+                color: 'var(--success, #16a34a)',
+                cursor: loading ? 'not-allowed' : 'pointer',
+                fontSize: 12, fontWeight: 600,
+              }}
+            >
+              Approve all {toolLabel} for this run
+            </button>
+          )}
+          {alreadyGranted && (
+            <div style={{ fontSize: 11, color: 'var(--muted)', textAlign: 'center' }}>
+              {toolLabel} is auto-approved for this run
+            </div>
+          )}
         </div>
       )}
     </div>
   )
 }
 
-export default function AgentApprovalQueue({ panel = false, onPendingCount } = {}) {
+export default function AgentApprovalQueue({ panel = false, onPendingCount, runFilter = null, onClearRunFilter } = {}) {
   const { t } = useTranslation()
   const [approvals, setApprovals] = useState([])
   const [filter, setFilter] = useState('pending')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [decideMessage, setDecideMessage] = useState(null)
 
-  const load = useCallback(async () => {
-    setLoading(true)
+  const load = useCallback(async ({ silent = false } = {}) => {
+    if (!silent) setLoading(true)
     setError(null)
     try {
       const data = await getAgentApprovals(filter || undefined)
@@ -241,17 +267,46 @@ export default function AgentApprovalQueue({ panel = false, onPendingCount } = {
       }
     } catch (e) {
       const msg = typeof e?.message === 'string' ? e.message : JSON.stringify(e?.message ?? e)
-      setError(msg || 'Failed to load approvals')
+      if (!silent) setError(msg || 'Failed to load approvals')
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }, [filter, onPendingCount])
 
+  // When deep-linked from a scan / notification, narrow the visible list to
+  // approvals that belong to a specific agent run. The full list still loads
+  // (so counts stay accurate) — we just filter for display.
+  const visibleApprovals = runFilter
+    ? approvals.filter(a => a.agent_run_id === runFilter)
+    : approvals
+
   useEffect(() => { load() }, [load])
 
-  const handleDecide = async (approvalId, decision, reason) => {
-    await decideAgentApproval(approvalId, decision, reason)
-    load()
+  // Poll while the queue is visible so newly-queued approvals show up
+  // without a manual refresh. Pending is the hot view; other filters
+  // change less often, so we poll them less aggressively.
+  useEffect(() => {
+    const intervalMs = filter === 'pending' ? 10_000 : 30_000
+    const id = setInterval(() => {
+      if (document.visibilityState === 'visible') load({ silent: true })
+    }, intervalMs)
+    return () => clearInterval(id)
+  }, [filter, load])
+
+  const handleDecide = async (approvalId, decision, reason, opts = {}) => {
+    try {
+      await decideAgentApproval(approvalId, decision, reason, opts)
+      setDecideMessage(null)
+    } catch (e) {
+      if (e?.status === 404) {
+        setDecideMessage({ kind: 'info', text: 'That approval was already decided elsewhere — refreshing the list.' })
+      } else {
+        const msg = typeof e?.message === 'string' ? e.message : 'Failed to record decision'
+        setDecideMessage({ kind: 'error', text: msg })
+      }
+    } finally {
+      load({ silent: true })
+    }
   }
 
   const pendingCount = approvals.filter(a => a.status === 'pending').length
@@ -326,11 +381,62 @@ export default function AgentApprovalQueue({ panel = false, onPendingCount } = {
         </div>
       )}
 
-      {!loading && !error && approvals.length === 0 && (
+      {!loading && decideMessage && (
+        <div style={{
+          padding: '10px 14px', borderRadius: 8, marginBottom: 12,
+          background: decideMessage.kind === 'error' ? 'var(--danger-subtle)' : 'var(--warning-subtle, #fef9c3)',
+          color: decideMessage.kind === 'error' ? 'var(--danger)' : 'var(--warning, #92400e)',
+          border: `1px solid ${decideMessage.kind === 'error' ? 'var(--danger-border)' : 'var(--warning-border, #fde68a)'}`,
+          fontSize: 13, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
+        }}>
+          <span>{decideMessage.text}</span>
+          <button
+            onClick={() => setDecideMessage(null)}
+            style={{
+              background: 'transparent', border: 'none', color: 'inherit',
+              cursor: 'pointer', fontSize: 16, lineHeight: 1, padding: 0,
+            }}
+            aria-label="Dismiss"
+          >
+            ×
+          </button>
+        </div>
+      )}
+
+      {/* Run filter banner — shown when deep-linked from a specific scan */}
+      {runFilter && !loading && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 10,
+          padding: '8px 12px', marginBottom: 12, borderRadius: 6,
+          background: 'var(--warning-subtle, #fef9c3)',
+          color: 'var(--warning, #92400e)',
+          fontSize: 12,
+        }}>
+          <span style={{ flex: 1 }}>
+            Showing approvals for run #{runFilter} only.
+          </span>
+          {onClearRunFilter && (
+            <button
+              onClick={onClearRunFilter}
+              style={{
+                background: 'transparent', border: '1px solid currentColor',
+                color: 'inherit', borderRadius: 4, padding: '2px 8px',
+                fontSize: 11, cursor: 'pointer', fontWeight: 600,
+              }}
+            >
+              Show all
+            </button>
+          )}
+        </div>
+      )}
+
+      {!loading && !error && visibleApprovals.length === 0 && (
         <div style={{ textAlign: 'center', padding: '48px 0', color: 'var(--muted)' }}>
           <CheckCircle size={40} style={{ opacity: 0.25, marginBottom: 12 }} />
           <div style={{ fontSize: 15, fontWeight: 600 }}>
-            {filter === 'pending' ? 'No pending approvals' : 'No approvals found'}
+            {runFilter
+              ? `No ${filter || ''} approvals for run #${runFilter}`.trim()
+              : (filter === 'pending' ? 'No pending approvals' : 'No approvals found')}
           </div>
           <div style={{ fontSize: 13, marginTop: 4 }}>
             {filter === 'pending'
@@ -340,9 +446,9 @@ export default function AgentApprovalQueue({ panel = false, onPendingCount } = {
         </div>
       )}
 
-      {!loading && !error && approvals.length > 0 && (
+      {!loading && !error && visibleApprovals.length > 0 && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          {approvals.map(a => (
+          {visibleApprovals.map(a => (
             <ApprovalCard key={a.id} approval={a} onDecide={handleDecide} />
           ))}
         </div>

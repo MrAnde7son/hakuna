@@ -40,6 +40,16 @@ _SSH_TIMEOUT_S = 60
 
 
 def _run_async(coro):
+    # In-process RelayBroker futures live on the FastAPI main loop. If we
+    # spin up a fresh loop here (asyncio.run from a worker thread), the
+    # broker's `future.set_result` from the WS handler — running on the
+    # main loop — never wakes our `wait_for`, and the caller hangs until
+    # TASK_TIMEOUT (300s). Route to the main loop when one was captured.
+    from core.event_loop import get_main_loop, is_on_main_loop
+    main_loop = get_main_loop()
+    if main_loop is not None and main_loop.is_running() and not is_on_main_loop():
+        fut = asyncio.run_coroutine_threadsafe(coro, main_loop)
+        return fut.result(timeout=_SSH_TIMEOUT_S + 15)
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:

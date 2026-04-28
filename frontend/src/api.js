@@ -1100,6 +1100,11 @@ export const rebuildAggregatedSolutions = (scanId) => request(`/aggregated-solut
 export const getEasmStatus = () => request('/easm/status')
 export const scanEasmDomain = (domain, scanType = 'full', suppressAutoFollowup = false) => request(`/easm/scan-domain?domain=${encodeURIComponent(domain)}&scan_type=${scanType}&suppress_auto_followup=${suppressAutoFollowup ? 'true' : 'false'}`, { method: 'POST' })
 export const rescanEasmScan = (scanId, scanType = 'full') => request(`/easm/rescan/${scanId}?scan_type=${scanType}`, { method: 'POST' })
+export const updateEasmScan = (scanId, patch) => request(`/easm/scans/${scanId}`, {
+  method: 'PATCH',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(patch),
+})
 export const refreshEasmScan = (scanId) => request(`/easm/refresh/${scanId}`, { method: 'POST' })
 export const triggerEasmScan = (scanType = 'full') => request(`/easm/scan?scan_type=${scanType}`, { method: 'POST' })
 export const getEasmEvents = (since, limit = 100) => request(`/easm/events?limit=${limit}${since ? '&since=' + since : ''}`)
@@ -1120,10 +1125,10 @@ export const runAgentPipeline = (pipelineId, input, modelOverrides = {}) => requ
 // Agent Approvals (HITL)
 export const getAgentApprovals = (status) => request(`/agents/approvals${status ? `?status=${status}` : ''}`)
 export const getAgentApproval = (approvalId) => request(`/agents/approvals/${approvalId}`)
-export const decideAgentApproval = (approvalId, decision, reason) => request(`/agents/approvals/${approvalId}/decide`, {
+export const decideAgentApproval = (approvalId, decision, reason, { grantScope } = {}) => request(`/agents/approvals/${approvalId}/decide`, {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ decision, reason }),
+  body: JSON.stringify({ decision, reason, grant_scope: grantScope ?? null }),
 })
 export const getRunApprovals = (agentId, runId) => request(`/agents/${agentId}/runs/${runId}/approvals`)
 
@@ -1208,11 +1213,19 @@ export const updateAuthProfile = (id, data) => request(`/auth-profiles/${id}`, {
   body: JSON.stringify(data),
 })
 export const deleteAuthProfile = (id) => request(`/auth-profiles/${id}`, { method: 'DELETE' })
-export const testAuthProfile = (id) => request(`/auth-profiles/${id}/test`, { method: 'POST' })
+// Test-login drives Playwright through the full flow (chromium launch + goto +
+// fills + click + success-condition wait). Each Playwright step is up to 30s,
+// so the total can blow past the default 30s fetch timeout — give it 120s so
+// the backend's real success/error reaches the UI instead of an AbortError.
+export const testAuthProfile = (id) =>
+  request(`/auth-profiles/${id}/test`, { method: 'POST', timeout: 120_000 })
+// Detect-flow renders the login page in headless chromium and then calls the
+// LLM — comfortably 20–40s on cold cache. 90s gives the second attempt headroom.
 export const detectAuthFlow = (loginUrl) => request('/auth-profiles/detect-flow', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({ login_url: loginUrl }),
+  timeout: 90_000,
 })
 
 export const getEasmAssets = (params = {}) => {

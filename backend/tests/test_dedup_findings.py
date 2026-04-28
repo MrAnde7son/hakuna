@@ -266,3 +266,70 @@ class TestFindingDedupReturnShape:
             "strategy": "keep_last",
             "key_fields": ["plugin_id", "asset_id"],
         }
+
+
+class TestFindingDedupReassignsReferrers:
+    """Regression: rows in tables with NOT NULL FKs to findings.id (e.g.
+    finding_ownership) must be repointed to the survivor before the loser
+    is deleted. Otherwise SQLAlchemy's default cascade NULLs the FK and
+    PostgreSQL rejects the UPDATE.
+    """
+
+    def test_finding_ownership_repointed_to_survivor(self, db_session, org_a):
+        from models.models import FindingOwnership
+        scan1 = _make_scan(db_session, org_a, "old")
+        scan2 = _make_scan(db_session, org_a, "new")
+        asset = _make_asset(db_session, scan1, org_a, "10.0.0.1")
+        older = datetime.utcnow() - timedelta(days=7)
+        newer = datetime.utcnow()
+        f_old = _make_finding(db_session, scan1, asset, org_a, "1001", port=443, last_seen=older)
+        f_new = _make_finding(db_session, scan2, asset, org_a, "1001", port=443, last_seen=newer)
+
+        # Manual ownership lives on the loser.
+        db_session.add(FindingOwnership(
+            finding_id=f_old.id, owner_name="Alice", team="SecOps",
+        ))
+        db_session.flush()
+
+        cfg = _enable(
+            dedup_engine.load_config(),
+            key_fields=["plugin_id", "asset_id", "port"],
+            strategy="keep_last",
+        )
+        result = dedup_engine.run_cross_scan_finding_dedup(db_session, org_a.id, cfg)
+        assert result["removed"] == 1
+
+        # Ownership survived and now points at the survivor.
+        owners = db_session.query(FindingOwnership).all()
+        assert len(owners) == 1
+        assert owners[0].finding_id == f_new.id
+        assert owners[0].team == "SecOps"
+
+    def test_survivor_ownership_wins_over_loser(self, db_session, org_a):
+        """If both survivor and loser have ownership, keep survivor's
+        (UNIQUE constraint on finding_id) and drop the loser's row.
+        """
+        from models.models import FindingOwnership
+        scan1 = _make_scan(db_session, org_a, "old")
+        scan2 = _make_scan(db_session, org_a, "new")
+        asset = _make_asset(db_session, scan1, org_a, "10.0.0.1")
+        older = datetime.utcnow() - timedelta(days=7)
+        newer = datetime.utcnow()
+        f_old = _make_finding(db_session, scan1, asset, org_a, "1001", port=443, last_seen=older)
+        f_new = _make_finding(db_session, scan2, asset, org_a, "1001", port=443, last_seen=newer)
+
+        db_session.add(FindingOwnership(finding_id=f_old.id, team="Loser"))
+        db_session.add(FindingOwnership(finding_id=f_new.id, team="Survivor"))
+        db_session.flush()
+
+        cfg = _enable(
+            dedup_engine.load_config(),
+            key_fields=["plugin_id", "asset_id", "port"],
+            strategy="keep_last",
+        )
+        dedup_engine.run_cross_scan_finding_dedup(db_session, org_a.id, cfg)
+
+        owners = db_session.query(FindingOwnership).all()
+        assert len(owners) == 1
+        assert owners[0].finding_id == f_new.id
+        assert owners[0].team == "Survivor"

@@ -98,18 +98,23 @@ def _asset_open_ports(asset: Asset) -> list[int]:
                 continue
             if 0 < n <= 65535:
                 out.append(n)
-    # A user-supplied audit port (via "host:port" in the free-form target
-    # flow) is authoritative — treat it as observed so preflight doesn't
-    # reject a legitimate non-standard-port audit when the discovery scan
-    # never saw that port.
+    return out
+
+
+def _asset_audit_target_port(asset: Asset) -> int | None:
+    """Read the user-supplied audit port persisted by ``_upsert_asset_by_target``
+    when the free-form target included ``host:port``."""
+    data = asset.easm_data or {}
+    if not isinstance(data, dict):
+        return None
     atp = data.get("audit_target_port")
     try:
-        atp_n = int(atp) if atp is not None else None
+        n = int(atp) if atp is not None else None
     except (TypeError, ValueError):
-        atp_n = None
-    if atp_n is not None and 0 < atp_n <= 65535 and atp_n not in out:
-        out.append(atp_n)
-    return out
+        return None
+    if n is None or not (0 < n <= 65535):
+        return None
+    return n
 
 
 def _preflight_audit_asset(
@@ -134,6 +139,14 @@ def _preflight_audit_asset(
     """
     required = list(audit.required_ports or ())
     if not required:
+        return True, None
+    # User-supplied non-standard port (via "host:port" in the free-form target
+    # flow) is authoritative — they're explicitly telling us the service is on
+    # this port, so don't second-guess against the protocol's standard
+    # required_ports list. Without this short-circuit, "ssh:2222" against an
+    # asset whose only observed port is 2222 still fails preflight because
+    # required=[22] and 22 ∉ observed.
+    if _asset_audit_target_port(asset) is not None:
         return True, None
     observed = _asset_open_ports(asset)
     if not observed:
@@ -321,6 +334,19 @@ def _spawn_scratch_agents_for_scan(
     md["scratch_agent_ids"] = scratch_agent_ids
     md["task_ids"] = task_ids_by_agent
     scan.raw_metadata = md
+
+    # Preflight-skipped agents land their failed AgentRun synchronously here
+    # rather than from inside the Celery task. The Celery task body is what
+    # normally calls _finalize_scan_if_complete, so without this nudge a
+    # scan whose only assets were preflight-skipped would stay status='running'
+    # forever (no task ever runs to finalize it). The finalizer is idempotent
+    # and checks every scratch agent — if any agent actually got dispatched,
+    # its terminal AgentRun isn't there yet and the call early-returns.
+    if any(r["status"] == "unreachable" for r in runs_meta) and scratch_agent_ids:
+        from services.audit_worker import _finalize_scan_if_complete
+        db.flush()
+        _finalize_scan_if_complete(db, scratch_agent_ids[0])
+
     return {"runs": runs_meta, "scratch_agent_ids": scratch_agent_ids}
 
 

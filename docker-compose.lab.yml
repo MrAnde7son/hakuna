@@ -14,13 +14,49 @@
 # beyond localhost and never run this compose on a shared/public network.
 #
 # Seeded credentials (store in the credential vault for audit runs):
-#   SMB   — lab / labpass                      (guest access on `public`)
-#   LDAP  — cn=admin,dc=lab,dc=local / adminpass   (anon bind enabled)
-#           alice / Password1, bob / bob, svc_backup / Summer2024!
-#   SSH   — lab / labpass                      (port 2222)
-#   SNMP  — community `public` (v1/v2c, read-only)
-#   AWS   — access_key_id=test / secret_access_key=test / region=us-east-1
-#           endpoint_url=http://localstack:4566  (LocalStack accepts any creds)
+#   SMB    — lab / labpass                      (guest access on `public`)
+#   LDAP   — cn=admin,dc=lab,dc=local / adminpass   (anon bind enabled)
+#            alice / Password1, bob / bob, svc_backup / Summer2024!
+#   SSH    — lab / labpass                      (port 2222)
+#   SNMP   — community `public` (v1/v2c, read-only)
+#   AWS    — access_key_id=test / secret_access_key=test / region=us-east-1
+#            endpoint_url=http://localstack:4566  (LocalStack accepts any creds)
+#   MySQL  — root / Summer2024!                 (matches LDAP svc_backup)
+#            app / app123 (least-priv app user)
+#   Mongo  — no auth                            (anonymous reads)
+#   Redis  — no auth                            (protected-mode off)
+#   Tomcat — tomcat / tomcat , admin / admin    (manager-gui, profile: heavy)
+#
+# Attack chains the audit agents should detect end-to-end:
+#
+#   Chain A — LDAP → MySQL → SSH
+#     1. anon LDAP bind enumerates users; svc_backup = Summer2024!
+#     2. same password works as MySQL root (cross-protocol cred reuse)
+#     3. mysql.appdb.secrets table contains lab/labpass for ssh:2222
+#     4. SSH login → sudo enabled → host compromise
+#
+#   Chain B — SMB → AWS → S3 → SSH
+#     1. anon read on `public` SMB share grabs aws-creds.txt
+#     2. those creds list s3://corp-backups (publicly listable)
+#     3. corp-backups/ssh/lab_id_rsa is an SSH private key for lab@ssh
+#     4. backup-config.ini in same bucket reveals mysql root password
+#
+#   Chain C — Webapp SSRF → cloud metadata / LocalStack IAM
+#     1. webapp /fetch?url= has no allowlist; reaches internal services
+#     2. SSRF to http://localstack:4566/_aws/... or 169.254.169.254/...
+#     3. IAM user backup-bot has inline {"Action":"*","Resource":"*"} policy
+#     4. Lambda corp-backup-runner exposes creds + DB_PASSWORD in env vars
+#
+#   Chain D — Redis → SSH authorized_keys
+#     1. unauth Redis on default port (CONFIG SET allowed)
+#     2. attacker writes RDB to /root/.ssh/authorized_keys-style path
+#     3. result: SSH access to whatever shares Redis's filesystem
+#     (lab demonstrates the misconfig — shared volume not auto-wired)
+#
+#   Chain E — Webapp cmd-injection → SNMP → internal inventory
+#     1. webapp /ping?host= passes input to shell=True
+#     2. RCE pivots to snmpwalk against snmp:161 (community public)
+#     3. enumerates internal hostnames + interfaces for further targeting
 
 name: hakuna-lab
 
@@ -51,6 +87,10 @@ services:
       -s "public;/share;yes;no;yes;all;none;all"
       -s "private;/private;yes;no;no;lab;lab;lab"
       -p
+    volumes:
+      # Seeds the public share with aws-creds.txt + README.txt — the
+      # entrypoints for Chain B (SMB → AWS → S3 → SSH).
+      - ./lab-seed/smb/public:/share
     ports:
       - "127.0.0.1:1139:139"
       - "127.0.0.1:1445:445"
@@ -113,6 +153,10 @@ services:
       SERVICES: "iam,s3,ec2,lambda,sts"
       DEBUG: "0"
       PERSISTENCE: "0"
+    volumes:
+      # Init hook — seeds Chain B (S3 with leaked SSH key) + Chain C
+      # (over-privileged IAM user + Lambda with creds in env).
+      - ./lab-seed/localstack/seed.sh:/etc/localstack/init/ready.d/seed.sh:ro
     ports:
       - "127.0.0.1:4566:4566"
     networks:
@@ -123,6 +167,70 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
+
+  webapp:
+    # Tiny Flask app with intentional SSRF + command injection.
+    # Anchors Chain C (SSRF → LocalStack IAM) and Chain E (RCE → SNMP).
+    build: ./lab-webapp
+    image: hakuna/lab-webapp:latest
+    container_name: lab-webapp
+    hostname: webapp
+    ports:
+      - "127.0.0.1:5005:5000"
+    restart: unless-stopped
+
+  redis:
+    # Unauthenticated Redis with protected-mode disabled. Demonstrates the
+    # CONFIG SET → write authorized_keys chain (Chain D). Shared-volume
+    # exploitation isn't auto-wired; the audit detects the misconfig itself.
+    image: redis:7-alpine
+    container_name: lab-redis
+    hostname: redis
+    command: ["redis-server", "--protected-mode", "no", "--bind", "0.0.0.0"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    restart: unless-stopped
+
+  mysql:
+    # Root password = AD svc_backup password. Init script seeds a `secrets`
+    # table containing SSH/AWS/SNMP creds — the pivot rung for Chain A.
+    image: mysql:8.0
+    container_name: lab-mysql
+    hostname: mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: "Summer2024!"
+      MYSQL_ROOT_HOST: "%"
+    volumes:
+      - ./lab-seed/mysql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "127.0.0.1:3306:3306"
+    restart: unless-stopped
+
+  mongo:
+    # No auth — anonymous reads from the network. corp.secrets has cleartext
+    # creds for tomcat, gitea, redis, aws, mysql.
+    image: mongo:6
+    container_name: lab-mongo
+    hostname: mongo
+    command: ["mongod", "--bind_ip_all"]
+    volumes:
+      - ./lab-seed/mongo/init.js:/docker-entrypoint-initdb.d/init.js:ro
+    ports:
+      - "127.0.0.1:27017:27017"
+    restart: unless-stopped
+
+  tomcat:
+    # Tomcat 9 with the manager app exposed (RemoteAddrValve stripped) and
+    # tomcat:tomcat / admin:admin creds. Heavy image (~500MB) — opt-in:
+    #   docker compose -f docker-compose.lab.yml --profile heavy up -d
+    profiles: [heavy]
+    build: ./lab-tomcat
+    image: hakuna/lab-tomcat:latest
+    container_name: lab-tomcat
+    hostname: tomcat
+    ports:
+      - "127.0.0.1:8088:8080"
     restart: unless-stopped
 
   relay:

@@ -1,8 +1,5 @@
 services:
   postgres:
-    # Mirrors production (Cloud SQL Postgres). SQLite-on-bind-mount isn't safe
-    # once the audit-worker joins as a second writer, so dev uses Postgres too.
-    # Schema is auto-created by backend's init_db() on first boot.
     image: postgres:15-alpine
     environment:
       - POSTGRES_USER=hakuna
@@ -10,14 +7,8 @@ services:
       - POSTGRES_DB=hakuna
     volumes:
       - postgres-data:/var/lib/postgresql/data
-      # Init scripts run once on a fresh volume. Creates `hakuna_easm` so the
-      # EASM scanner stack can share this Postgres in dev instead of running
-      # its own clone. See scripts/postgres-init/01-create-easm-db.sh for the
-      # manual createdb command if your volume already exists.
       - ./scripts/postgres-init:/docker-entrypoint-initdb.d:ro
     ports:
-      # Host-exposed for psql/debugger access. 5433 to avoid clashing with a
-      # system postgres on 5432.
       - "5433:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U hakuna -d hakuna"]
@@ -141,38 +132,40 @@ services:
       # collide with the VM scanner on DBs 0/1).
       - AUDIT_CELERY_BROKER_URL=redis://redis:6379/2
       - AUDIT_CELERY_RESULT_BACKEND=redis://redis:6379/2
-      # Flip get_relay_broker() to RemoteRelayBroker — relay dispatch goes
-      # over HTTP to the backend, which owns the websocket. See
-      # services/relay_broker.py for the routing logic.
       - HAKUNA_PROCESS_ROLE=worker
-      - HAKUNA_BACKEND_URL=http://backend:8000
+      - HAKUNA_BACKEND_URL=${HAKUNA_BACKEND_URL:-http://host.docker.internal:8000}
       - INTERNAL_SHARED_SECRET=${INTERNAL_SHARED_SECRET}
-      # core/auth.py enforces JWT_SECRET at import time, and the worker
-      # imports it transitively through services/audit_worker. Pass through
-      # the same ENVIRONMENT so the dev bypass applies here too.
       - ENVIRONMENT=${ENVIRONMENT:-development}
       - JWT_SECRET=${JWT_SECRET:-}
-      # Credential vault needs the same AES key the backend used to encrypt
-      # the IntegrationCredential rows — without this, load_credentials
-      # returns garbage and every relay auth fails.
       - INTEGRATION_SECRET_KEY=${INTEGRATION_SECRET_KEY}
-      # LLM providers — workers pick up the same creds the backend uses.
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
       - GROQ_API_KEY=${GROQ_API_KEY:-}
       - GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT:-}
       - GOOGLE_APPLICATION_CREDENTIALS=/gcp/adc.json
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       redis:
         condition: service_healthy
       postgres:
         condition: service_healthy
     profiles:
-      # Only activated when you `docker compose --profile audits up -d` or
-      # target the service explicitly. Keeps `docker compose up` minimal
-      # (backend + frontend + minio) when you don't need the worker.
       - audits
+
+  cloud-scanner:
+    build: ./hakuna-relay-agent
+    environment:
+      - HAKUNA_RELAY_MODE=cloud
+      - HAKUNA_BACKEND_URL=${HAKUNA_BACKEND_URL:-http://host.docker.internal:8000}
+      - INTERNAL_SHARED_SECRET=${INTERNAL_SHARED_SECRET}
+      - HAKUNA_LOG_LEVEL=${HAKUNA_LOG_LEVEL:-INFO}
+      - HAKUNA_REGISTRATION_REFRESH_S=${HAKUNA_REGISTRATION_REFRESH_S:-30}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    profiles:
+      - cloud-scanner
 
   frontend:
     build: ./frontend

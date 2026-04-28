@@ -17,7 +17,7 @@ from core.auth import (
 )
 from core.time_utils import iso_utc
 from models.models import (
-    Scan, Asset, Finding, AutomateClick,
+    Scan, Asset, Finding, AutomateClick, AgentApproval, AgentRun,
 )
 from parsers.registry import list_parsers
 from services.nlp_search import parse_nlp_query
@@ -148,12 +148,47 @@ def list_scans(db: Session = Depends(get_db), org_ids: Optional[List[int]] = Dep
             via_findings = vm_asset_counts.get(sid, 0)
             vm_extra_asset_counts[sid] = max(direct, via_findings)
 
+    # Audit scans pause as `awaiting_approval` when an agent tool gates on
+    # human review. Surface the pending count + earliest gated run id on the
+    # scan row so the UI can render a "Review action" deep-link without the
+    # user having to navigate to Agents → Approval Queue.
+    audit_pending: dict[int, dict] = {}
+    audit_scan_to_agents: dict[int, list[int]] = {}
+    audit_agent_to_scan: dict[int, int] = {}
+    for s in scans:
+        if not (s.scan_type or "").endswith("_audit"):
+            continue
+        scratch_ids = (s.raw_metadata or {}).get("scratch_agent_ids") or []
+        if scratch_ids:
+            audit_scan_to_agents[s.id] = list(scratch_ids)
+            for aid in scratch_ids:
+                audit_agent_to_scan[aid] = s.id
+    if audit_agent_to_scan:
+        pending_rows = (
+            db.query(AgentApproval.agent_id, AgentApproval.agent_run_id)
+            .filter(
+                AgentApproval.agent_id.in_(audit_agent_to_scan.keys()),
+                AgentApproval.status == "pending",
+            )
+            .order_by(AgentApproval.requested_at.asc())
+            .all()
+        )
+        for agent_id, run_id in pending_rows:
+            scan_id = audit_agent_to_scan.get(agent_id)
+            if scan_id is None:
+                continue
+            entry = audit_pending.setdefault(
+                scan_id, {"count": 0, "agent_run_id": run_id}
+            )
+            entry["count"] += 1
+
     result = []
     for s in scans:
         if s.source_type == "vm_scanner":
             asset_count = vm_extra_asset_counts.get(s.id, 0)
         else:
             asset_count = direct_asset_counts.get(s.id, 0)
+        pending = audit_pending.get(s.id)
         result.append({
             "id": s.id,
             "filename": s.filename,
@@ -172,6 +207,8 @@ def list_scans(db: Session = Depends(get_db), org_ids: Optional[List[int]] = Dep
             "last_run_at": iso_utc(s.last_run_at),
             "next_run_at": iso_utc(s.next_run_at),
             "run_count": s.run_count or 0,
+            "pending_approval_count": (pending or {}).get("count", 0),
+            "pending_approval_run_id": (pending or {}).get("agent_run_id"),
         })
     return result
 
@@ -285,29 +322,49 @@ async def cancel_scan(
 
     if (scan.scan_type or "").endswith("_audit"):
         from services.audit_runner import revoke_audit_tasks
-        from models.models import AgentRun
+        from models.models import AgentRun, AgentApproval
         task_ids_by_agent = meta.get("task_ids") or {}
         task_ids = list(task_ids_by_agent.values()) if isinstance(task_ids_by_agent, dict) else []
         revoke_result = revoke_audit_tasks(task_ids)
-        # Mark any still-running/pending AgentRuns as cancelled so the scan UI
-        # reflects the real state. Don't touch already-terminal rows — SIGTERM
-        # on a worker may arrive after the run has already committed `done`.
+        # Mark any still-running/pending/awaiting-approval AgentRuns as
+        # cancelled so the scan UI reflects the real state. Don't touch
+        # already-terminal rows — SIGTERM on a worker may arrive after the
+        # run has already committed `done`.
         scratch_agent_ids = meta.get("scratch_agent_ids") or []
         if scratch_agent_ids:
             from datetime import datetime as _dt
+            from services.approval_lifecycle import clear_approval_notification
             now = _dt.utcnow()
             affected = (
                 db.query(AgentRun)
                 .filter(
                     AgentRun.agent_id.in_(scratch_agent_ids),
-                    AgentRun.status.in_(("pending", "running")),
+                    AgentRun.status.in_(("pending", "running", "awaiting_approval")),
                 )
                 .all()
             )
+            affected_run_ids = [r.id for r in affected]
             for r in affected:
                 r.status = "cancelled"
                 r.error = "Cancelled by user"
                 r.finished_at = now
+            # Expire any pending approvals tied to those runs so the scan-
+            # level "Review action" badge clears and the global queue stops
+            # showing actionable rows for a scan that's no longer running.
+            if affected_run_ids:
+                pending_approvals = (
+                    db.query(AgentApproval)
+                    .filter(
+                        AgentApproval.agent_run_id.in_(affected_run_ids),
+                        AgentApproval.status == "pending",
+                    )
+                    .all()
+                )
+                for a in pending_approvals:
+                    a.status = "expired"
+                    a.decided_at = now
+                    a.rejection_reason = "Scan cancelled by user"
+                    clear_approval_notification(db, a.id)
         scan.status = "cancelled"
         scan.raw_metadata = {
             **meta,

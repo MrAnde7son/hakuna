@@ -54,8 +54,23 @@ class RelayBroker:
         self._agent_info[agent_id] = info or {}
         logger.info("Relay agent %s connected", agent_id)
 
-    async def unregister(self, agent_id: str):
-        """Unregister a disconnected agent and fail any pending tasks."""
+    async def unregister(self, agent_id: str, ws: Optional[WebSocket] = None):
+        """Unregister a disconnected agent and fail any pending tasks.
+
+        ``ws`` (when provided) scopes the cleanup to that specific socket.
+        Without it, a stale handler whose connection was already superseded
+        by a fresh one would pop the live ws out of the map and silently
+        break every subsequent dispatch — that's the "relay agent ... is
+        not connected" / "Cannot call send once a close message has been
+        sent" race we kept seeing on reconnect.
+        """
+        if ws is not None and self._connections.get(agent_id) is not ws:
+            # A newer connection has already taken this slot. Don't clobber it.
+            logger.info(
+                "Relay agent %s: skipping unregister of stale socket (newer connection is active)",
+                agent_id,
+            )
+            return
         self._connections.pop(agent_id, None)
         self._agent_info.pop(agent_id, None)
 
@@ -111,6 +126,21 @@ class RelayBroker:
         except asyncio.TimeoutError:
             self._pending.pop(task_id, None)
             raise TimeoutError(f"Relay agent {agent_id} did not respond within {TASK_TIMEOUT}s")
+        except RuntimeError as e:
+            # Starlette raises RuntimeError("Cannot call \"send\" once a close
+            # message has been sent.") when the ws closed under us. Surface as
+            # a clean ConnectionError so tools handle it the same as "no
+            # connection at all". Also drop the dead ref so the next caller
+            # sees is_connected() == False instead of a stale entry.
+            self._pending.pop(task_id, None)
+            if "close message" in str(e) or "WebSocket is not connected" in str(e):
+                if self._connections.get(agent_id) is ws:
+                    self._connections.pop(agent_id, None)
+                    self._agent_info.pop(agent_id, None)
+                raise ConnectionError(
+                    f"Relay agent {agent_id} disconnected mid-task"
+                ) from e
+            raise
         except Exception:
             self._pending.pop(task_id, None)
             raise

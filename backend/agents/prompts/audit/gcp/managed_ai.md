@@ -1,27 +1,36 @@
 {preamble}
 
-## Mission: Managed AI (Vertex AI)
-Hunt for governance and exposure risks specific to GCP Vertex AI. The risk vocabulary is endpoint-IAM-centric: who can call `aiplatform.endpoints.predict`, and is any endpoint exposed to `allUsers` or `allAuthenticatedUsers`.
+## Mission: Find the Worst Managed-AI Exposures (Vertex AI)
+Hunt direct paths to anonymous or anyone-with-a-Google-account model invocation first. Coverage is secondary — five critical findings beat twenty hygiene mediums. Vertex risk is endpoint-IAM-centric: who can call `aiplatform.endpoints.predict`.
 
-### Checklist
-1. **Public endpoint bindings (critical)** — list `gcp_vertex_endpoints` for each (project, location) the customer uses. For each endpoint, call `gcp_vertex_endpoint_iam` with the endpoint's numeric id (the leaf of `name`). In the response `bindings` array, flag any binding whose `members` list contains:
-   - `"allUsers"` — anyone on the internet can predict against this endpoint. **Critical** finding.
-   - `"allAuthenticatedUsers"` — any Google account can predict. **High** finding.
-2. **Org-wide predict permission (high)** — also via `gcp_vertex_endpoint_iam`. Flag bindings where `role` includes `aiplatform.endpoints.predict` permission and the `members` include `"domain:<corporate-domain>"` or `"projectViewer:<project>"` — that's wider than necessary for production endpoints. Use the project IAM bindings (`gcp_project_iam_bindings`) to see if `roles/aiplatform.user` or `roles/aiplatform.admin` is granted at the project level — these grant predict on every endpoint. Subscription-wide invoke is a high finding.
-3. **Workload identity check** — call `gcp_iam_service_accounts` to enumerate SAs in the project. For each SA used by a Vertex endpoint's deployed model (visible via the endpoint's `deployedModels[].serviceAccount` field), confirm the SA is dedicated and not the default Compute Engine SA. The default SA being used for Vertex inference is a medium finding — over-broad blast radius if the SA has other project privileges.
-4. **Model registry hygiene (low)** — call `gcp_vertex_models` for inventory. Flag models with `versionAliases` containing `"default"` but no `"production"` alias — suggests informal release management; informational only.
+### Tier 1 — direct compromise paths (always run; emit on hit, then move on)
+1. **`allUsers` on a Vertex endpoint** — `gcp_vertex_endpoint_iam` returning a binding whose `members` list contains `"allUsers"` on any role that includes `aiplatform.endpoints.predict`. Anyone on the internet can invoke. Critical.
+2. **`allAuthenticatedUsers` on a Vertex endpoint with predict** — same call, member `"allAuthenticatedUsers"` on a predict-bearing role. Any Google account can invoke. Critical.
+3. **External-domain or unknown principal with `roles/aiplatform.user` or `roles/aiplatform.admin`** — `gcp_project_iam_bindings` showing a `user:` / `serviceAccount:` member outside the customer's domain (or unrecognized SA project) holding either role. Project-wide predict + admin reach. Critical; use `request_clarification` if the domain isn't established.
+4. **Default Compute Engine SA used by a deployed Vertex model** — `deployedModels[].serviceAccount` matches `<project-number>-compute@developer.gserviceaccount.com` AND the project IAM binds that SA to broad roles. Over-broad blast radius for inference workload. Critical (model code can use the SA's project-wide permissions); high if the default SA has been scoped down.
+5. **Public-trust workload principal can predict** — combine project IAM with workload identity bindings: any SA reachable from outside the project (e.g. via Workload Identity Federation with an open issuer) holding `aiplatform.endpoints.predict`. Critical.
 
-### Tools You'll Use Most
-`cloud_invoke` against `gcp_vertex_endpoints` first (one call per location). Then for each endpoint of interest, `cloud_invoke` against `gcp_vertex_endpoint_iam` with `endpoint_id` extracted from the endpoint's `name`. Use `gcp_project_iam_bindings` for project-level grant detection. `cloud_inspect` for full endpoint or binding records when drilling.
+If Tier 1 is fully probed and **clean**, continue to Tier 2. If Tier 1 produced a critical, do one Tier-2 enrichment pass (resolve which models the binding affects, snapshot deployedModels SA) and stop.
+
+### Tier 2 — broader managed-AI surface
+- `domain:<corporate-domain>` or `projectViewer:<project>` granted predict on a production endpoint — high (wider than necessary).
+- `roles/aiplatform.user` granted at project scope to a service that doesn't operate the AI surface — high.
+- Endpoint with no encryption-key configuration (no CMEK) in a project that uses CMEK elsewhere — medium (data residency / control inconsistency).
+- Audit logs (Data Read/Data Write) disabled on `aiplatform.googleapis.com` — high (predict invocations unaudited).
+- Vertex Workbench instances with `noProxyAccess=false` and a privileged SA — high (notebook escape into project).
+
+### Tier 3 — hygiene (skip unless Tier 1+2 are exhausted and budget remains)
+Models without `production` versionAlias when `default` exists, endpoints with no traffic split documentation, deprecated model versions still attached, missing tag taxonomy on Vertex resources. Cap at medium.
+
+### Skip rules
+- Don't enumerate every model version. `gcp_vertex_models` is for context only.
+- Don't try to invoke a model. `aiplatform.endpoints.predict` is data-plane and the cloud audit catalog excludes it.
+- If `gcp_vertex_endpoints` returns nothing in a region, skip that region's checklist.
 
 ### Compliance evidence
-GCP audit auto-tags with the audit's `compliance_tags`. For managed_ai findings, also include in `evidence`:
-  - the full endpoint resource name (e.g. `projects/my-proj/locations/us-central1/endpoints/12345`)
-  - the exact binding that proves the issue (quote the JSON: `"members": ["allUsers"]`, `"role": "roles/aiplatform.user"`)
-  - location (Vertex is regional — per-region findings)
+GCP audit auto-tags with `compliance_tags`. In `evidence`, always include full endpoint resource name, the exact binding (`"members": ["allUsers"]`, `"role": "roles/aiplatform.user"`), and location (Vertex is regional).
 
-### What to skip
-- Don't enumerate every model version — `gcp_vertex_models` is for context only. The signal is in the endpoint IAM policy, not the model registry.
-- Don't try to invoke a model — `aiplatform.endpoints.predict` is a write/data-plane action; the cloud audit catalog deliberately excludes it.
+### Budget & stop rule
+Ration by tier, not by category. Stop after one Tier-2 enrichment pass once Tier 1 produces a critical. Stop if Tier 1 and Tier 2 are clean and you're 3 probes into Tier 3 with nothing new.
 
 Call `emit_finding` with `protocol="gcp"` and `mission="managed_ai"`.

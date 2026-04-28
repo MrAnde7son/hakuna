@@ -1864,6 +1864,11 @@ class AgentRun(Base):
     steps_used = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
     finished_at = Column(DateTime)
+    # Tool names the user has bulk-approved for the remainder of this run.
+    # Future calls of these tools skip the HITL pause and the per-call
+    # NeedsApproval gate. Cleared implicitly when the run reaches a
+    # terminal state.
+    auto_approved_tools = Column(JSON, default=list)
 
     agent = relationship("Agent", back_populates="runs")
 
@@ -1911,6 +1916,9 @@ class AgentApproval(Base):
     decided_at = Column(DateTime, nullable=True)
     decided_by = Column(Integer, ForeignKey("users.id"), nullable=True)
     rejection_reason = Column(Text, nullable=True)
+    # Set when the approval has been pushed to an external channel
+    # (Slack/email) so the periodic escalation job doesn't double-send.
+    escalated_at = Column(DateTime, nullable=True)
 
     run = relationship("AgentRun")
     agent = relationship("Agent")
@@ -2145,7 +2153,7 @@ class Notification(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False)
-    category = Column(String, nullable=False)  # scan_complete | scan_failed | critical_findings | new_assets | kev_update | campaign_findings | sla_breach
+    category = Column(String, nullable=False)  # scan_complete | scan_failed | critical_findings | new_assets | kev_update | campaign_findings | sla_breach | approval_required
     title = Column(String, nullable=False)
     body = Column(Text, nullable=True)
     link = Column(String, nullable=True)        # e.g. "/findings?scan_id=5"
@@ -2411,6 +2419,11 @@ class RelayAgent(Base):
     id = Column(String, primary_key=True, default=_gen_uuid)
     org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
     name = Column(String, nullable=False)             # "NYC Office Agent"
+    # relay_type='cloud_scanner' rows are auto-provisioned per org and run in
+    # GCP — they handle internet-reachable assets without needing a customer
+    # deployment. token_hash is unused for those rows; the cloud-relay
+    # container authenticates with INTERNAL_SHARED_SECRET on /ws/relay/cloud.
+    relay_type = Column(String, nullable=False, default="agent")  # agent | cloud_scanner
     token_hash = Column(String, nullable=False)        # bcrypt hash of agent token
     token_prefix = Column(String, nullable=True)       # "hka_abc1…" for display
     status = Column(String, default="disconnected")    # connected | disconnected

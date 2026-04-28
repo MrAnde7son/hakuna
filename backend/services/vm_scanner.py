@@ -1637,6 +1637,12 @@ _HIGH_VALUE_PORTS = {80, 443, 8080, 8443, 8888, 3000, 5000, 8000, 9090, 9443}
 
 MAX_AUTO_VM_TARGETS = 20
 
+# Bypass cap: assets with high-confidence CVE banners (Shodan vulns) skip the
+# top-N gate, but we still cap the bypass to keep one bad EASM run from
+# blowing up the VM scan budget. 50 is roughly 2.5x the normal cap — enough
+# headroom for a real exposed-VPN sweep without unbounded fan-out.
+MAX_AUTO_VM_BYPASS_TARGETS = 50
+
 
 async def trigger_vm_scan_for_easm_assets(
     db: Session, org: Organization, easm_scan_id: int, domain: str,
@@ -1647,6 +1653,12 @@ async def trigger_vm_scan_for_easm_assets(
     Called after EASM import completes. Selects up to MAX_AUTO_VM_TARGETS assets
     prioritized by: has high-value open ports, has detected tech stack,
     not behind CDN/WAF (direct targets yield better results).
+
+    Assets with non-empty ``easm_data["shodan_vulns"]`` are *always* queued
+    (capped at ``MAX_AUTO_VM_BYPASS_TARGETS``) — these are high-confidence
+    CVE banners from Shodan, the exact "exposed VPN with known RCE" case the
+    auto-VM rail exists to cover. Without this bypass a Shodan-discovered
+    Fortinet/Pulse/Citrix box could lose to N web apps in the score sort.
 
     Creates a proper Scan record so it appears on the scans page.
     Idempotent — skips if a VM scan was already triggered for this EASM scan.
@@ -1671,9 +1683,28 @@ async def trigger_vm_scan_for_easm_assets(
         logger.info("No EASM assets to auto-scan for org %s", org.id)
         return None
 
-    # Score and rank assets for VM scanning
+    # Bypass list: assets with high-confidence CVE banners go in regardless of
+    # score. Collected first so they don't compete for top-N slots with web
+    # apps that just happen to have richer tech stacks.
+    #
+    # Track *every* shodan_vulns asset in shodan_vuln_ids so the score-sort
+    # below excludes them all — including ones that overflow the bypass cap.
+    # Otherwise overflow assets get a second bite at the apple via the
+    # score-sort path and the cap stops being a real cap on total queued.
+    bypass_assets: list[Asset] = []
+    shodan_vuln_ids: set[int] = set()
+    for asset in assets:
+        easm = asset.easm_data or {}
+        if easm.get("shodan_vulns"):
+            shodan_vuln_ids.add(asset.id)
+            if len(bypass_assets) < MAX_AUTO_VM_BYPASS_TARGETS:
+                bypass_assets.append(asset)
+
+    # Score and rank the remaining assets for VM scanning
     scored: list[tuple[float, Asset]] = []
     for asset in assets:
+        if asset.id in shodan_vuln_ids:
+            continue
         easm = asset.easm_data or {}
         score = 0.0
 
@@ -1703,13 +1734,22 @@ async def trigger_vm_scan_for_easm_assets(
 
         scored.append((score, asset))
 
-    if not scored:
+    if not scored and not bypass_assets:
         logger.info("No scannable EASM assets for org %s (all filtered out)", org.id)
         return None
 
-    # Sort by score descending, take top N
+    # Sort by score descending, take top N. Bypass assets sit ahead of the
+    # scored list so they're guaranteed to be queued.
     scored.sort(key=lambda x: x[0], reverse=True)
-    selected = scored[:MAX_AUTO_VM_TARGETS]
+    selected: list[tuple[float, Asset]] = (
+        [(float("inf"), a) for a in bypass_assets]
+        + scored[:MAX_AUTO_VM_TARGETS]
+    )
+    if bypass_assets:
+        logger.info(
+            "Auto-VM scan: %d asset(s) bypassed top-N via shodan_vulns (org=%s, domain=%s)",
+            len(bypass_assets), org.id, domain,
+        )
 
     # Build targets and asset_id mapping
     targets = []

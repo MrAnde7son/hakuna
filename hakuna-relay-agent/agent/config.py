@@ -23,6 +23,15 @@ class AgentConfig:
     request_timeout: int = 60        # HTTP timeout for on-prem calls
     verify_ssl: bool = False         # verify TLS for on-prem services
 
+    # Cloud mode (Hakuna-managed scanner running in GCP). When mode='cloud',
+    # the agent ignores agent_token and instead authenticates with
+    # internal_secret against /ws/relay/cloud, fanning out one connection per
+    # org returned by /internal/cloud-relay/registrations.
+    mode: str = "agent"              # 'agent' (on-prem, default) | 'cloud'
+    backend_url: str = ""            # https URL of the API (for registrations + ws base)
+    internal_secret: str = ""        # INTERNAL_SHARED_SECRET — auth for cloud mode
+    registration_refresh_s: int = 60
+
     # Local credentials (loaded from env)
     local_credentials: dict = field(default_factory=dict)
 
@@ -38,6 +47,10 @@ def load_config() -> AgentConfig:
         batch_size=int(os.environ.get("HAKUNA_BATCH_SIZE", "200")),
         request_timeout=int(os.environ.get("HAKUNA_REQUEST_TIMEOUT", "60")),
         verify_ssl=os.environ.get("HAKUNA_VERIFY_SSL", "false").lower() == "true",
+        mode=os.environ.get("HAKUNA_RELAY_MODE", "agent").lower(),
+        backend_url=os.environ.get("HAKUNA_BACKEND_URL", "").rstrip("/"),
+        internal_secret=os.environ.get("INTERNAL_SHARED_SECRET", ""),
+        registration_refresh_s=int(os.environ.get("HAKUNA_REGISTRATION_REFRESH_S", "60")),
     )
 
     # Try to load YAML override

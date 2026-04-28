@@ -40,7 +40,7 @@ controls:
 
   # ── L3-CPS-PE-1 — PLC integrity ───────────────────────────
   - ref: "L3-CPS-PE-1"
-    title: PLC integrity (PLCの完全性)
+    title: PLC integrity
     domain: Plant Equipment
     testability: automated
     canonical_guidance: |
@@ -74,7 +74,7 @@ controls:
 
   # ── L3-CPS-IT-2 — Control protocol authentication absence ─
   - ref: "L3-CPS-IT-2"
-    title: Control protocol authentication absence (制御プロトコル認証の欠如)
+    title: Control protocol authentication absence
     domain: Information Technology in OT
     testability: automated
     canonical_guidance: |
@@ -101,7 +101,7 @@ controls:
 
   # ── L3-CPS-NW-1 — Plant-IT segmentation ───────────────────
   - ref: "L3-CPS-NW-1"
-    title: Plant-IT network segmentation (プラント-IT間のネットワーク分離)
+    title: Plant-IT network segmentation
     domain: Network
     testability: automated
     canonical_guidance: |
@@ -127,7 +127,7 @@ controls:
 
   # ── L3-CPS-MG-1 — Operator approval workflow ─────────────
   - ref: "L3-CPS-MG-1"
-    title: Operator approval workflow for OT audits (OT監査の運用承認)
+    title: Operator approval workflow for OT audits
     domain: Management
     testability: manual_only
     canonical_guidance: |
@@ -139,7 +139,7 @@ controls:
 
   # ── L3-CPS-MG-2 — Read-only enforcement ─────────────────
   - ref: "L3-CPS-MG-2"
-    title: Read-only enforcement (読み取り専用の保証)
+    title: Read-only enforcement
     domain: Management
     testability: manual_only
     canonical_guidance: |

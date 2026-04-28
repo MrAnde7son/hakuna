@@ -999,7 +999,10 @@ def run_cross_scan_finding_dedup(db, org_id, cfg: dict) -> dict:
     finalize_scan calls this after every ingest so the resolved per-org
     rule is enforced uniformly.
     """
-    from models.models import Finding, Scan
+    from models.models import (
+        Finding, Scan, FindingOwnership, CampaignFinding,
+        AutomateClick, ControlAssessment,
+    )
 
     findings_cfg = cfg.get("findings", {}) or {}
     if not findings_cfg.get("enabled", False):
@@ -1073,6 +1076,10 @@ def run_cross_scan_finding_dedup(db, org_id, cfg: dict) -> dict:
                 _merge_finding_lists(survivor, loser)
             merged += len(losers)
 
+        loser_ids = [l.id for l in losers if l.id is not None]
+        if loser_ids:
+            _reassign_finding_referrers(db, loser_ids, survivor.id)
+
         for loser in losers:
             db.delete(loser)
         removed += len(losers)
@@ -1081,6 +1088,43 @@ def run_cross_scan_finding_dedup(db, org_id, cfg: dict) -> dict:
         db.flush()
 
     return {"removed": removed, "merged": merged, "strategy": strategy, "key_fields": effective_fields}
+
+
+def _reassign_finding_referrers(db, loser_ids: list[int], survivor_id: int) -> None:
+    """Repoint FK rows from losers to the survivor before the losers are deleted.
+
+    Several tables have nullable=False FKs to findings.id without ondelete=CASCADE
+    (FindingOwnership, CampaignFinding, AutomateClick, ControlAssessment). The default
+    SQLAlchemy cascade would NULL them on parent delete, which violates NOT NULL.
+    """
+    from models.models import (
+        FindingOwnership, CampaignFinding, AutomateClick, ControlAssessment,
+    )
+
+    # FindingOwnership.finding_id is UNIQUE — if survivor already has one,
+    # drop the loser's row instead of repointing it.
+    survivor_has_owner = db.query(FindingOwnership.id).filter(
+        FindingOwnership.finding_id == survivor_id
+    ).first() is not None
+    if survivor_has_owner:
+        db.query(FindingOwnership).filter(
+            FindingOwnership.finding_id.in_(loser_ids)
+        ).delete(synchronize_session=False)
+    else:
+        # At most one loser can have an ownership row (column is unique). If two
+        # do across the group, keep the most recent and drop the rest.
+        owners = db.query(FindingOwnership).filter(
+            FindingOwnership.finding_id.in_(loser_ids)
+        ).order_by(FindingOwnership.updated_at.desc()).all()
+        for keeper in owners[:1]:
+            keeper.finding_id = survivor_id
+        for extra in owners[1:]:
+            db.delete(extra)
+
+    for model in (CampaignFinding, AutomateClick, ControlAssessment):
+        db.query(model).filter(model.finding_id.in_(loser_ids)).update(
+            {model.finding_id: survivor_id}, synchronize_session=False,
+        )
 
 
 def _merge_finding_lists(survivor, loser) -> None:

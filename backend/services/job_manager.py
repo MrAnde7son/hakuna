@@ -124,7 +124,21 @@ def dispatch(name: str, fn: Callable, *args, timeout: Optional[int] = None, **kw
 
     effective_timeout = timeout if timeout is not None else DEFAULT_JOB_TIMEOUT
 
-    async def _run():
+    def _sync_run():
+        job.status = JobStatus.RUNNING
+        job.started_at = datetime.utcnow()
+        try:
+            result = fn(*args)
+            job.result = result
+            job.status = JobStatus.COMPLETED
+        except Exception as e:
+            logger.error("Job %s (%s) failed: %s", job_id, name, e, exc_info=True)
+            job.error = str(e)
+            job.status = JobStatus.FAILED
+        finally:
+            job.completed_at = datetime.utcnow()
+
+    async def _async_run():
         job.status = JobStatus.RUNNING
         job.started_at = datetime.utcnow()
         try:
@@ -146,13 +160,15 @@ def dispatch(name: str, fn: Callable, *args, timeout: Optional[int] = None, **kw
         finally:
             job.completed_at = datetime.utcnow()
 
-    # Schedule on the running event loop (FastAPI's uvicorn loop)
+    # Prefer scheduling on the running event loop (async route handlers).
+    # Sync route handlers run in a FastAPI threadpool worker that has no
+    # loop of its own — submit directly to the executor instead. The old
+    # asyncio.run() fallback blocked the worker thread until the job
+    # completed, defeating the whole point of dispatching it.
     try:
         loop = asyncio.get_running_loop()
-        loop.create_task(_run())
+        loop.create_task(_async_run())
     except RuntimeError:
-        # No running loop — fallback to creating one (shouldn't happen in FastAPI)
-        logger.warning("No running event loop; creating new one for job %s", job_id)
-        asyncio.run(_run())
+        _JOB_EXECUTOR.submit(_sync_run)
 
     return job

@@ -1,0 +1,16 @@
+# AWS credentials for the corp-backups pipeline
+# Used by cron@lab-jumpbox to push nightly DB dumps + ssh key backups.
+# Rotate quarterly. Last rotation: 2024-06-01.
+
+[default]
+aws_access_key_id     = test
+aws_secret_access_key = test
+region                = us-east-1
+endpoint_url          = http://localstack:4566
+
+# Buckets
+#   corp-backups   — DB dumps + ssh keys backup (publicly listable, see s3://corp-backups/ssh/)
+#   corp-logs      — application logs
+
+# DB password for the appdb mysql is the SAME as the AD svc_backup password.
+# SSH access to the jumpbox: lab/labpass on port 2222.

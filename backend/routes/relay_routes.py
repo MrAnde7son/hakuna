@@ -418,7 +418,12 @@ async def relay_websocket(ws: WebSocket, db: Session = Depends(get_db)):
     except Exception as e:
         logger.exception("Relay WebSocket error for agent %s", agent.id)
     finally:
-        await broker.unregister(agent.id)
-        agent.status = "disconnected"
-        agent.last_seen_at = datetime.utcnow()
-        db.commit()
+        await broker.unregister(agent.id, ws=ws)
+        # Only flip the agent row to disconnected if this socket is actually
+        # the one being torn down. A reconnect that hands us a newer socket
+        # already set status="connected"; clobbering it back to disconnected
+        # would lie about the agent's real state until the next ping.
+        if not broker.is_connected(agent.id):
+            agent.status = "disconnected"
+            agent.last_seen_at = datetime.utcnow()
+            db.commit()

@@ -157,6 +157,32 @@ def test_smb_dispatched_on_445(db_session, test_org, linked_asset, connected_rel
     assert md["asset_ids"] == [linked_asset.id]
 
 
+def test_shodan_synthesized_event_dispatches_smb(
+    db_session, test_org, linked_asset, connected_relay,
+):
+    """Port_change events synthesized by hakuna-scanner's Shodan ingest path
+    carry an extra ``payload.source = 'shodan'`` tag. The dispatcher must
+    treat them identically to naabu-derived events — same matching, same
+    cooldown, same dispatch — otherwise orphan IPs that Shodan finds with
+    exposed SMB never get triaged.
+    """
+    from services.audit_auto_trigger import maybe_auto_trigger_anon_audits
+
+    test_org.settings = {"auto_audit_anon": True}
+    db_session.flush()
+
+    event = _port_change_event("scanner-uuid-1", [445])
+    event["payload"]["source"] = "shodan"
+
+    with patch("services.audit_runner._dispatch_background_run", return_value="task-1"):
+        n = maybe_auto_trigger_anon_audits(db_session, test_org, event)
+
+    assert n == 1
+    scan = db_session.query(Scan).filter_by(scan_type="smb_audit").first()
+    assert scan is not None
+    assert scan.raw_metadata["protocol"] == "smb"
+
+
 def test_snmp_dispatched_on_161(db_session, test_org, linked_asset, connected_relay):
     """SNMP rule declares ``transport='udp'``; the auto-trigger only fires
     when the scanner emits a UDP-tagged port_change event (Phase 4.0)."""
@@ -590,3 +616,70 @@ def test_dispatch_rejects_credentialed_audit_without_cred(db_session, test_org):
             relay_agent_id="relay-x",
             credential_id=None,
         )
+
+
+# ─────────────────────────────────────────────────────────────────
+# _pick_relay — cloud_scanner vs agent selection
+# ─────────────────────────────────────────────────────────────────
+
+def _make_relay(db_session, org_id, *, relay_type, name, last_seen=None):
+    relay = RelayAgent(
+        org_id=org_id,
+        name=name,
+        token_hash="x",
+        status="connected",
+        last_seen_at=last_seen or datetime.utcnow(),
+        relay_type=relay_type,
+    )
+    db_session.add(relay)
+    db_session.flush()
+    return relay
+
+
+def test_pick_relay_prefers_cloud_for_internet_facing_asset(db_session, test_org):
+    """Internet-facing assets should route to the cloud_scanner even when an
+    on-prem agent was seen more recently. This is the whole point of the
+    cloud scanner — public scans don't need a customer-deployed relay."""
+    from services.audit_auto_trigger import _pick_relay
+
+    older = datetime.utcnow() - timedelta(minutes=5)
+    cloud = _make_relay(db_session, test_org.id, relay_type="cloud_scanner",
+                        name="cloud", last_seen=older)
+    _make_relay(db_session, test_org.id, relay_type="agent", name="onprem",
+                last_seen=datetime.utcnow())
+
+    asset = Asset(scan_id=None, hostname="public", ip="93.184.216.34",
+                  is_internet_facing=True)
+    picked = _pick_relay(db_session, test_org.id, asset=asset)
+    assert picked.id == cloud.id
+
+
+def test_pick_relay_prefers_onprem_for_private_asset(db_session, test_org):
+    """Private/internal assets must route through the customer's on-prem
+    relay — the cloud scanner can't reach 10.x networks."""
+    from services.audit_auto_trigger import _pick_relay
+
+    _make_relay(db_session, test_org.id, relay_type="cloud_scanner",
+                name="cloud", last_seen=datetime.utcnow())
+    onprem = _make_relay(db_session, test_org.id, relay_type="agent",
+                         name="onprem",
+                         last_seen=datetime.utcnow() - timedelta(minutes=5))
+
+    asset = Asset(scan_id=None, hostname="internal", ip="10.0.0.5",
+                  is_internet_facing=False)
+    picked = _pick_relay(db_session, test_org.id, asset=asset)
+    assert picked.id == onprem.id
+
+
+def test_pick_relay_falls_back_when_preferred_type_missing(db_session, test_org):
+    """If the preferred relay type isn't connected, fall back to whatever is
+    — better to dispatch through a non-ideal relay than skip the audit."""
+    from services.audit_auto_trigger import _pick_relay
+
+    onprem = _make_relay(db_session, test_org.id, relay_type="agent",
+                         name="onprem")
+
+    public_asset = Asset(scan_id=None, hostname="public", ip="1.1.1.1",
+                         is_internet_facing=True)
+    picked = _pick_relay(db_session, test_org.id, asset=public_asset)
+    assert picked.id == onprem.id  # fell back to on-prem since no cloud relay

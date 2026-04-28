@@ -1,45 +1,43 @@
 {preamble}
 
-## Mission: Exposure Audit
-Hunt every category of SMB-visible exposure on this host — share access, auth posture, coercion primitives, registry hygiene — in one pass.
+## Mission: Find the Worst Exposures
+Hunt direct paths to credential capture, code execution, or domain compromise first. Coverage is secondary — five critical findings beat twenty hygiene mediums. Probe by tier, not by category.
 
-### Areas to cover
-Reorder based on what `smb_get_server_info` reveals. A DC needs more signing/coercion scrutiny; a file server more share-content scrutiny.
+Orient with `smb_get_server_info` (dialect, signing state, OS, domain role). DC role tilts toward NTLM-relay kill-chains; file-server role tilts toward share-content kill-chains.
 
-1. **Server posture**
-   - `smb_get_server_info` for dialect, signing state, OS, domain membership.
-   - `signing=disabled` on a DC is critical (NTLM relay enabler); anywhere else high.
+### Tier 1 — direct compromise paths (always run; emit on hit, then move on)
+1. **DC + signing not required + spoolss reachable** — `smb_get_server_info` shows `signing != required` AND host is a DC AND `smb_check_named_pipe("spoolss")` succeeds. Classic PrinterBug → NTLM relay to LDAP/ADCS for DA. Critical compound; emit as one finding referencing all three preconditions.
+2. **DC + signing not required + efsrpc/lsarpc reachable** — same pattern with PetitPotam pipes (`efsrpc`, `lsarpc`). Critical compound. (On non-DC, lsarpc is high — relay to ADCS/SMB still possible.)
+3. **GPP cpassword in SYSVOL** — read `Groups.xml`, `ScheduledTasks.xml`, `Services.xml`, `DataSources.xml`, `Printers.xml`, `Drives.xml` from any GPO under `\\<dc>\SYSVOL\<domain>\Policies\`. Any `cpassword=` attribute is critical (publicly-known AES key, every domain user can decrypt).
+4. **Plaintext credentials in a file readable by Authenticated Users (or anonymously)** — `unattend.xml`, `autounattend.xml`, `sysprep.inf`, `web.config`, `app.config`, `*.kdbx` paired with a sibling password file, `credentials.txt`, `passwords.txt`, `.git-credentials`, AWS/Azure key files. Critical if anonymous; critical if Authenticated Users on a domain-joined network.
+5. **Writable share where a service loads code** — a share writable to `Authenticated Users` or broader that contains `.dll`, `.ps1`, `.bat`, `.exe`, `.config`, or scheduled-task XMLs that a SYSTEM-context process loads. Foothold + persistence in one. Critical.
+6. **Autologon plaintext password in registry** — `smb_registry_read` on `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon` for `AutoAdminLogon=1` with `DefaultPassword` populated. Critical credential exposure.
+7. **Null session that enumerates users on a DC** — `smb_check_null_session` succeeds AND `smb_samr_enum_users_anonymous` returns the domain user list. Critical when paired with a weak SAMR password policy (enables targeted spray); high otherwise.
 
-2. **Shares & content**
-   - `smb_list_shares` — note each share's caller-access (`read` / `connect_only` / `denied`).
-   - Flag writable non-admin shares (foothold) and world-readable sensitive-looking names (`IT`, `Backup`, `HR`, `Scripts`, `Public`).
-   - Drill into interesting shares with `smb_list_share_contents` — the tool pre-flags `.ps1` / `.bat` / `.config` / `unattend.xml` / `Autologon.reg`.
-   - Use `smb_read_file` (max 64 KB) on small suspect files. Watch for plaintext credentials, GPP cpassword in `Groups.xml`/`registry.xml`. Redact secret values in findings.
+If Tier 1 is fully probed and **clean**, continue to Tier 2. If Tier 1 produced a critical, do one Tier-2 enrichment pass on the same surface (e.g. SAMR policy check after a null-session hit, share-content drilldown after a writable-share hit) and stop.
 
-3. **Anonymous exposure**
-   - `smb_check_null_session`. If accepted: `smb_list_shares(anonymous=true)`, `smb_samr_enum_users_anonymous`, `smb_check_guest_access`.
-   - Every share visible anonymously is a finding (severity by content).
+### Tier 2 — broader exposure surface
+- Other coercion primitives reachable: `netdfs` (DFSCoerce), `DAV RPC Service` (WebClient/WebDAV relay) — high.
+- World-readable shares with sensitive names (`HR`, `Backup`, `IT`, `Scripts`, `Public`, `Finance`) without sensitive content yet found — medium-to-high based on naming.
+- Anonymous-readable shares without sensitive content — medium.
+- Weak SAMR password policy (`min_password_length < 12`, `lockout_threshold = 0`, complexity disabled, `password_history < 5`) — medium standalone, escalates a Tier-1 null-session finding.
+- SMBv1 enabled (`LanmanServer\Parameters\SMB1`) — high.
+- `LmCompatibilityLevel < 5` (`Lsa\LmCompatibilityLevel`) — high.
+- AlwaysInstallElevated registry pair set — emit as a high finding from this protocol; it's a cross-confirmation if the WMI audit hasn't run.
+- Guest account enabled (`smb_check_guest_access`) — high.
+- Shares enumerable with caller-access `read` that contain non-sensitive technical files (logs, software installers) — medium.
 
-4. **Coercion primitives** (reachability only — no exploitation)
-   - `smb_check_named_pipe("spoolss")` — PrinterBug.
-   - `smb_check_named_pipe("efsrpc")` / `("lsarpc")` — PetitPotam.
-   - `smb_check_named_pipe("netdfs")` — DFSCoerce.
-   - `smb_check_named_pipe("DAV RPC Service")` — WebClient/WebDAV relay.
-   - DC + signing disabled + spoolss reachable = critical compound finding.
+### Tier 3 — hygiene (skip unless Tier 1+2 are exhausted and budget remains)
+Default shares (`ADMIN$`, `C$`, `IPC$`) present, non-default shares without descriptions, signing required (positive confirmation, informational), null session that returns nothing useful, password policy weakness alone without enumeration access. Cap at medium.
 
-5. **Auth + password policy**
-   - `smb_samr_password_policy` — flag `min_password_length < 12`, `lockout_threshold=0`, complexity disabled, `password_history < 5`.
+### Budget & stop rule
+~30-step budget. Ration by tier, not by category.
+- Orient + Tier 1 sweep should fit in ~12–15 steps. SYSVOL drilldown can burn several `smb_list_share_contents` + `smb_read_file` calls; budget for it.
+- Stop after one Tier-2 enrichment pass once Tier 1 produces a critical.
+- Stop if Tier 1 and Tier 2 are clean and you're 3 probes into Tier 3 with nothing new.
+- Never let Tier 3 probes crowd out a Tier 1 emit.
 
-6. **Registry hygiene** (when WMI isn't available; otherwise WMI is preferred)
-   - `smb_registry_read` for: SMBv1 enabled (`LanmanServer\Parameters\SMB1`), LanMan compat (`Lsa\LmCompatibilityLevel`), autologon (`Winlogon\AutoAdminLogon`/`DefaultPassword`), AlwaysInstallElevated.
-
-### How to budget
-You have ~30 steps. Spend them roughly: 1 server-info + 2 share enumerations + 3–5 share-content drilldowns + 4 coercion-pipe checks + 1 password-policy + 5 registry batches + emits. Stop when every area has been touched OR 3 probes in a row find nothing new.
-
-### Severity reminders
-- Critical: writable share usable by Authenticated Users to drop a payload that a service loads; signing not required + NTLM allowed + PetitPotam reachable; autologon plaintext password in registry.
-- High: null-session-enumerable users; world-readable share with credentials in a file; GPP cpassword in SYSVOL.
-- Medium: hygiene gaps (guest enabled but restricted, non-default shares without descriptions).
-- Low: default shares present, signing required (fine).
+### Evidence discipline
+Redact secret values in findings (show `REDACTED_PASSWORD`, not the bytes). Always cite share name, file path, caller-access level, and the tool that surfaced it.
 
 Call `emit_finding` with `protocol="smb"` and `mission="exposure_audit"`.

@@ -3,10 +3,13 @@ EASM (External Attack Surface Management) routes.
 Prefix: /api/easm
 """
 import logging
+from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from core.database import get_db
 from core.auth import get_current_user, require_auth, get_accessible_org_ids
@@ -215,6 +218,81 @@ async def rescan_by_scan_id(
     if result is None:
         raise HTTPException(502, "Failed to trigger scan — hakuna-scanner may be unavailable")
     return result
+
+
+class EasmScanUpdate(BaseModel):
+    domain: Optional[str] = Field(None, min_length=3)
+    scan_type: Optional[str] = Field(None, pattern="^(full|discovery|enrichment)$")
+    suppress_auto_followup: Optional[bool] = None
+
+
+@router.patch("/scans/{scan_id}")
+async def update_easm_scan(
+    scan_id: int,
+    patch: EasmScanUpdate = Body(...),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_auth),
+):
+    """Update an EASM scan's configuration (target domain, scan type, follow-up flag).
+
+    Edits raw_metadata only — does not auto-rerun. Use POST /rescan/{scan_id}
+    afterward to re-run with the updated config. Allowed in any scan state.
+    """
+    scan = db.query(Scan).filter(Scan.id == scan_id, Scan.source_type == "easm").first()
+    if not scan:
+        raise HTTPException(404, "EASM scan not found")
+    if user.role != "superadmin" and scan.org_id != user.org_id:
+        raise HTTPException(403, "Access denied")
+
+    metadata = dict(scan.raw_metadata or {})
+    before = {
+        "domain": metadata.get("domain"),
+        "scan_type": metadata.get("scan_type"),
+        "suppress_auto_followup": bool(metadata.get("suppress_auto_followup")),
+    }
+
+    if patch.domain is not None:
+        metadata["domain"] = patch.domain
+    if patch.scan_type is not None:
+        metadata["scan_type"] = patch.scan_type
+        scan.scan_type = f"easm_{patch.scan_type}"
+    if patch.suppress_auto_followup is not None:
+        metadata["suppress_auto_followup"] = patch.suppress_auto_followup
+
+    # Keep the human-readable scan_name and filename in sync so the scan list
+    # reflects edits without waiting for a rerun.
+    new_domain = metadata.get("domain")
+    new_type = metadata.get("scan_type") or "full"
+    if patch.domain is not None or patch.scan_type is not None:
+        label = new_type.replace("_", " ").title()
+        if new_domain:
+            scan.scan_name = f"EASM {label} — {new_domain}"
+        ts = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+        scan.filename = f"easm-{new_type}-{new_domain or 'unknown'}-{ts}"
+
+    scan.raw_metadata = metadata
+    flag_modified(scan, "raw_metadata")
+
+    from core.audit import log_audit
+    log_audit(
+        db, "update", "scan", entity_id=scan.id,
+        entity_name=scan.scan_name,
+        changes={"before": before, "after": {
+            "domain": metadata.get("domain"),
+            "scan_type": metadata.get("scan_type"),
+            "suppress_auto_followup": bool(metadata.get("suppress_auto_followup")),
+        }},
+        actor=user,
+    )
+    db.commit()
+
+    return {
+        "scan_id": scan.id,
+        "domain": metadata.get("domain"),
+        "scan_type": metadata.get("scan_type"),
+        "suppress_auto_followup": bool(metadata.get("suppress_auto_followup")),
+        "scan_name": scan.scan_name,
+    }
 
 
 @router.post("/refresh/{scan_id}")

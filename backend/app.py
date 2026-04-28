@@ -84,7 +84,10 @@ from routes.vm_routes import router as vm_router
 from routes.auth_profile_routes import router as auth_profile_router
 from routes.audit_routes import router as audit_router
 from routes.ot_posture_routes import router as ot_posture_router
-from routes.internal_relay_routes import router as internal_relay_router
+from routes.internal_relay_routes import (
+    router as internal_relay_router,
+    cloud_ws_router as cloud_relay_ws_router,
+)
 from routes.integration_builder_routes import router as integration_builder_router
 from routes.discovery_routes import router as discovery_router
 from routes.billing_routes import router as billing_router
@@ -317,6 +320,7 @@ app.include_router(auth_profile_router)
 app.include_router(audit_router)
 app.include_router(ot_posture_router)
 app.include_router(internal_relay_router)
+app.include_router(cloud_relay_ws_router)
 app.include_router(integration_builder_router)
 app.include_router(discovery_router)
 app.include_router(billing_router)
@@ -600,6 +604,52 @@ def _deferred_startup():
     _audit_scheduler.start()
     purge_expired_audit_logs()  # run once at startup
     logger.info("Audit log retention purge scheduled (every 24h, 90-day TTL)")
+
+    # Approval lifecycle: expire stale HITL approvals + escalate overdue
+    # ones to Slack. Both run on intervals; thresholds come from env so
+    # ops can tune without redeploying the scheduler config.
+    _approval_expiry_hours = int(os.getenv("APPROVAL_EXPIRY_HOURS", "24"))
+    _approval_escalate_minutes = int(os.getenv("APPROVAL_ESCALATE_MINUTES", "60"))
+    from services.approval_lifecycle import (
+        expire_stale_approvals as _expire_stale_approvals,
+        escalate_overdue_approvals as _escalate_overdue_approvals,
+    )
+
+    def _run_expire_stale_approvals():
+        from core.database import SessionLocal as _SL
+        _db = _SL()
+        try:
+            _expire_stale_approvals(_db, _approval_expiry_hours)
+        except Exception as _exc:
+            logger.warning("Approval expiry sweep failed: %s", _exc)
+        finally:
+            _db.close()
+
+    def _run_escalate_overdue_approvals():
+        from core.database import SessionLocal as _SL
+        _db = _SL()
+        try:
+            _escalate_overdue_approvals(_db, _approval_escalate_minutes)
+        except Exception as _exc:
+            logger.warning("Approval escalation sweep failed: %s", _exc)
+        finally:
+            _db.close()
+
+    _approval_scheduler = _BGScheduler()
+    _approval_scheduler.add_job(
+        _run_expire_stale_approvals, _IntervalTrigger(hours=1),
+        id="approval_expiry_sweep", replace_existing=True,
+    )
+    _approval_scheduler.add_job(
+        _run_escalate_overdue_approvals, _IntervalTrigger(minutes=15),
+        id="approval_escalation_sweep", replace_existing=True,
+    )
+    _approval_scheduler.start()
+    logger.info(
+        "Approval lifecycle scheduled: expiry sweep hourly (TTL=%dh), "
+        "escalation sweep every 15m (delay=%dm)",
+        _approval_expiry_hours, _approval_escalate_minutes,
+    )
     # Seed SLA defaults and backfill any scans that have no SLA due dates yet
     try:
         from core.database import SessionLocal as _SL
@@ -655,6 +705,11 @@ def _deferred_startup():
 async def startup():
     # async so we can resize anyio's threadpool — `current_default_thread_limiter`
     # only resolves inside a running event loop.
+    from core.event_loop import capture_main_loop
+    # Worker threads (job_manager resume, agent runs) need to dispatch
+    # coroutines back onto this loop — futures owned by the in-process
+    # RelayBroker can only be woken up from the loop that created them.
+    capture_main_loop()
     init_db()
     init_parsers()
     # Bump anyio's default threadpool from 40 → 100. FastAPI dispatches every

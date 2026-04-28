@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 from models.models import (
     Organization, Scan, Asset, Finding,
     AutomateClick, FindingOwnership, CampaignFinding, SBOMVulnerability,
+    InventorySoftware,
 )
 
 from apscheduler.triggers.cron import CronTrigger
@@ -509,6 +510,13 @@ def _clear_scan_data(db: Session, scan_id: int):
             db.query(model).filter(model.finding_id.in_(finding_ids)).delete(synchronize_session=False)
     db.query(Finding).filter(Finding.scan_id == scan_id).delete(synchronize_session=False)
 
+    # Drop inventory rows the previous EASM run produced. SBOMComponent rows
+    # are rebuilt by build_sbom_from_inventory, but their source InventorySoftware
+    # would otherwise accumulate one stale set per re-run.
+    db.query(InventorySoftware).filter(InventorySoftware.scan_id == scan_id).delete(
+        synchronize_session=False,
+    )
+
     # Collect asset IDs to preserve (any non-EASM provenance)
     scan_asset_ids = {r[0] for r in db.query(Asset.id).filter(Asset.scan_id == scan_id).all()}
     if not scan_asset_ids:
@@ -919,11 +927,26 @@ async def trigger_easm_for_new_org(db: Session, org: Organization, email: str):
 
 def _build_easm_data(ea: dict) -> dict:
     """Build the easm_data blob from a hakuna-scanner asset."""
+    services = ea.get("services") or {}
+    # Aggregate Shodan-reported CVEs across all ports into a single list.
+    # Per-port CVEs land in services[port].shodan_vulns when the scanner's
+    # Shodan ingest path runs (see hakuna-scanner/app/ingest/delta.py
+    # apply_shodan_observations). The flat list is what the VM auto-trigger
+    # and prioritizer read — they don't care which port surfaced the CVE.
+    shodan_vulns: set[str] = set()
+    if isinstance(services, dict):
+        for svc in services.values():
+            if not isinstance(svc, dict):
+                continue
+            for cve in svc.get("shodan_vulns") or []:
+                if isinstance(cve, str):
+                    shodan_vulns.add(cve)
     return {
         "easm_asset_id": ea.get("id"),
         "tech_stack": ea.get("tech_stack") or [],
         "open_ports": ea.get("open_ports") or [],
-        "services": ea.get("services") or {},
+        "services": services,
+        "shodan_vulns": sorted(shodan_vulns),
         "tls_cert": ea.get("tls_cert") or {},
         "security_audit": ea.get("security_audit") or {},
         "tls_deep_audit": ea.get("tls_deep_audit") or {},
@@ -982,6 +1005,39 @@ def _easm_metadata_kwargs(
     if ctx["ctx_exploitability"] is not None:
         kwargs["ctx_exploitability"] = ctx["ctx_exploitability"]
     return kwargs
+
+
+def _upsert_inventory_software_from_cpes(
+    db: Session, scan_id: int, asset_id: int, cpe_list: list[str],
+) -> None:
+    """Persist EASM-inferred software as InventorySoftware rows.
+
+    Feeds services/sbom_pipeline.build_sbom_from_inventory so externally
+    discovered software shows up in the SBOM view alongside agent-reported
+    inventory. Versionless CPEs are still recorded — the SBOM pipeline
+    tolerates null versions and lists the component without EOL/CVE matches.
+    """
+    from services.cpe_matcher import parse_cpe
+
+    seen: set[Tuple[str, str, str]] = set()
+    for cpe_str in cpe_list:
+        parsed = parse_cpe(cpe_str)
+        if parsed is None:
+            continue
+        version = parsed.version if parsed.has_version else None
+        key = (parsed.vendor, parsed.product, version or "")
+        if key in seen:
+            continue
+        seen.add(key)
+
+        db.add(InventorySoftware(
+            scan_id=scan_id,
+            asset_id=asset_id,
+            name=parsed.product,
+            version=version,
+            vendor=parsed.vendor,
+            source_plugin="easm-cpe-inference",
+        ))
 
 
 def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -> Tuple[int, list]:
@@ -1802,9 +1858,18 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
     # the ThreatCVE table. Version-less CPEs ("cpe:2.3:a:nginx:nginx:*:...")
     # are skipped by the matcher — they produce no finding but still route
     # Nuclei templates via the VM scanner. See services/cpe_matcher.py.
-    cpe_list = ea.get("cpe_list") or []
+    cpe_list = _filter_cpe_list(ea.get("cpe_list") or [])
     if cpe_list:
-        from services.cpe_matcher import match_cves_for_cpes
+        # Persist software inventory before findings so SBOMComponent rows
+        # are rebuilt against fresh inventory at finalize time.
+        try:
+            _upsert_inventory_software_from_cpes(db, scan_id, asset.id, cpe_list)
+        except Exception:
+            logger.exception(
+                f"Inventory upsert from CPEs failed for {hostname} (non-fatal)"
+            )
+
+        from services.cpe_matcher import match_cves_for_cpes, parse_cpe
         try:
             matched_cves = match_cves_for_cpes(db, cpe_list)
         except Exception:
@@ -1853,11 +1918,23 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
                 badges.append("Public exploit")
             badge_str = f" [{', '.join(badges)}]" if badges else ""
 
+            # Embed the matched product (and version when known) in plugin_name
+            # so sbom_pipeline.build_sbom_from_inventory can link this CVE
+            # finding to its SBOMComponent via substring match.
+            parsed_cpe = parse_cpe(matched_cpe) if matched_cpe else None
+            if parsed_cpe:
+                product_label = parsed_cpe.product
+                if parsed_cpe.has_version:
+                    product_label = f"{parsed_cpe.product} {parsed_cpe.version}"
+                plugin_name = f"{cve_id}: {product_label} — Known vulnerability{badge_str}"
+            else:
+                plugin_name = f"{cve_id}: Known vulnerability{badge_str}"
+
             findings_to_add.append(Finding(
                 scan_id=scan_id, asset_id=asset.id,
                 source_type="easm", source_vuln_id=cve_id,
                 plugin_id=pid,
-                plugin_name=f"{cve_id}: Known vulnerability{badge_str}",
+                plugin_name=plugin_name,
                 severity=sev, severity_label=sev_label, risk_factor=risk,
                 priority_score=round(priority, 1),
                 effort_level="medium",
@@ -2201,6 +2278,17 @@ async def import_easm_assets_for_domain(
         logger.exception("finalize_scan failed for EASM scan %d", scan.id)
         db.rollback()
 
+    # Build SBOM rows from the InventorySoftware records emitted by
+    # _generate_easm_findings. Runs after finalize_scan so any deduped
+    # findings are visible to the CVE-matching pass.
+    try:
+        from services.sbom_pipeline import build_sbom_from_inventory
+        build_sbom_from_inventory(db, scan.id)
+        db.commit()
+    except Exception:
+        logger.exception("SBOM pipeline failed for EASM scan %d (non-fatal)", scan.id)
+        db.rollback()
+
     logger.info(f"EASM scan for '{domain}': assets={created}, findings={findings_created} (scan_id={scan.id})")
 
     return {
@@ -2456,6 +2544,18 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
                 db.commit()
             except Exception:
                 logger.exception("finalize_scan failed for EASM scan %d", scan.id)
+                db.rollback()
+
+            # Build SBOM rows from InventorySoftware records emitted during
+            # finding generation, mirroring the upload path in app.py.
+            try:
+                from services.sbom_pipeline import build_sbom_from_inventory
+                build_sbom_from_inventory(db, scan.id)
+                db.commit()
+            except Exception:
+                logger.exception(
+                    "SBOM pipeline failed for EASM scan %d (non-fatal)", scan.id
+                )
                 db.rollback()
 
             # Threat intel enrichment: HIBP breach check + GLEIF corporate structure

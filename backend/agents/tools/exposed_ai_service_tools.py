@@ -61,6 +61,12 @@ _PROBE_TIMEOUT_S = 8
 def _run_async(coro):
     """Bridge sync agent_tool to async relay broker. Same shape as
     ``exposed_datastore_tools._run_async``."""
+    # See agents/tools/ssh_tools.py for the cross-loop-future rationale.
+    from core.event_loop import get_main_loop, is_on_main_loop
+    main_loop = get_main_loop()
+    if main_loop is not None and main_loop.is_running() and not is_on_main_loop():
+        fut = asyncio.run_coroutine_threadsafe(coro, main_loop)
+        return fut.result(timeout=_PROBE_TIMEOUT_S + 15)
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:

@@ -5,13 +5,13 @@ import {
   Upload, CheckCircle, AlertCircle, FileText, X, Radar, Globe, Plus,
   RefreshCw, Trash2, Search, Clock, Server, Shield, Loader,
   Play, MonitorSmartphone, History, ChevronDown, ChevronUp, Edit2, Save,
-  Square, Terminal, Key, Radio, ShieldAlert, Users, HardDrive, Database, Network, Cloud,
+  Square, Terminal, Key, Radio, ShieldAlert, ShieldCheck, Users, HardDrive, Database, Network, Cloud,
   Cpu, Sparkles, Factory, Eye,
 } from 'lucide-react'
 import { useScan } from '../../App.jsx'
 import useURLFilters from '../../hooks/useURLFilters.js'
 import {
-  uploadScan, deleteScan, cancelScan, getScanStatus, getEasmStatus, scanEasmDomain, rescanEasmScan, refreshEasmScan, setupEasm,
+  uploadScan, deleteScan, cancelScan, getScanStatus, getEasmStatus, scanEasmDomain, rescanEasmScan, updateEasmScan, refreshEasmScan, setupEasm,
   getEasmScanRuns, startVmScan, refreshVmScan, rescanVmScan, getAssets, updateScanSchedule,
   getCredentials, createCredential, getRelayAgents,
   listAuditProtocols, startAuditRun, getBillingUsage,
@@ -2378,7 +2378,7 @@ function VmScanHistory({ expanded, metadata }) {
           {status === 'running' ? 'Scanning' : status === 'completed' ? 'Completed' : status === 'completed_with_errors' ? 'Partial' : status}
         </span>
         <span style={{ color: 'var(--text-muted)', flex: 1 }}>
-          {completed}/{total} targets done
+          {completed}/{total} job{total !== 1 ? 's' : ''} done
         </span>
         <span style={{ color: 'var(--text-muted)' }}>
           {findings} finding{findings !== 1 ? 's' : ''}
@@ -2724,6 +2724,150 @@ function ScheduleDropdown({ scan, onUpdate }) {
 }
 
 
+// ── Edit modal (EASM scans) ──────────────────────────────────────────
+
+function EditEasmScanModal({ scan, onClose, onSaved }) {
+  const toast = useToast()
+  const md = scan.raw_metadata || {}
+  const [domain, setDomain] = useState(md.domain || '')
+  const [scanType, setScanType] = useState(md.scan_type || 'full')
+  const [suppressFollowup, setSuppressFollowup] = useState(!!md.suppress_auto_followup)
+  const [saving, setSaving] = useState(false)
+
+  const onSave = async () => {
+    const trimmed = domain.trim()
+    if (!trimmed || trimmed.length < 3) { toast.error('Domain is required (3+ chars)'); return }
+    setSaving(true)
+    try {
+      await updateEasmScan(scan.id, {
+        domain: trimmed,
+        scan_type: scanType,
+        suppress_auto_followup: suppressFollowup,
+      })
+      toast.success('EASM scan updated. Hit Rescan to run with the new config.')
+      onSaved()
+    } catch (e) {
+      toast.error(e.message || 'Failed to update scan')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return createPortal(
+    <div
+      style={{
+        position: 'fixed', inset: 0, zIndex: 1000,
+        background: 'rgba(0,0,0,0.5)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+      }}
+      onClick={e => { if (e.target === e.currentTarget) onClose() }}
+    >
+      <div style={{
+        background: 'var(--bg-card)', border: '1px solid var(--border)',
+        borderRadius: 14, padding: 28, width: '100%', maxWidth: 520,
+        maxHeight: '92vh', overflow: 'auto',
+        boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+          <div style={{ fontWeight: 700, fontSize: 16 }}>Edit EASM scan</div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 4 }}>
+            <X size={18} />
+          </button>
+        </div>
+
+        <div style={{
+          padding: '12px 14px', borderRadius: 8, marginBottom: 14,
+          background: '#0ea5e908', border: '1px solid #0ea5e922',
+        }}>
+          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 3 }}>External Attack Surface</div>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+            Updates this scan's config. Does not auto-rerun — use the Rescan button afterward.
+          </div>
+        </div>
+
+        <div style={{ marginBottom: 14 }}>
+          <label style={{ fontSize: 12, fontWeight: 600, display: 'block', marginBottom: 6, color: 'var(--text-muted)' }}>
+            Target domain
+          </label>
+          <input
+            type="text"
+            value={domain}
+            onChange={e => setDomain(e.target.value)}
+            placeholder="example.com"
+            style={{
+              width: '100%', padding: '10px 12px', borderRadius: 8,
+              border: '1px solid var(--border)', background: 'var(--bg)',
+              color: 'var(--text-primary)', fontSize: 13, fontFamily: 'monospace',
+              boxSizing: 'border-box',
+            }}
+          />
+        </div>
+
+        <div style={{ marginBottom: 14 }}>
+          <label style={{ fontSize: 12, fontWeight: 600, display: 'block', marginBottom: 6, color: 'var(--text-muted)' }}>
+            Scan type
+          </label>
+          <div style={{ display: 'flex', gap: 6 }}>
+            {[
+              { v: 'full', label: 'Full', hint: 'Discovery + enrichment' },
+              { v: 'discovery', label: 'Discovery', hint: 'Subdomain + asset enumeration' },
+              { v: 'enrichment', label: 'Enrichment', hint: 'Tech, ports, TLS on known assets' },
+            ].map(opt => {
+              const selected = scanType === opt.v
+              return (
+                <button
+                  key={opt.v}
+                  onClick={() => setScanType(opt.v)}
+                  title={opt.hint}
+                  style={{
+                    flex: 1, padding: '8px 10px', borderRadius: 8, cursor: 'pointer',
+                    background: selected ? '#0ea5e922' : 'transparent',
+                    border: `1px solid ${selected ? '#0ea5e9' : 'var(--border)'}`,
+                    color: selected ? '#0ea5e9' : 'var(--text-muted)',
+                    fontWeight: 600, fontSize: 12,
+                  }}
+                >
+                  {opt.label}
+                </button>
+              )
+            })}
+          </div>
+        </div>
+
+        <div style={{
+          marginBottom: 18, padding: '10px 12px', borderRadius: 8,
+          background: 'var(--bg-secondary)', border: '1px solid var(--border)',
+        }}>
+          <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={!suppressFollowup}
+              onChange={e => setSuppressFollowup(!e.target.checked)}
+              style={{ marginTop: 2 }}
+            />
+            <div>
+              <span style={{ fontSize: 12, fontWeight: 600 }}>Run automated follow-up scans</span>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>
+                When enabled, discovered subdomains and IPs are automatically queued
+                for deeper enrichment. Uncheck for a one-shot scan with no fan-out.
+              </div>
+            </div>
+          </label>
+        </div>
+
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <Button variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button onClick={onSave} disabled={saving} style={{ background: '#0ea5e9' }}>
+            <Save size={14} /> {saving ? 'Saving…' : 'Save'}
+          </Button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  )
+}
+
+
 // ── Edit & rerun modal (VM scans) ────────────────────────────────────
 
 function EditVmScanModal({ scan, onClose, onSaved }) {
@@ -2917,6 +3061,7 @@ function EditVmScanModal({ scan, onClose, onSaved }) {
 function AuditScanHistory({ expanded, scanId }) {
   // Lazy-load: we only hit /audits/scans/{id}/history when the panel opens.
   // Avoids a per-card fetch on the scan list page.
+  const navigate = useNavigate()
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState(null)
@@ -3018,6 +3163,19 @@ function AuditScanHistory({ expanded, scanId }) {
                       <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
                         {meta.join(' · ')}
                       </span>
+                    )}
+                    {r.status === 'awaiting_approval' && (
+                      <button
+                        onClick={() => navigate(`/agents?approvals=1&run=${r.agent_run_id}`)}
+                        style={{
+                          fontSize: 10, padding: '2px 6px', borderRadius: 3,
+                          background: '#fef3c7', border: '1px solid #f59e0b',
+                          color: '#b45309', cursor: 'pointer', fontWeight: 600,
+                        }}
+                        title="Review pending approval"
+                      >
+                        Review
+                      </button>
                     )}
                     <button
                       onClick={() => setTraceTarget({ agentId: r.agent_id, runId: r.agent_run_id, label: traceLabel })}
@@ -3204,6 +3362,7 @@ function EditAuditScanModal({ scan, onClose, onSaved }) {
 // ── Scan card ────────────────────────────────────────────────────────
 
 function ScanCard({ scan, onDelete, deleting, onSelect, onRescan, onRefresh, onCancel, cancelling }) {
+  const navigate = useNavigate()
   const meta = getSourceMeta(scan.source_type)
   const isEasm = scan.source_type === 'easm'
   const isVm = scan.source_type === 'vm_scanner'
@@ -3302,6 +3461,22 @@ function ScanCard({ scan, onDelete, deleting, onSelect, onRescan, onRefresh, onC
                 {showHistory ? <ChevronUp size={10} /> : <ChevronDown size={10} />}
               </button>
             )}
+            {isEasm && !isRunning && (
+              <button
+                onClick={() => setEditOpen(true)}
+                title="Edit scan (target, type, follow-ups)"
+                style={{
+                  background: 'none', border: '1px solid var(--border)',
+                  borderRadius: 6, padding: '5px 8px', cursor: 'pointer',
+                  color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 4, fontSize: 12,
+                  transition: 'all 0.15s',
+                }}
+                onMouseEnter={e => { e.currentTarget.style.borderColor = '#0ea5e9'; e.currentTarget.style.color = '#0ea5e9' }}
+                onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = 'var(--text-muted)' }}
+              >
+                <Edit2 size={12} />
+              </button>
+            )}
             {isEasm && domain && onRescan && !isRunning && (
               <button
                 disabled={rescanning}
@@ -3363,6 +3538,26 @@ function ScanCard({ scan, onDelete, deleting, onSelect, onRescan, onRefresh, onC
                 <RefreshCw size={12} style={rescanning ? { animation: 'spin 1s linear infinite' } : undefined} />
               </button>
             )}
+            {isAudit && (scan.pending_approval_count || 0) > 0 && (
+              <button
+                onClick={() => {
+                  const runId = scan.pending_approval_run_id
+                  navigate(`/agents?approvals=1${runId ? `&run=${runId}` : ''}`)
+                }}
+                title={`${scan.pending_approval_count} action${scan.pending_approval_count !== 1 ? 's' : ''} need approval`}
+                style={{
+                  background: '#fef3c7', border: '1px solid #f59e0b',
+                  borderRadius: 6, padding: '5px 10px', cursor: 'pointer',
+                  color: '#b45309', display: 'flex', alignItems: 'center', gap: 5,
+                  fontSize: 12, fontWeight: 600, transition: 'all 0.15s',
+                }}
+                onMouseEnter={e => { e.currentTarget.style.background = '#fde68a' }}
+                onMouseLeave={e => { e.currentTarget.style.background = '#fef3c7' }}
+              >
+                <ShieldCheck size={12} />
+                Review action{scan.pending_approval_count > 1 ? `s (${scan.pending_approval_count})` : ''}
+              </button>
+            )}
             {isAudit && !isRunning && (
               <button
                 onClick={() => setEditOpen(true)}
@@ -3407,6 +3602,13 @@ function ScanCard({ scan, onDelete, deleting, onSelect, onRescan, onRefresh, onC
               >
                 <RefreshCw size={12} style={rescanning ? { animation: 'spin 1s linear infinite' } : undefined} />
               </button>
+            )}
+            {editOpen && isEasm && (
+              <EditEasmScanModal
+                scan={scan}
+                onClose={() => setEditOpen(false)}
+                onSaved={async () => { setEditOpen(false); if (onRefresh) await onRefresh() }}
+              />
             )}
             {editOpen && isVm && (
               <EditVmScanModal
