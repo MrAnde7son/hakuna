@@ -146,7 +146,7 @@ services:
     #   endpoint_url=http://localstack:4566
     # (hostname, from the backend/audit-worker containers on `hakuna_default`)
     # or http://localhost:4566 for a host-running backend.
-    image: localstack/localstack:latest
+    image: localstack/localstack:3.8
     container_name: lab-localstack
     hostname: localstack
     environment:
