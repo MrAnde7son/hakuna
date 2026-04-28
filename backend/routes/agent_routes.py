@@ -566,10 +566,41 @@ def decide_approval(
     if clear_approval_notification(db, approval_id_for_cleanup):
         db.commit()
 
-    # Continue the agent loop on a worker thread — keeps the HTTP
+    # Continue the agent loop off the request thread — keeps the HTTP
     # response fast even when the approved tool is slow (SSH commands,
     # multi-step LLM round-trips, further tool executions).
+    #
+    # Audit-driven runs (those tied to a Scan) resume on the same Celery
+    # queue that ran the initial dispatch so the full lifecycle stays
+    # visible in audit-worker logs and survives a backend restart. Manual
+    # non-audit runs keep the in-process path so dev without the audits
+    # profile still works.
+    is_audit_run = bool(
+        ((approval.agent.memory or {}).get("_run_ctx") or {}).get("_scan_id")
+    )
+
     from services.job_manager import dispatch
+
+    if is_audit_run:
+        from services.audit_worker import continue_agent_run_task
+        try:
+            result = continue_agent_run_task.apply_async(
+                args=(run_id,),
+                queue="audits",
+                ignore_result=True,
+            )
+            return {"ok": True, "run_id": run_id, "task_id": result.id}
+        except Exception:
+            # Broker unreachable. The decision is already committed, so we
+            # can't bounce the request — fall through to the in-process
+            # path so the run still resumes. The audit-worker logs won't
+            # show the resume in this degraded mode, but progress is
+            # better than a stuck run.
+            import logging
+            logging.getLogger(__name__).exception(
+                "audit resume celery dispatch failed for run=%s; falling back to in-process",
+                run_id,
+            )
 
     def _continue():
         bg_db = SessionLocal()

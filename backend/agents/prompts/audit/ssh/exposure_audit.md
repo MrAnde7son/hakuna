@@ -13,7 +13,7 @@ These are the chains a red team would try in the first hour.
 5. **`PermitRootLogin yes` + `PasswordAuthentication yes`** — `sshd -T | grep -E '^(permitrootlogin|passwordauth)'`. Pre-auth brute force window directly to root. Critical; promote with shadow status if you can confirm a weak hash.
 6. **GTFOBins-exploitable SUID** — find SUID/SGID, intersect against the GTFOBins shell-escape list (vim, find, awk, less, env, nmap, perl, python, ruby, bash, more, vi). SUID on any of these = direct privesc. Critical.
 7. **Root-run cron from a writable path** — `/etc/crontab`, `/etc/cron.d/*`, `/etc/cron.daily/*`. World-writable cron file, or a root-cron script located in a user-writable directory, is scheduled root. Critical.
-8. **EOL OS with KEV-listed kernel/userland CVE reachable** — orient on `/etc/os-release` + `uname -r`. CentOS 6/7, Ubuntu 16.04/18.04 without ESM, RHEL 7, Debian ≤10, kernels < 4.19 — flat critical when reachable from anything beyond the host itself.
+8. **KEV-listed unpatched CVE on an exposed service or EOL OS** — orient on `/etc/os-release` + `uname -r`, then run `correlate_software_to_cves(asset_id)` once and cross-reference top candidates against the package manager (`dpkg -l` / `rpm -qa`) and listening services from `ss -tlnp`. CentOS 6/7, Ubuntu 16.04/18.04 without ESM, RHEL 7, Debian ≤10, kernels < 4.19, plus any KEV-listed CVE matching installed software/version on a non-loopback service → flat critical when reachable from anything beyond the host itself.
 
 If Tier 1 is fully probed and **clean**, continue to Tier 2. If Tier 1 produced a critical, do one Tier-2 enrichment pass on the same surface (e.g. shadow status for the SSH-config finding, firewall posture for the open-service finding) and stop.
 

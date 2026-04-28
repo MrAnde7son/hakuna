@@ -174,3 +174,44 @@ def run_scratch_agent_task(self, agent_id: int, user_input: str, wallclock_s: in
         raise
     finally:
         bg_db.close()
+
+
+@celery_app.task(
+    bind=True,
+    name="audits.continue_agent_run",
+    max_retries=0,
+)
+def continue_agent_run_task(self, run_id: int) -> dict:
+    """Resume an audit AgentRun after a HITL approval decision.
+
+    Pairs with `record_approval_decision` (called synchronously in the API
+    handler) — by the time this task runs, the AgentRun is back in
+    `running` state and the gated tool's outcome is encoded on the
+    decided AgentApproval row. The Celery worker re-enters the LLM loop
+    and drives the run to a terminal state.
+
+    Routing approvals through the same queue that ran the initial
+    dispatch keeps the full audit lifecycle visible in audit-worker logs,
+    and lets the resume survive a backend restart.
+    """
+    from core.database import SessionLocal
+    from agents.agent_engine import continue_after_decision
+
+    bg_db = SessionLocal()
+    try:
+        run = continue_after_decision(run_id, bg_db)
+        return {
+            "status": run.status,
+            "run_id": run.id,
+            "agent_id": run.agent_id,
+            "steps": run.steps_used,
+        }
+    except Exception:
+        logger.exception("audit resume task run=%s failed", run_id)
+        try:
+            bg_db.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        bg_db.close()
