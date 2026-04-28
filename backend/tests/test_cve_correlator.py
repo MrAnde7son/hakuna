@@ -200,27 +200,28 @@ def test_missing_asset_returns_error(db_session):
     assert "error" in result
 
 
-def test_software_cve_missions_wired_up():
-    """Both WMI and SSH expose the `software_cve` mission with the upgraded
-    prompt that calls `correlate_software_to_cves`, and the suggested budget
-    was bumped to reflect the heavier correlator+triage flow."""
+def test_exposure_audit_missions_wired_up():
+    """The unified exposure_audit mission for WMI and SSH includes the
+    correlator-driven CVE triage step — the prompt references
+    `correlate_software_to_cves` and the tool is in the palette."""
     from agents.tools import wmi_tools, ssh_tools  # noqa: F401 — registers audits
     from agents.audit_registry import AUDITS
     from agents.agent_prompts import ENHANCED_PROMPTS
 
     for proto in ("wmi", "ssh"):
         audit = AUDITS[proto]
-        mission = audit.mission("software_cve")
-        assert mission is not None, f"{proto} missing software_cve mission"
-        assert mission.suggested_budget == 25, (
-            f"{proto} software_cve budget should be 25 (was {mission.suggested_budget})"
+        mission = audit.mission("exposure_audit")
+        assert mission is not None, f"{proto} missing exposure_audit mission"
+        assert mission.suggested_budget >= 50, (
+            f"{proto} exposure_audit budget should be >= 50 to cover full surface "
+            f"(was {mission.suggested_budget})"
         )
         prompt = ENHANCED_PROMPTS[mission.prompt_key]
         assert "correlate_software_to_cves" in prompt, (
-            f"{proto} software_cve prompt doesn't reference the correlator"
+            f"{proto} exposure_audit prompt doesn't reference the correlator"
         )
         assert "{preamble}" not in prompt, (
-            f"{proto} software_cve preamble unresolved"
+            f"{proto} exposure_audit preamble unresolved"
         )
         # The tool is available in the protocol's palette — so the agent
         # can actually call what the prompt tells it to call.

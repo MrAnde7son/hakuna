@@ -75,9 +75,12 @@ async def wmi_query_handler(ws, task, transport_config, credentials, params) -> 
         )
     profiles = (params or {}).get("profiles") or []
     registry_reads = (params or {}).get("registry_reads") or []
+    wql_queries = (params or {}).get("wql") or []
+    invoke_methods = (params or {}).get("invoke") or []
     timeout_s = int((params or {}).get("timeout_s") or 120)
     return await run_wmi_queries(
         target, credentials or {}, profiles, timeout_s, registry_reads,
+        wql_queries, invoke_methods,
     )
 
 
@@ -87,34 +90,47 @@ async def run_wmi_queries(
     profiles: list[str],
     timeout_s: int = 120,
     registry_reads: list[dict] | None = None,
+    wql_queries: list[dict] | None = None,
+    invoke_methods: list[dict] | None = None,
 ) -> dict[str, Any]:
-    """Execute the requested profiles against a single Windows target.
+    """Execute the requested profiles / WQL queries / registry reads / method
+    invocations against a single Windows target.
 
     The whole impacket interaction is wrapped in a single `to_thread` + timeout
     so one slow host can't stall the agent's event loop.
 
-    `registry_reads` is an optional list of ad-hoc StdRegProv ops used by the
-    WMI audit agent. Each entry is `{op, hive, key, value_name?}` where op is
-    `get_value` | `enum_keys` | `enum_values`. Results come back under the
-    `registry_read` key as a list aligned with the input order.
+    Inputs:
+      - `profiles`: legacy named profiles from `WQL_PROFILES`.
+      - `wql_queries`: list of `{namespace?, query}` dicts — generic WQL path
+        used by the WMI audit agent's `wmi_query` tool. Read-only by
+        construction (WQL has no write operators).
+      - `registry_reads`: list of StdRegProv ops `{op, hive, key, value_name?}`.
+      - `invoke_methods`: list of `{namespace?, class, method, target_path?,
+        arguments?}` dicts — DCOM ExecMethod calls (Win32_Process.Create,
+        Win32_Service.StartService, StdRegProv.SetStringValue, etc.). These
+        are write/exec operations; the backend gates them through the
+        per-call NeedsApproval flow.
     """
     if not target:
         raise WMIError("target is required")
-    if not profiles and not registry_reads:
-        raise WMIError("at least one profile or registry_read is required")
+    if not profiles and not registry_reads and not wql_queries and not invoke_methods:
+        raise WMIError("at least one profile, wql query, registry_read, or invoke is required")
     if not credentials or not credentials.get("username"):
         raise WMIError("credentials with 'username' are required")
 
     try:
         return await asyncio.wait_for(
-            asyncio.to_thread(_run_sync, target, credentials, profiles, registry_reads or []),
+            asyncio.to_thread(
+                _run_sync, target, credentials, profiles, registry_reads or [],
+                wql_queries or [], invoke_methods or [],
+            ),
             timeout=timeout_s,
         )
     except asyncio.TimeoutError:
         raise WMIError(f"WMI query timed out after {timeout_s}s for target {target}")
 
 
-def _run_sync(target: str, credentials: dict, profiles: list[str], registry_reads: list[dict]) -> dict:
+def _run_sync(target: str, credentials: dict, profiles: list[str], registry_reads: list[dict], wql_queries: list[dict], invoke_methods: list[dict]) -> dict:
     """Synchronous impacket driver — runs inside a thread."""
     DCOMConnection, NULL = _impacket()
 
@@ -139,6 +155,10 @@ def _run_sync(target: str, credentials: dict, profiles: list[str], registry_read
                 # Registry reads always go through root\cimv2 (StdRegProv lives there).
                 cimv2 = _get_namespace(dcom, "root\\cimv2", ns_cache)
                 out["registry_read"] = _run_registry_reads(cimv2, registry_reads)
+            if wql_queries:
+                out["wql"] = _run_wql_batch(dcom, wql_queries, ns_cache)
+            if invoke_methods:
+                out["invoke"] = _run_invoke_batch(dcom, invoke_methods, ns_cache)
             return out
         finally:
             for services in ns_cache.values():
@@ -215,6 +235,105 @@ def _collect_profiles(dcom, profiles: list[str], ns_cache: dict) -> dict:
 
 
 # ── WQL path ────────────────────────────────────────────────────────────
+
+
+def _run_invoke_batch(dcom, invocations: list[dict], ns_cache: dict) -> list[dict]:
+    """Run a list of DCOM ExecMethod calls and return results in input order.
+
+    Each entry: ``{namespace?, class, method, target_path?, arguments?}``.
+      - ``namespace`` defaults to ``root\\cimv2``.
+      - ``class`` is the WMI class name (``Win32_Process``, ``Win32_Service``,
+        ``StdRegProv``, ``MSFT_NetFirewallRule``, etc.).
+      - ``method`` is the method name (``Create``, ``StartService``,
+        ``SetStringValue``, ``Delete``).
+      - ``target_path`` is optional. For static methods (Win32_Process.Create,
+        StdRegProv.GetStringValue) leave it empty. For instance methods like
+        ``Win32_Service.StartService``, pass the object reference, e.g.
+        ``Win32_Service.Name="Spooler"``.
+      - ``arguments`` is a list of positional args matching the method
+        signature (impacket's high-level API exposes WMI methods as Python
+        attributes that take positional args).
+
+    Returns a result entry per call:
+      ``{return_value, out_params, raw, error?}``. ``return_value`` is the
+      method's return code (0 = success for most Win32 methods);
+      ``out_params`` carries any [out] parameters (e.g. ``ProcessId`` from
+      Win32_Process.Create).
+    """
+    out: list[dict] = []
+    for entry in invocations:
+        ns = (entry.get("namespace") or "root\\cimv2").strip()
+        class_name = (entry.get("class") or "").strip()
+        method = (entry.get("method") or "").strip()
+        target_path = entry.get("target_path") or ""
+        args = entry.get("arguments") or []
+        record: dict[str, Any] = {
+            "namespace": ns, "class": class_name, "method": method,
+            "target_path": target_path or None,
+        }
+        if not class_name or not method:
+            record["error"] = "class and method are required"
+            out.append(record)
+            continue
+        try:
+            services = _get_namespace(dcom, ns, ns_cache)
+            obj_path = target_path or class_name
+            iWmiObj, _ = services.GetObject(obj_path)
+            try:
+                method_callable = getattr(iWmiObj, method)
+            except AttributeError:
+                record["error"] = f"method {method!r} not found on {obj_path!r}"
+                out.append(record)
+                continue
+            ret = method_callable(*list(args))
+            # impacket returns an IWbemClassObject for the [out] parameter
+            # set; getProperties() flattens it the same way as WQL rows.
+            try:
+                out_props = _normalize_row(ret.getProperties()) if hasattr(ret, "getProperties") else {}
+            except Exception:
+                out_props = {}
+            record["return_value"] = out_props.get("ReturnValue")
+            record["out_params"] = {k: v for k, v in out_props.items() if k != "ReturnValue"}
+        except Exception as e:
+            record["error"] = f"{type(e).__name__}: {e}"
+        out.append(record)
+    return out
+
+
+def _run_wql_batch(dcom, queries: list[dict], ns_cache: dict) -> list[dict]:
+    """Run a list of generic WQL queries and return results in input order.
+
+    Each entry: ``{namespace?, query}``. Default namespace is ``root\\cimv2``.
+    Per-query errors are captured (not raised) so one bad query doesn't kill
+    the batch. WQL is SELECT-only by design — this surface cannot invoke
+    methods or write properties.
+    """
+    out: list[dict] = []
+    for entry in queries:
+        ns = (entry.get("namespace") or "root\\cimv2").strip()
+        query = (entry.get("query") or "").strip()
+        record: dict[str, Any] = {"namespace": ns, "query": query}
+        if not query:
+            record["error"] = "query is required"
+            out.append(record)
+            continue
+        # Defensive sanity check — WQL doesn't actually support anything but
+        # SELECT, but reject obvious method-invocation strings up front.
+        head = query.upper().lstrip()
+        if not (head.startswith("SELECT ") or head.startswith("ASSOCIATORS ")
+                or head.startswith("REFERENCES ")):
+            record["error"] = "WQL must start with SELECT / ASSOCIATORS OF / REFERENCES OF"
+            out.append(record)
+            continue
+        try:
+            services = _get_namespace(dcom, ns, ns_cache)
+            rows = _run_wql(services, query)
+            record["rows"] = rows
+            record["row_count"] = len(rows)
+        except Exception as e:
+            record["error"] = f"{type(e).__name__}: {e}"
+        out.append(record)
+    return out
 
 
 def _run_wql(services, query: str) -> list[dict]:

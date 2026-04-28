@@ -3835,7 +3835,7 @@ export default function ScanManagement() {
   })
 
   return (
-    <div style={{ maxWidth: 900 }}>
+    <div>
       <PageHeader
         title="Scans"
         subtitle="Manage vulnerability scans from all sources"

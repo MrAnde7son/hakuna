@@ -92,14 +92,14 @@ AUTO_TRIGGER_RULES: list[AutoTriggerRule] = [
     # ── Family: anon_standard (today's behavior) ──
     AutoTriggerRule(
         protocol="smb",
-        mission="null_session",
+        mission="exposure_audit",
         ports=(445, 139),
         cooldown=timedelta(hours=24),
         enabled_setting_key="auto_audit_anon",
     ),
     AutoTriggerRule(
         protocol="snmp",
-        mission="device_posture",
+        mission="exposure_audit",
         ports=(161,),
         transport="udp",
         cooldown=timedelta(hours=24),

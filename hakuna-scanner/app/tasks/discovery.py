@@ -28,6 +28,7 @@ from app.ingest.liveness import (
 )
 from app.ingest.wildcard import detect_wildcard, filter_wildcard_results
 from app.ingest.crtsh import query_crtsh
+from app.ingest.shodan_discovery import query_shodan
 from app.runner.base import BaseRunner, batch_hosts, run_batches_parallel
 from app.tasks.scoping import (
     build_stale_clause,
@@ -302,6 +303,35 @@ async def _do_uncover(sf, org_id: str, target_scope: str | None = None) -> dict:
     return {"hosts_found": len(all_hosts), "upserted": total, "new": len(new_ids)}
 
 
+async def _do_shodan(sf, org_id: str, target_scope: str | None = None) -> dict:
+    """Query Shodan for hosts pivoting on the org's seed domains.
+
+    Catches shadow-IT and orphan assets that DNS/CT enumeration miss:
+    forgotten dev boxes serving a corp cert, hosts with hostnames Shodan
+    resolved that the org never published. Skipped silently when no
+    SHODAN_API_KEY is configured.
+    """
+    api_key = settings.shodan_api_key
+    if not api_key:
+        logger.info("shodan: SHODAN_API_KEY not set — skipping")
+        return {"hosts_found": 0, "upserted": 0, "new": 0, "skipped": True}
+
+    domains = await _get_target_domains(sf, org_id, target_scope=target_scope)
+    all_hosts: list[dict] = []
+    for domain in domains:
+        hosts = await query_shodan(api_key, domain)
+        all_hosts.extend(hosts)
+
+    if not all_hosts:
+        return {"hosts_found": 0, "upserted": 0, "new": 0}
+
+    async with sf() as db:
+        total, new_ids = await upsert_discovered_hosts(db, uuid.UUID(org_id), all_hosts, "shodan")
+        await emit_new_asset_events(db, uuid.UUID(org_id), new_ids)
+
+    return {"hosts_found": len(all_hosts), "upserted": total, "new": len(new_ids)}
+
+
 async def _do_crtsh(sf, org_id: str, target_scope: str | None = None) -> dict:
     """Query certificate transparency logs (crt.sh) for subdomain discovery."""
     domains = await _get_target_domains(sf, org_id, target_scope=target_scope)
@@ -541,6 +571,11 @@ def run_uncover(self, org_id: str, target_scope: str | None = None) -> dict:
     return _run_async(_do_uncover(get_task_session(), org_id, target_scope=target_scope))
 
 
+@celery.task(bind=True, name="discovery.run_shodan")
+def run_shodan(self, org_id: str, target_scope: str | None = None) -> dict:
+    return _run_async(_do_shodan(get_task_session(), org_id, target_scope=target_scope))
+
+
 @celery.task(bind=True, name="discovery.run_dnsx")
 def run_dnsx(self, org_id: str, target_scope: str | None = None) -> dict:
     return _run_async(_do_dnsx(get_task_session(), org_id, target_scope=target_scope))
@@ -561,7 +596,7 @@ def run_liveness_gate(self, org_id: str, target_scope: str | None = None) -> dic
 def run_discovery_chain(self, org_id: str, scan_run_id: str | None = None) -> dict:
     """Full discovery chain, organized into parallel groups.
 
-    Group 1 (parallel): subfinder, wildcard_bruteforce, uncover
+    Group 1 (parallel): subfinder, wildcard_bruteforce, uncover, crtsh, shodan
         All three read target_domains and append to assets via idempotent
         upserts. No inter-step dependency, so they run concurrently.
 
@@ -589,6 +624,7 @@ def run_discovery_chain(self, org_id: str, scan_run_id: str | None = None) -> di
                 ("wildcard_bruteforce", _do_wildcard_and_bruteforce),
                 ("uncover", _do_uncover),
                 ("crtsh", _do_crtsh),
+                ("shodan", _do_shodan),
             ],
             [
                 ("dnsx", _do_dnsx),

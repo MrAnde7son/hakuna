@@ -1,18 +1,12 @@
 """SMB tool palette for the SMB Audit ReAct agent.
 
-Each tool dispatches a `method=smb_query` task to the relay. The relay handler
-(hakuna-relay-agent/agent/smb_query.py) opens one impacket SMBConnection per
-target and routes the task's `op` to the matching impacket operation:
+Each tool dispatches a `method=smb_query` task to the relay. The relay
+handler (hakuna-relay-agent/agent/smb_query.py) opens an impacket
+SMBConnection per task and routes the task's `op` to the matching impacket
+operation. All ops are read-side — the relay never creates files, writes
+shares, or invokes RPC mutators.
 
-  - `op="server_info"`   — negotiation info (dialect, signing state, OS)
-  - `op="list_shares"`   — NetShareEnumAll + current caller's access probe
-  - `op="list_contents"` — SMB2 find on one share's top-level path
-  - `op="read_file"`     — read a bounded-size file (for known-public banners)
-  - `op="null_bind"`     — anonymous auth attempt — null session viability
-  - `op="check_pipe"`    — open-then-close \\PIPE\<name> to test reachability
-  - `op="samr_enum_anon"` — SAMR user enum via null session (if available)
-
-All tool results summarize rather than dump — raw output stays on the relay.
+Tools are primitives, not recipes — the prompts carry the audit checklists.
 """
 
 from __future__ import annotations
@@ -23,7 +17,7 @@ import logging
 from typing import Any
 
 from models.models import Asset
-from agents.agent_tools import agent_tool
+from agents.agent_tools import agent_tool, NeedsApproval
 from agents.audit_registry import MissionTemplate, ProtocolAudit, register_audit
 from agents.tools._target_utils import resolve_asset_target
 from services.credential_manager import load_credentials
@@ -73,16 +67,12 @@ async def _dispatch_smb(
         raise ConnectionError(f"relay agent {relay_agent_id} is not connected")
 
     if anonymous:
-        # Null session — explicit empty credentials; don't decrypt anything.
         smb_creds = {"username": "", "password": "", "domain": ""}
     else:
         if not credential_id:
-            # Dispatched without a credential (e.g. SMB anonymous mission).
-            # Surface a clean message so the LLM falls back to the *_anonymous
-            # tool variants instead of seeing a raw traceback.
             raise ValueError(
-                "no credential was provided for this audit — use the "
-                "smb_*_anonymous tool variants, or rerun with a credential"
+                "no credential was provided for this audit — set anonymous=true "
+                "to use null session, or rerun with a credential"
             )
         raw_creds = await load_credentials(db, credential_id, org_id)
         if not raw_creds:
@@ -92,7 +82,6 @@ async def _dispatch_smb(
             "password": raw_creds.get("password", ""),
             "domain": raw_creds.get("domain", "") or "",
         }
-        # Optional pass-the-hash passthrough.
         if raw_creds.get("lmhash") or raw_creds.get("nthash"):
             smb_creds["lmhash"] = raw_creds.get("lmhash", "")
             smb_creds["nthash"] = raw_creds.get("nthash", "")
@@ -124,73 +113,75 @@ def _trim(rows: list, limit: int = 30) -> list:
     return rows[:limit] + [{"_truncated": True, "_total": len(rows)}]
 
 
-# ── Orientation ───────────────────────────────────────────────────────
+# ── Server identity ───────────────────────────────────────────────────
 
 
 @agent_tool(
     "smb_get_server_info",
-    "Return the target's SMB negotiation info: dialect, signing state, OS, "
-    "server name, domain membership. Call once at the start of every audit.",
-    {"asset_id": {"type": "integer"}},
+    "Return the target's SMB negotiation info: dialect, signing state "
+    "(`required` / `disabled` / `unknown`), OS, server name, domain "
+    "membership. Call once at the start of every audit. The `signing` field "
+    "is enough to drive the SMB-signing finding — no separate check tool is "
+    "needed. Pass `anonymous=true` to do this over a null session and learn "
+    "what an unauthenticated peer can see.",
+    {
+        "asset_id": {"type": "integer"},
+        "anonymous": {"type": "boolean", "description": "Use null session"},
+    },
 )
 def smb_get_server_info_tool(db, params: dict) -> dict:
     asset_id = params.get("asset_id")
     relay, cred = _ctx(params)
     org_id = params.get("_org_id")
-    _, result = _run_async(_dispatch_smb(db, org_id, asset_id, "server_info", {}, relay, cred))
+    anonymous = bool(params.get("anonymous"))
+    _, result = _run_async(_dispatch_smb(
+        db, org_id, asset_id, "server_info", {}, relay, cred, anonymous=anonymous,
+    ))
     return result
 
 
-@agent_tool(
-    "smb_check_signing",
-    "Return SMB signing state: 'required' (enforced) | 'enabled' (advertised but "
-    "not enforced) | 'disabled'. `disabled` on any domain-joined host is high-severity "
-    "(enables NTLM relay).",
-    {"asset_id": {"type": "integer"}},
-)
-def smb_check_signing_tool(db, params: dict) -> dict:
-    asset_id = params.get("asset_id")
-    relay, cred = _ctx(params)
-    org_id = params.get("_org_id")
-    _, result = _run_async(_dispatch_smb(db, org_id, asset_id, "server_info", {}, relay, cred))
-    return {
-        "signing": result.get("signing"),
-        "dialect": result.get("dialect"),
-        "dns_host_name": result.get("dns_host_name"),
-    }
-
-
-# ── Shares ────────────────────────────────────────────────────────────
+# ── Shares + content ──────────────────────────────────────────────────
 
 
 @agent_tool(
     "smb_list_shares",
-    "Enumerate SMB shares on the target with current caller's access probe "
-    "(Read / Write / Denied). Flag writable non-admin shares + world-readable "
-    "sensitive-looking shares.",
-    {"asset_id": {"type": "integer"}},
+    "Enumerate SMB shares on the target with the current caller's access "
+    "probe (`read` / `connect_only` / `denied`). Pass `anonymous=true` to "
+    "list shares visible to an unauthenticated peer (only meaningful after "
+    "`smb_check_null_session` confirms null bind works — every share that "
+    "comes back anonymously is a finding).",
+    {
+        "asset_id": {"type": "integer"},
+        "anonymous": {"type": "boolean", "description": "Use null session"},
+    },
 )
 def smb_list_shares_tool(db, params: dict) -> dict:
     asset_id = params.get("asset_id")
     relay, cred = _ctx(params)
     org_id = params.get("_org_id")
-    _, result = _run_async(_dispatch_smb(db, org_id, asset_id, "list_shares", {}, relay, cred))
+    anonymous = bool(params.get("anonymous"))
+    _, result = _run_async(_dispatch_smb(
+        db, org_id, asset_id, "list_shares", {}, relay, cred, anonymous=anonymous,
+    ))
     shares = result.get("shares") or []
     return {
+        "anonymous": anonymous,
         "total": len(shares),
         "shares": _trim(shares, 40),
+        "errors": result.get("_errors") or {},
     }
 
 
 @agent_tool(
     "smb_list_share_contents",
-    "List the top-level contents of one share (NOT recursive). Use to check "
-    "for scripts/configs/unattend.xml/autologon.reg at share root. Returns up "
-    "to 100 entries.",
+    "List the entries of one share at a given path (NOT recursive). Use "
+    "to check for scripts/configs/unattend.xml/autologon.reg. The relay "
+    "caps results to ~100 entries. Path defaults to `*` (root).",
     {
         "asset_id": {"type": "integer"},
         "share": {"type": "string", "description": "Share name (e.g. 'IT', 'Scripts')"},
-        "path": {"type": "string", "description": "Path within the share; defaults to root"},
+        "path": {"type": "string", "description": "Pattern within the share; defaults to root '*'"},
+        "anonymous": {"type": "boolean", "description": "Use null session"},
     },
 )
 def smb_list_share_contents_tool(db, params: dict) -> dict:
@@ -199,8 +190,11 @@ def smb_list_share_contents_tool(db, params: dict) -> dict:
     path = (params.get("path") or "").strip() or "*"
     relay, cred = _ctx(params)
     org_id = params.get("_org_id")
-    _, result = _run_async(_dispatch_smb(db, org_id, asset_id, "list_contents",
-                                          {"share": share, "path": path}, relay, cred))
+    anonymous = bool(params.get("anonymous"))
+    _, result = _run_async(_dispatch_smb(
+        db, org_id, asset_id, "list_contents",
+        {"share": share, "path": path}, relay, cred, anonymous=anonymous,
+    ))
     entries = result.get("entries") or []
     return {
         "share": share,
@@ -217,38 +211,57 @@ def smb_list_share_contents_tool(db, params: dict) -> dict:
     }
 
 
-# ── Auth posture ──────────────────────────────────────────────────────
+@agent_tool(
+    "smb_read_file",
+    "Read up to 64 KB from a file on a share. Use after "
+    "`smb_list_share_contents` flags an interesting file (config, unattend.xml, "
+    "small script, etc.). Content is returned base64-encoded so binary files "
+    "round-trip cleanly. Cap is enforced on the relay.",
+    {
+        "asset_id": {"type": "integer"},
+        "share": {"type": "string", "description": "Share name"},
+        "path": {"type": "string", "description": "Path within the share, e.g. 'subdir\\\\file.xml'"},
+        "max_bytes": {"type": "integer", "description": "Max bytes to read (cap 65536)"},
+        "anonymous": {"type": "boolean", "description": "Use null session"},
+    },
+)
+def smb_read_file_tool(db, params: dict) -> dict:
+    asset_id = params.get("asset_id")
+    share = (params.get("share") or "").strip()
+    path = (params.get("path") or "").strip()
+    max_bytes = int(params.get("max_bytes") or 65536)
+    if not share or not path:
+        return {"error": "share and path are required"}
+    relay, cred = _ctx(params)
+    org_id = params.get("_org_id")
+    anonymous = bool(params.get("anonymous"))
+    _, result = _run_async(_dispatch_smb(
+        db, org_id, asset_id, "read_file",
+        {"share": share, "path": path, "max_bytes": max_bytes},
+        relay, cred, anonymous=anonymous,
+    ))
+    return result
+
+
+# ── Null-session probes ───────────────────────────────────────────────
 
 
 @agent_tool(
     "smb_check_null_session",
     "Try an anonymous (null) SMB bind to IPC$. Returns whether null session "
-    "is accepted. If yes, the host exposes significant information without auth.",
+    "is accepted. If yes, the host exposes significant information without "
+    "auth — chain with `smb_list_shares(anonymous=true)` and "
+    "`smb_samr_enum_users_anonymous` for the full picture.",
     {"asset_id": {"type": "integer"}},
 )
 def smb_check_null_session_tool(db, params: dict) -> dict:
     asset_id = params.get("asset_id")
     relay, cred = _ctx(params)
     org_id = params.get("_org_id")
-    _, result = _run_async(_dispatch_smb(db, org_id, asset_id, "null_bind", {},
-                                          relay, cred, anonymous=True))
+    _, result = _run_async(_dispatch_smb(
+        db, org_id, asset_id, "null_bind", {}, relay, cred, anonymous=True,
+    ))
     return result
-
-
-@agent_tool(
-    "smb_list_shares_anonymous",
-    "Enumerate shares via null session. Only call after smb_check_null_session "
-    "confirms null bind works. Every share name returned here is "
-    "anonymously visible.",
-    {"asset_id": {"type": "integer"}},
-)
-def smb_list_shares_anonymous_tool(db, params: dict) -> dict:
-    asset_id = params.get("asset_id")
-    relay, cred = _ctx(params)
-    org_id = params.get("_org_id")
-    _, result = _run_async(_dispatch_smb(db, org_id, asset_id, "list_shares", {},
-                                          relay, cred, anonymous=True))
-    return {"anonymous_shares": result.get("shares") or [], "error": result.get("error")}
 
 
 @agent_tool(
@@ -261,8 +274,9 @@ def smb_samr_enum_users_anonymous_tool(db, params: dict) -> dict:
     asset_id = params.get("asset_id")
     relay, cred = _ctx(params)
     org_id = params.get("_org_id")
-    _, result = _run_async(_dispatch_smb(db, org_id, asset_id, "samr_enum_anon", {},
-                                          relay, cred, anonymous=True))
+    _, result = _run_async(_dispatch_smb(
+        db, org_id, asset_id, "samr_enum_anon", {}, relay, cred, anonymous=True,
+    ))
     users = result.get("users") or []
     return {
         "anonymous_access": result.get("anonymous_access", False),
@@ -274,17 +288,18 @@ def smb_samr_enum_users_anonymous_tool(db, params: dict) -> dict:
 
 @agent_tool(
     "smb_check_guest_access",
-    "Check whether the Guest account is usable for SMB logins (some hosts map "
-    "invalid credentials to Guest instead of rejecting — a legacy misconfiguration).",
+    "Check whether the Guest account is usable for SMB logins (some hosts "
+    "map invalid credentials to Guest instead of rejecting — a legacy "
+    "misconfiguration).",
     {"asset_id": {"type": "integer"}},
 )
 def smb_check_guest_access_tool(db, params: dict) -> dict:
     asset_id = params.get("asset_id")
     relay, cred = _ctx(params)
     org_id = params.get("_org_id")
-    # Relay tries a bind with user="guest" password="" and reports whether it's granted.
-    _, result = _run_async(_dispatch_smb(db, org_id, asset_id, "guest_bind", {},
-                                          relay, cred, anonymous=True))
+    _, result = _run_async(_dispatch_smb(
+        db, org_id, asset_id, "guest_bind", {}, relay, cred, anonymous=True,
+    ))
     return result
 
 
@@ -293,10 +308,10 @@ def smb_check_guest_access_tool(db, params: dict) -> dict:
 
 @agent_tool(
     "smb_check_named_pipe",
-    "Check whether a specific SMB named pipe is reachable (open-then-close only). "
-    "Classic coercion vectors: 'spoolss' (PrinterBug), 'efsrpc' / 'lsarpc' "
-    "(PetitPotam), 'netdfs' (DFSCoerce), 'DAV RPC Service' (WebClient/WebDAV). "
-    "Reachability ≠ exploitation, but it's the prerequisite.",
+    "Check whether a specific SMB named pipe is reachable (open-then-close "
+    "only). Classic coercion vectors: 'spoolss' (PrinterBug), 'efsrpc' / "
+    "'lsarpc' (PetitPotam), 'netdfs' (DFSCoerce), 'DAV RPC Service' "
+    "(WebClient/WebDAV). Reachability ≠ exploitation, but it's the prerequisite.",
     {
         "asset_id": {"type": "integer"},
         "pipe_name": {"type": "string", "description": "Pipe name without \\PIPE\\ prefix"},
@@ -307,12 +322,14 @@ def smb_check_named_pipe_tool(db, params: dict) -> dict:
     pipe_name = (params.get("pipe_name") or "").strip()
     relay, cred = _ctx(params)
     org_id = params.get("_org_id")
-    _, result = _run_async(_dispatch_smb(db, org_id, asset_id, "check_pipe",
-                                          {"pipe_name": pipe_name}, relay, cred))
+    _, result = _run_async(_dispatch_smb(
+        db, org_id, asset_id, "check_pipe",
+        {"pipe_name": pipe_name}, relay, cred,
+    ))
     return result
 
 
-# ── Password policy ──────────────────────────────────────────────────
+# ── SAMR password policy ──────────────────────────────────────────────
 
 
 @agent_tool(
@@ -322,9 +339,7 @@ def smb_check_named_pipe_tool(db, params: dict) -> dict:
     "the AD domain policy (may be overridden by Fine-Grained Password "
     "Policies, which this tool doesn't read); on a member host it returns "
     "the local SAM policy. Flag: min_length < 12, no complexity, "
-    "lockout_threshold = 0 (no lockout), password_history < 5. Different "
-    "from wmi_get_password_policy — SAMR is authoritative on DCs while "
-    "Win32_NetworkLoginProfile reflects the login's *effective* view.",
+    "lockout_threshold = 0 (no lockout), password_history < 5.",
     {"asset_id": {"type": "integer"}},
 )
 def smb_samr_password_policy_tool(db, params: dict) -> dict:
@@ -337,7 +352,6 @@ def smb_samr_password_policy_tool(db, params: dict) -> dict:
     if result.get("_errors"):
         return {"error": (result.get("_errors") or {}).get("samr_password_policy")}
     domains = result.get("domains") or []
-    # Convert seconds → days for age fields so the agent's reasoning is cleaner.
     for d in domains:
         for key in ("max_password_age_seconds", "min_password_age_seconds"):
             v = d.get(key)
@@ -346,27 +360,18 @@ def smb_samr_password_policy_tool(db, params: dict) -> dict:
     return {"total_domains": len(domains), "domains": domains}
 
 
-# ── Registry ──────────────────────────────────────────────────────────
+# ── Remote registry ──────────────────────────────────────────────────
 
 
 @agent_tool(
     "smb_registry_read",
     "Read arbitrary registry keys/values on the target via MS-RRP over "
     "\\PIPE\\winreg. Use this when WMI is blocked or unavailable — MS-RRP "
-    "rides the same SMB session that's already authenticated. "
-    "Supports three ops: `get_value` (read one value — type auto-detected), "
-    "`enum_keys` (list subkeys), `enum_values` (list value names + types). "
-    "Pass up to 20 reads in one call; each runs independently. "
-    "Hives: HKLM (default), HKU, HKCR. "
-    "Requires the RemoteRegistry service to be running on the target; if it's "
-    "Disabled, `remote_registry_available=false` comes back and the agent "
-    "should treat 'credentialed registry audit unavailable' as its own finding. "
-    "Common checks: SMB signing enforcement (HKLM\\\\SYSTEM\\\\CurrentControlSet"
-    "\\\\Services\\\\LanmanServer\\\\Parameters\\\\RequireSecuritySignature), "
-    "LLMNR (HKLM\\\\SOFTWARE\\\\Policies\\\\Microsoft\\\\Windows NT\\\\"
-    "DNSClient\\\\EnableMulticast), autologon credentials "
-    "(HKLM\\\\SOFTWARE\\\\Microsoft\\\\Windows NT\\\\CurrentVersion\\\\"
-    "Winlogon), audit policy, AlwaysInstallElevated.",
+    "rides the same SMB session that's already authenticated. Three ops: "
+    "`get_value` (read one value — type auto-detected), `enum_keys` (list "
+    "subkeys), `enum_values` (list value names + types). Pass up to 20 reads "
+    "in one call; each runs independently. Hives: HKLM (default), HKU, HKCR. "
+    "Requires the RemoteRegistry service to be running on the target.",
     {
         "asset_id": {"type": "integer"},
         "reads": {
@@ -413,7 +418,6 @@ def smb_registry_read_tool(db, params: dict) -> dict:
 
     slimmed: list[dict] = []
     for r in (result.get("results") or []):
-        # Same trimming as the WMI variant — keep payloads LLM-friendly.
         if r.get("type") == "REG_BINARY" and isinstance(r.get("data"), str) and len(r["data"]) > 256:
             r = {**r, "data": r["data"][:256], "_truncated": True}
         if r.get("type") == "REG_MULTI_SZ" and isinstance(r.get("data"), list) and len(r["data"]) > 20:
@@ -430,20 +434,105 @@ def smb_registry_read_tool(db, params: dict) -> dict:
     }
 
 
+# ── Write ops (always behind NeedsApproval) ──────────────────────────
+
+
+@agent_tool(
+    "smb_write_file",
+    "Write up to 256 KB to a file on a share. ALWAYS PAUSES for user "
+    "approval. Pass `content_b64` as a base64-encoded payload. Useful for "
+    "remediation: dropping a corrected config, replacing a script, or "
+    "removing a bad file (write a zero-byte payload). Larger writes need "
+    "to be split across calls.",
+    {
+        "asset_id": {"type": "integer"},
+        "share": {"type": "string"},
+        "path": {"type": "string", "description": "Path within the share, e.g. 'subdir\\\\file.xml'"},
+        "content_b64": {"type": "string", "description": "Base64-encoded file bytes"},
+    },
+)
+def smb_write_file_tool(db, params: dict) -> dict:
+    asset_id = params.get("asset_id")
+    share = (params.get("share") or "").strip()
+    path = (params.get("path") or "").strip()
+    content_b64 = params.get("content_b64") or ""
+    if not share or not path or not content_b64:
+        return {"error": "share, path, and content_b64 are required"}
+    if not params.get("_approved"):
+        # Approximate payload size for the reason string without exposing
+        # the bytes themselves.
+        approx_bytes = max(0, (len(content_b64) * 3) // 4)
+        raise NeedsApproval(
+            reason=f"SMB write {approx_bytes} bytes to \\\\<asset>\\{share}\\{path}",
+            category="smb_write_file",
+            details={"share": share, "path": path, "approx_bytes": approx_bytes},
+        )
+    relay, cred = _ctx(params)
+    org_id = params.get("_org_id")
+    _, result = _run_async(_dispatch_smb(
+        db, org_id, asset_id, "write_file",
+        {"share": share, "path": path, "content_b64": content_b64}, relay, cred,
+    ))
+    return result
+
+
+@agent_tool(
+    "smb_service_control",
+    "Control a Windows service via SCM RPC over \\PIPE\\svcctl. ALWAYS "
+    "PAUSES for user approval. Actions: `start` / `stop` / `restart` / "
+    "`delete` / `change_start_mode`. For `change_start_mode`, also pass "
+    "`start_mode` as `auto` / `manual` / `disabled`. Common uses: stop a "
+    "vulnerable service while a patch rolls out, disable RemoteRegistry "
+    "after an audit, restart a service after a config change.",
+    {
+        "asset_id": {"type": "integer"},
+        "action": {
+            "type": "string",
+            "enum": ["start", "stop", "restart", "delete", "change_start_mode"],
+        },
+        "service_name": {"type": "string", "description": "Service short name (e.g. 'Spooler')"},
+        "start_mode": {
+            "type": "string",
+            "enum": ["auto", "manual", "disabled"],
+            "description": "Required when action='change_start_mode'",
+        },
+    },
+)
+def smb_service_control_tool(db, params: dict) -> dict:
+    asset_id = params.get("asset_id")
+    action = (params.get("action") or "").strip().lower()
+    service = (params.get("service_name") or "").strip()
+    start_mode = (params.get("start_mode") or "").strip().lower()
+    if not action or not service:
+        return {"error": "action and service_name are required"}
+    if action == "change_start_mode" and not start_mode:
+        return {"error": "start_mode is required for change_start_mode"}
+    if not params.get("_approved"):
+        suffix = f" → {start_mode}" if action == "change_start_mode" else ""
+        raise NeedsApproval(
+            reason=f"SMB service {action} {service}{suffix}",
+            category="smb_service_control",
+            details={"action": action, "service_name": service, "start_mode": start_mode or None},
+        )
+    relay, cred = _ctx(params)
+    org_id = params.get("_org_id")
+    _, result = _run_async(_dispatch_smb(
+        db, org_id, asset_id, "service_control",
+        {"action": action, "service_name": service, "start_mode": start_mode},
+        relay, cred,
+    ))
+    return result
+
+
 _SMB_TOOL_NAMES = [
-    # Orientation
-    "smb_get_server_info", "smb_check_signing",
-    # Shares
-    "smb_list_shares", "smb_list_share_contents",
-    # Auth posture
-    "smb_check_null_session", "smb_list_shares_anonymous",
-    "smb_samr_enum_users_anonymous", "smb_check_guest_access",
+    "smb_get_server_info",
+    "smb_list_shares", "smb_list_share_contents", "smb_read_file",
+    "smb_check_null_session", "smb_samr_enum_users_anonymous", "smb_check_guest_access",
     "smb_samr_password_policy",
-    # Coercion
     "smb_check_named_pipe",
-    # Generic registry primitive — covers checks WMI classes don't expose
-    # and works when RemoteRegistry is reachable but WMI/DCOM is blocked.
     "smb_registry_read",
+    # Write/exec primitives — every call routes through user approval.
+    "smb_write_file", "smb_service_control",
     # CVE correlation — deterministic inventory→CVE matching pass
     "correlate_software_to_cves",
     # Shared
@@ -474,35 +563,17 @@ register_audit(ProtocolAudit(
     compliance_tags=("cis_benchmarks", "nist_csf_pr_ac"),
     missions=[
         MissionTemplate(
-            key="share_audit",
-            label="Share Audit",
-            description="Writable shares, world-readable sensitive shares, interesting content at share roots.",
-            prompt_key="smb_audit_share_audit",
-            suggested_budget=15,
-            cost_hint="low",
-        ),
-        MissionTemplate(
-            key="signing_coercion",
-            label="Signing & Coercion",
-            description="SMB signing enforcement + PrinterBug/PetitPotam/DFSCoerce pipe reachability.",
-            prompt_key="smb_audit_signing_coercion",
-            suggested_budget=10,
-            cost_hint="low",
-        ),
-        MissionTemplate(
-            key="null_session",
-            label="Null Session",
-            description="Anonymous SMB exposure — null-visible shares + SAMR user enum + guest account.",
-            prompt_key="smb_audit_null_session",
-            suggested_budget=10,
-            cost_hint="low",
-        ),
-        MissionTemplate(
-            key="explore",
-            label="Explore (creative)",
-            description="No fixed checklist — agent reasons freely about SMB-surface exposures.",
-            prompt_key="smb_audit_explore",
-            suggested_budget=20,
+            key="exposure_audit",
+            label="Exposure Audit",
+            description=(
+                "End-to-end SMB exposure hunt: shares (writable, "
+                "world-readable, sensitive content at share roots), auth "
+                "posture (signing, null session, guest, anonymous SAMR), "
+                "coercion primitives (PrinterBug / PetitPotam / DFSCoerce), "
+                "and registry hygiene via MS-RRP."
+            ),
+            prompt_key="smb_audit_exposure_audit",
+            suggested_budget=30,
             cost_hint="medium",
         ),
     ],

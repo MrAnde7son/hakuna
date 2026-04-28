@@ -40,6 +40,26 @@ logger = logging.getLogger(__name__)
 TOOL_REGISTRY = {}
 
 
+class NeedsApproval(Exception):
+    """Raised by a tool body when its specific arguments require user approval.
+
+    Lets a single generic tool decide at runtime whether *this particular call*
+    should pause for review — e.g. `ssh_run_command` permitting read-only
+    commands but requiring approval for writes/network/privileged ones.
+
+    The agent engine catches this around each tool execution, persists an
+    AgentApproval record, and pauses the run as `awaiting_approval`. On
+    approval the tool re-runs with `_approved=True` injected; the classifier
+    sees that flag and skips the per-call check.
+    """
+    def __init__(self, reason: str, category: str = "per_call",
+                 details: dict | None = None):
+        self.reason = reason
+        self.category = category
+        self.details = details or {}
+        super().__init__(reason)
+
+
 def agent_tool(name: str, description: str, parameters: dict):
     """Decorator to register a tool for mini agents."""
     def decorator(fn):
@@ -654,9 +674,9 @@ def get_missing_patches(db: Session, params: dict):
     "the deterministic coverage pass — version-range matching against ThreatCVE, "
     "plus MSRC KB→CVE mapping to tag candidates as already-mitigated vs missing. "
     "Use this at the start of a CVE-hunting mission, then pair with your "
-    "protocol's audit tools (wmi_defender_status, ssh_firewall_state, "
-    "wmi_firewall_profile, etc.) to triage which candidates are actually "
-    "exploitable on this host. "
+    "protocol's audit tools (wmi_query for Defender/firewall posture, "
+    "ssh_run_command for sysctl/firewall/listeners) to triage which "
+    "candidates are actually exploitable on this host. "
     "Candidates are sorted by KEV → EPSS → CVSS, capped at `top_n` (default 40). "
     "The summary counts (`total_candidate_cves`, `kev_candidates`, etc.) are "
     "authoritative; the sampled list is for your reasoning. "

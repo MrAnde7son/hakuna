@@ -52,36 +52,26 @@ def test_registry_populates_all_audits():
     assert wmi.label == "WMI Audit"
     assert wmi.relay_method == "wmi_query"
     assert "basic" in wmi.auth_modes
-    assert {m.key for m in wmi.missions} == {
-        "identity", "privesc", "software_cve", "network_hygiene", "explore",
-    }
+    assert {m.key for m in wmi.missions} == {"exposure_audit"}
 
     ldap = get_audit("ldap")
     assert ldap.label == "LDAP Audit"
     assert ldap.relay_method == "ldap_query"
-    assert {m.key for m in ldap.missions} == {
-        "identity", "ad_structure", "acl_audit", "explore",
-    }
+    assert {m.key for m in ldap.missions} == {"exposure_audit"}
 
     smb = get_audit("smb")
     assert smb.label == "SMB Audit"
     assert smb.relay_method == "smb_query"
     assert "anonymous" in smb.auth_modes
-    assert {m.key for m in smb.missions} == {
-        "share_audit", "signing_coercion", "null_session", "explore",
-    }
+    assert {m.key for m in smb.missions} == {"exposure_audit"}
 
 
 def test_wmi_tool_palette_registered():
-    """The 10 WMI enumeration tools + emit_finding must live in TOOL_REGISTRY."""
+    """The generic WMI primitives must live in TOOL_REGISTRY."""
     from agents.agent_tools import TOOL_REGISTRY
 
     expected = {
-        "wmi_list_local_users", "wmi_get_user",
-        "wmi_list_local_groups", "wmi_list_group_members",
-        "wmi_list_services", "wmi_find_unquoted_service_paths",
-        "wmi_get_password_policy", "wmi_get_computer_system",
-        "wmi_list_software", "wmi_list_patches",
+        "wmi_query", "wmi_registry_read", "wmi_invoke_method",
         "emit_finding",
     }
     missing = expected - set(TOOL_REGISTRY.keys())
@@ -92,14 +82,9 @@ def test_ldap_tool_palette_registered():
     from agents.agent_tools import TOOL_REGISTRY
 
     expected = {
-        "ldap_get_domain_info", "ldap_get_password_policy",
-        "ldap_find_kerberoastable", "ldap_find_asrep_roastable",
-        "ldap_list_privileged_groups", "ldap_get_group_members",
-        "ldap_get_user",
-        "ldap_find_unconstrained_delegation", "ldap_find_constrained_delegation",
-        "ldap_find_rbcd", "ldap_get_object_acl",
-        "ldap_list_trusts", "ldap_list_ous", "ldap_list_computers",
-        "ldap_raw_search",
+        "ldap_search",
+        "ldap_get_object_acl",
+        "ldap_modify", "ldap_add", "ldap_delete",
     }
     missing = expected - set(TOOL_REGISTRY.keys())
     assert not missing, f"LDAP tools missing from TOOL_REGISTRY: {missing}"
@@ -109,74 +94,66 @@ def test_smb_tool_palette_registered():
     from agents.agent_tools import TOOL_REGISTRY
 
     expected = {
-        "smb_get_server_info", "smb_check_signing",
-        "smb_list_shares", "smb_list_share_contents",
-        "smb_check_null_session", "smb_list_shares_anonymous",
+        "smb_get_server_info",
+        "smb_list_shares", "smb_list_share_contents", "smb_read_file",
+        "smb_check_null_session",
         "smb_samr_enum_users_anonymous", "smb_check_guest_access",
         "smb_check_named_pipe",
+        "smb_registry_read", "smb_samr_password_policy",
+        "smb_write_file", "smb_service_control",
     }
     missing = expected - set(TOOL_REGISTRY.keys())
     assert not missing, f"SMB tools missing from TOOL_REGISTRY: {missing}"
 
 
 def test_mission_prompts_resolved():
-    """Each mission's prompt should have {preamble} expanded at import time."""
+    """Each protocol's exposure_audit prompt should have {preamble} expanded at import time."""
     from agents.agent_prompts import ENHANCED_PROMPTS
 
-    wmi_keys = [
-        "wmi_audit_identity", "wmi_audit_privesc",
-        "wmi_audit_software_cve", "wmi_audit_network_hygiene",
-        "wmi_audit_explore",
-    ]
-    ldap_keys = [
-        "ldap_audit_identity", "ldap_audit_ad_structure",
-        "ldap_audit_acl_audit", "ldap_audit_explore",
-    ]
-    smb_keys = [
-        "smb_audit_share_audit", "smb_audit_signing_coercion",
-        "smb_audit_null_session", "smb_audit_explore",
+    keys = [
+        "wmi_audit_exposure_audit",
+        "ldap_audit_exposure_audit",
+        "smb_audit_exposure_audit",
+        "snmp_audit_exposure_audit",
+        "ssh_audit_exposure_audit",
     ]
 
-    for key in wmi_keys + ldap_keys + smb_keys:
+    for key in keys:
         prompt = ENHANCED_PROMPTS[key]
         assert "{preamble}" not in prompt, f"{key} still has unresolved preamble"
 
     # Each preamble family stamps its own persona line — verify the right
     # preamble was chosen per protocol.
-    for k in wmi_keys:
-        assert "Windows host auditor" in ENHANCED_PROMPTS[k]
-    for k in ldap_keys:
-        assert "Active Directory auditor" in ENHANCED_PROMPTS[k]
-    for k in smb_keys:
-        assert "SMB auditor" in ENHANCED_PROMPTS[k]
+    assert "Windows host auditor" in ENHANCED_PROMPTS["wmi_audit_exposure_audit"]
+    assert "Active Directory auditor" in ENHANCED_PROMPTS["ldap_audit_exposure_audit"]
+    assert "SMB auditor" in ENHANCED_PROMPTS["smb_audit_exposure_audit"]
+    assert "SNMP auditor" in ENHANCED_PROMPTS["snmp_audit_exposure_audit"]
+    assert "Linux/Unix auditor" in ENHANCED_PROMPTS["ssh_audit_exposure_audit"]
 
 
 def test_protocol_audit_templates_registered():
-    """AGENT_TEMPLATES gets one entry per (protocol, mission) tuple for every audit."""
+    """AGENT_TEMPLATES gets one exposure_audit entry per protocol."""
     from routes.agent_routes import AGENT_TEMPLATES
 
     template_ids = {t["id"] for t in AGENT_TEMPLATES}
-    expected = (
-        [f"wmi_audit_{m}" for m in ("identity", "privesc", "software_cve", "network_hygiene", "explore")]
-        + [f"ldap_audit_{m}" for m in ("identity", "ad_structure", "acl_audit", "explore")]
-        + [f"smb_audit_{m}" for m in ("share_audit", "signing_coercion", "null_session", "explore")]
-    )
+    expected = [f"{proto}_audit_exposure_audit"
+                for proto in ("wmi", "ldap", "smb", "snmp", "ssh")]
     for tid in expected:
         assert tid in template_ids, f"{tid} template missing"
 
     # Each audit template should carry emit_finding + its own protocol tool.
-    wmi_ident = next(t for t in AGENT_TEMPLATES if t["id"] == "wmi_audit_identity")
-    assert "emit_finding" in wmi_ident["tools"]
-    assert "wmi_get_password_policy" in wmi_ident["tools"]
-    assert wmi_ident["guardrails"]["autonomy_level"] == "autonomous"
+    wmi = next(t for t in AGENT_TEMPLATES if t["id"] == "wmi_audit_exposure_audit")
+    assert "emit_finding" in wmi["tools"]
+    assert "wmi_query" in wmi["tools"]
+    assert wmi["guardrails"]["autonomy_level"] == "autonomous"
 
-    ldap_ident = next(t for t in AGENT_TEMPLATES if t["id"] == "ldap_audit_identity")
-    assert "ldap_find_kerberoastable" in ldap_ident["tools"]
-    assert "emit_finding" in ldap_ident["tools"]
+    ldap = next(t for t in AGENT_TEMPLATES if t["id"] == "ldap_audit_exposure_audit")
+    assert "ldap_search" in ldap["tools"]
+    assert "emit_finding" in ldap["tools"]
 
-    smb_share = next(t for t in AGENT_TEMPLATES if t["id"] == "smb_audit_share_audit")
-    assert "smb_list_shares" in smb_share["tools"]
-    assert "emit_finding" in smb_share["tools"]
+    smb = next(t for t in AGENT_TEMPLATES if t["id"] == "smb_audit_exposure_audit")
+    assert "smb_list_shares" in smb["tools"]
+    assert "emit_finding" in smb["tools"]
 
 
 # ── dispatch_audit_run ───────────────────────────────────────────────
@@ -209,14 +186,14 @@ def test_dispatch_audit_run_creates_scan_and_scratch_agents(db_session, test_org
             db=db_session,
             org=test_org,
             protocol="wmi",
-            mission="identity",
+            mission="exposure_audit",
             asset_ids=[audit_asset.id],
             relay_agent_id="relay-1",
             credential_id="cred-1",
         )
 
     assert result["protocol"] == "wmi"
-    assert result["mission"] == "identity"
+    assert result["mission"] == "exposure_audit"
     assert result["status"] == "running"
     assert len(result["runs"]) == 1
     run_meta = result["runs"][0]
@@ -229,7 +206,7 @@ def test_dispatch_audit_run_creates_scan_and_scratch_agents(db_session, test_org
     assert scan.source_type == "wmi_audit"
     assert scan.status == "running"
     assert scan.raw_metadata["protocol"] == "wmi"
-    assert scan.raw_metadata["mission"] == "identity"
+    assert scan.raw_metadata["mission"] == "exposure_audit"
     assert scan.raw_metadata["asset_ids"] == [audit_asset.id]
     assert scan.raw_metadata["scratch_agent_ids"] == [run_meta["agent_id"]]
 
@@ -241,9 +218,9 @@ def test_dispatch_audit_run_creates_scan_and_scratch_agents(db_session, test_org
     assert ctx["_relay_agent_id"] == "relay-1"
     assert ctx["_credential_id"] == "cred-1"
     assert ctx["_protocol"] == "wmi"
-    assert ctx["_mission"] == "identity"
+    assert ctx["_mission"] == "exposure_audit"
     assert ctx["_asset_id"] == audit_asset.id
-    assert agent.guardrails["max_steps"] == 20      # identity mission default
+    assert agent.guardrails["max_steps"] == 50      # exposure_audit default for WMI
     assert agent.guardrails["autonomy_level"] == "autonomous"
 
     # Background job was dispatched once per asset.
@@ -257,19 +234,19 @@ def test_dispatch_audit_run_ldap(db_session, test_org, audit_asset):
     with patch("services.audit_runner._dispatch_background_run") as mock_dispatch:
         result = dispatch_audit_run(
             db=db_session, org=test_org,
-            protocol="ldap", mission="identity",
+            protocol="ldap", mission="exposure_audit",
             asset_ids=[audit_asset.id],
             relay_agent_id="relay-dc",
             credential_id="dc-admin",
         )
     assert result["protocol"] == "ldap"
-    assert result["mission"] == "identity"
+    assert result["mission"] == "exposure_audit"
     scan = db_session.query(Scan).filter_by(id=result["scan_id"]).first()
     assert scan.scan_type == "ldap_audit"
     agent = db_session.query(Agent).filter_by(id=result["runs"][0]["agent_id"]).first()
     # Scratch agent gets the LDAP palette, not WMI.
-    assert "ldap_find_kerberoastable" in agent.tools
-    assert "wmi_get_password_policy" not in agent.tools
+    assert "ldap_search" in agent.tools
+    assert "wmi_query" not in agent.tools
     assert mock_dispatch.call_count == 1
 
 
@@ -279,7 +256,7 @@ def test_dispatch_audit_run_smb(db_session, test_org, audit_asset):
     with patch("services.audit_runner._dispatch_background_run") as mock_dispatch:
         result = dispatch_audit_run(
             db=db_session, org=test_org,
-            protocol="smb", mission="signing_coercion",
+            protocol="smb", mission="exposure_audit",
             asset_ids=[audit_asset.id],
             relay_agent_id="relay-1",
             credential_id="windows-admin",
@@ -288,7 +265,7 @@ def test_dispatch_audit_run_smb(db_session, test_org, audit_asset):
     scan = db_session.query(Scan).filter_by(id=result["scan_id"]).first()
     assert scan.scan_type == "smb_audit"
     agent = db_session.query(Agent).filter_by(id=result["runs"][0]["agent_id"]).first()
-    assert "smb_check_signing" in agent.tools
+    assert "smb_get_server_info" in agent.tools
     assert "smb_check_named_pipe" in agent.tools
     assert mock_dispatch.call_count == 1
 
@@ -299,7 +276,7 @@ def test_dispatch_audit_run_rejects_unknown_protocol(db_session, test_org, audit
     with pytest.raises(AuditDispatchError, match="unknown protocol"):
         dispatch_audit_run(
             db=db_session, org=test_org,
-            protocol="not_a_thing", mission="identity",
+            protocol="not_a_thing", mission="exposure_audit",
             asset_ids=[audit_asset.id],
             relay_agent_id="relay-1", credential_id="cred-1",
         )
@@ -322,17 +299,17 @@ def test_dispatch_audit_run_rejects_missing_inputs(db_session, test_org, audit_a
 
     with pytest.raises(AuditDispatchError, match="asset_ids"):
         dispatch_audit_run(
-            db=db_session, org=test_org, protocol="wmi", mission="identity",
+            db=db_session, org=test_org, protocol="wmi", mission="exposure_audit",
             asset_ids=[], relay_agent_id="relay-1", credential_id="cred-1",
         )
     with pytest.raises(AuditDispatchError, match="relay_agent_id"):
         dispatch_audit_run(
-            db=db_session, org=test_org, protocol="wmi", mission="identity",
+            db=db_session, org=test_org, protocol="wmi", mission="exposure_audit",
             asset_ids=[audit_asset.id], relay_agent_id="", credential_id="cred-1",
         )
     with pytest.raises(AuditDispatchError, match="credential_id"):
         dispatch_audit_run(
-            db=db_session, org=test_org, protocol="wmi", mission="identity",
+            db=db_session, org=test_org, protocol="wmi", mission="exposure_audit",
             asset_ids=[audit_asset.id], relay_agent_id="relay-1", credential_id="",
         )
 
@@ -346,7 +323,7 @@ def test_dispatch_audit_run_with_free_form_targets_creates_assets(db_session, te
 
     with patch("services.audit_runner._dispatch_background_run") as mock_dispatch:
         result = dispatch_audit_run(
-            db=db_session, org=test_org, protocol="ldap", mission="identity",
+            db=db_session, org=test_org, protocol="ldap", mission="exposure_audit",
             targets=["dc1.corp.local", "10.0.0.99"],
             relay_agent_id="relay-dc", credential_id="dc-admin",
         )
@@ -375,7 +352,7 @@ def test_dispatch_audit_run_with_targets_reuses_existing_asset(db_session, test_
 
     with patch("services.audit_runner._dispatch_background_run"):
         result = dispatch_audit_run(
-            db=db_session, org=test_org, protocol="wmi", mission="identity",
+            db=db_session, org=test_org, protocol="wmi", mission="exposure_audit",
             targets=[audit_asset.ip],              # matches audit_asset.ip
             relay_agent_id="relay-1", credential_id="cred-1",
         )
@@ -394,7 +371,7 @@ def test_dispatch_audit_run_strips_port_from_identity(db_session, test_org):
 
     with patch("services.audit_runner._dispatch_background_run"):
         result = dispatch_audit_run(
-            db=db_session, org=test_org, protocol="ssh", mission="explore",
+            db=db_session, org=test_org, protocol="ssh", mission="exposure_audit",
             targets=["ssh:2222", "10.0.0.5:1389"],
             relay_agent_id="relay-1", credential_id="cred-1",
         )
@@ -419,7 +396,7 @@ def test_dispatch_audit_run_rejects_both_sources(db_session, test_org, audit_ass
 
     with pytest.raises(AuditDispatchError, match="exactly one"):
         dispatch_audit_run(
-            db=db_session, org=test_org, protocol="wmi", mission="identity",
+            db=db_session, org=test_org, protocol="wmi", mission="exposure_audit",
             asset_ids=[audit_asset.id], targets=["10.0.0.1"],
             relay_agent_id="relay-1", credential_id="cred-1",
         )
@@ -430,7 +407,7 @@ def test_dispatch_audit_run_rejects_neither_source(db_session, test_org):
 
     with pytest.raises(AuditDispatchError, match="exactly one"):
         dispatch_audit_run(
-            db=db_session, org=test_org, protocol="wmi", mission="identity",
+            db=db_session, org=test_org, protocol="wmi", mission="exposure_audit",
             relay_agent_id="relay-1", credential_id="cred-1",
         )
 
@@ -495,7 +472,7 @@ def test_dispatch_audit_run_persists_task_ids(db_session, test_org, audit_asset)
 
     result = dispatch_audit_run(
         db=db_session, org=test_org,
-        protocol="wmi", mission="identity",
+        protocol="wmi", mission="exposure_audit",
         asset_ids=[audit_asset.id],
         relay_agent_id="relay-1", credential_id="cred-1",
     )
@@ -531,7 +508,7 @@ def test_emit_finding_writes_finding_row(db_session, audit_asset):
     tool = TOOL_REGISTRY["emit_finding"]["fn"]
     result = tool(db_session, {
         "protocol": "wmi",
-        "mission": "identity",
+        "mission": "exposure_audit",
         "asset_id": audit_asset.id,
         "finding_type": "weak_password_policy",
         "severity": "high",
@@ -540,7 +517,7 @@ def test_emit_finding_writes_finding_row(db_session, audit_asset):
         "evidence": {
             "min_length": 8,
             "lockout_threshold": 0,
-            "tool_calls": [{"name": "wmi_get_password_policy", "asset_id": audit_asset.id}],
+            "tool_calls": [{"name": "wmi_query", "asset_id": audit_asset.id}],
         },
         "recommended_fix": "Set MinimumPasswordLength=14 and LockoutThreshold=10 via GPO.",
         "cves": [],
@@ -555,7 +532,7 @@ def test_emit_finding_writes_finding_row(db_session, audit_asset):
     assert finding is not None
     assert finding.asset_id == audit_asset.id
     assert finding.source_type == "wmi_audit"
-    assert finding.plugin_id == "hakuna_wmi_audit_identity_weak_password_policy"
+    assert finding.plugin_id == "hakuna_wmi_audit_exposure_audit_weak_password_policy"
     # plugin_family is sourced from the closed registry in agents/tools/emit_finding.py
     # so compliance mappings can rely on a stable taxonomy across protocols.
     assert finding.plugin_family == "Audit: Windows"
@@ -565,7 +542,7 @@ def test_emit_finding_writes_finding_row(db_session, audit_asset):
     # this test omits both, so the flag is False (still persisted, just not evaluable).
     assert finding.custom_fields == {
         "finding_type": "weak_password_policy",
-        "mission": "identity",
+        "mission": "exposure_audit",
         "protocol": "wmi",
         "compliance_evaluable": False,
     }
@@ -581,7 +558,7 @@ def test_emit_finding_rejects_missing_required_fields(db_session, audit_asset):
 
     tool = TOOL_REGISTRY["emit_finding"]["fn"]
     out = tool(db_session, {
-        "protocol": "wmi", "mission": "identity",
+        "protocol": "wmi", "mission": "exposure_audit",
         # asset_id / finding_type / title missing
     })
     assert "error" in out
@@ -629,7 +606,7 @@ def test_audit_run_route_pre_flight_quota_check(db_session, test_org, audit_asse
     with patch("routes.audit_routes.dispatch_audit_run") as mock_dispatch:
         resp = client.post("/api/audits/run", headers=headers, json={
             "protocol": "wmi",
-            "mission": "identity",
+            "mission": "exposure_audit",
             "asset_ids": [audit_asset.id],
             "credential_id": "any",
             "relay_agent_id": "relay-1",
@@ -653,7 +630,7 @@ def test_rescan_audit_scan_reuses_same_row(db_session, test_org, audit_asset):
     with patch("services.audit_runner._dispatch_background_run"):
         first = dispatch_audit_run(
             db=db_session, org=test_org,
-            protocol="wmi", mission="identity",
+            protocol="wmi", mission="exposure_audit",
             asset_ids=[audit_asset.id],
             relay_agent_id="relay-1", credential_id="cred-1",
         )
@@ -690,7 +667,7 @@ def test_rescan_audit_scan_archives_prior_run(db_session, test_org, audit_asset)
     with patch("services.audit_runner._dispatch_background_run"):
         first = dispatch_audit_run(
             db=db_session, org=test_org,
-            protocol="wmi", mission="identity",
+            protocol="wmi", mission="exposure_audit",
             asset_ids=[audit_asset.id],
             relay_agent_id="relay-1", credential_id="cred-1",
         )
@@ -712,7 +689,7 @@ def test_rescan_audit_scan_archives_prior_run(db_session, test_org, audit_asset)
     archived = run_history[0]
     assert archived["scratch_agent_ids"] == first_batch
     assert archived["task_ids"] == {str(first_batch[0]): "fake-task-1"}
-    assert archived["mission"] == "identity"
+    assert archived["mission"] == "exposure_audit"
     assert archived["asset_ids"] == [audit_asset.id]
 
 
@@ -723,7 +700,7 @@ def test_rescan_audit_scan_applies_overrides(db_session, test_org, audit_asset):
     with patch("services.audit_runner._dispatch_background_run"):
         first = dispatch_audit_run(
             db=db_session, org=test_org,
-            protocol="wmi", mission="identity",
+            protocol="wmi", mission="exposure_audit",
             asset_ids=[audit_asset.id],
             relay_agent_id="relay-1", credential_id="cred-1",
         )
@@ -733,18 +710,18 @@ def test_rescan_audit_scan_applies_overrides(db_session, test_org, audit_asset):
     with patch("services.audit_runner._dispatch_background_run"):
         rescan_audit_scan(
             db=db_session, org=test_org, scan=scan,
-            mission="privesc",
+            mission="exposure_audit",
             credential_id="cred-2",
             relay_agent_id="relay-2",
         )
 
-    assert scan.raw_metadata["mission"] == "privesc"
+    assert scan.raw_metadata["mission"] == "exposure_audit"
     assert scan.raw_metadata["credential_id"] == "cred-2"
     assert scan.raw_metadata["relay_agent_id"] == "relay-2"
     new_agent_id = scan.raw_metadata["scratch_agent_ids"][0]
     new_agent = db_session.query(Agent).filter_by(id=new_agent_id).first()
     ctx = new_agent.memory["_run_ctx"]
-    assert ctx["_mission"] == "privesc"
+    assert ctx["_mission"] == "exposure_audit"
     assert ctx["_credential_id"] == "cred-2"
     assert ctx["_relay_agent_id"] == "relay-2"
 
@@ -762,7 +739,7 @@ def test_audit_scan_history_flattens_run_history(db_session, test_org, audit_ass
     with patch("services.audit_runner._dispatch_background_run"):
         first = dispatch_audit_run(
             db=db_session, org=test_org,
-            protocol="wmi", mission="identity",
+            protocol="wmi", mission="exposure_audit",
             asset_ids=[audit_asset.id],
             relay_agent_id="relay-1", credential_id="cred-1",
         )
@@ -822,7 +799,7 @@ def test_finalize_scan_if_complete_flips_to_completed(db_session, test_org, audi
     with patch("services.audit_runner._dispatch_background_run"):
         result = dispatch_audit_run(
             db=db_session, org=test_org,
-            protocol="wmi", mission="identity",
+            protocol="wmi", mission="exposure_audit",
             asset_ids=[audit_asset.id],
             relay_agent_id="relay-1", credential_id="cred-1",
         )
@@ -856,7 +833,7 @@ def test_finalize_scan_if_complete_marks_failed_when_all_fail(db_session, test_o
     with patch("services.audit_runner._dispatch_background_run"):
         result = dispatch_audit_run(
             db=db_session, org=test_org,
-            protocol="wmi", mission="identity",
+            protocol="wmi", mission="exposure_audit",
             asset_ids=[audit_asset.id],
             relay_agent_id="relay-1", credential_id="cred-1",
         )
@@ -896,7 +873,7 @@ def test_finalize_scan_if_complete_waits_for_all_agents(db_session, test_org):
     with patch("services.audit_runner._dispatch_background_run"):
         result = dispatch_audit_run(
             db=db_session, org=test_org,
-            protocol="wmi", mission="identity",
+            protocol="wmi", mission="exposure_audit",
             asset_ids=[a1.id, a2.id],
             relay_agent_id="relay-1", credential_id="cred-1",
         )
@@ -931,7 +908,7 @@ def test_finalize_scan_if_complete_preserves_cancelled(db_session, test_org, aud
     with patch("services.audit_runner._dispatch_background_run"):
         result = dispatch_audit_run(
             db=db_session, org=test_org,
-            protocol="wmi", mission="identity",
+            protocol="wmi", mission="exposure_audit",
             asset_ids=[audit_asset.id],
             relay_agent_id="relay-1", credential_id="cred-1",
         )
@@ -1043,7 +1020,7 @@ def test_dispatch_skips_background_when_preflight_fails(db_session, test_org, au
     with patch("services.audit_runner._dispatch_background_run") as mock_dispatch:
         result = dispatch_audit_run(
             db=db_session, org=test_org,
-            protocol="smb", mission="share_audit",
+            protocol="smb", mission="exposure_audit",
             asset_ids=[audit_asset.id],
             relay_agent_id="relay-1", credential_id=None,
         )
@@ -1072,7 +1049,7 @@ def test_dispatch_proceeds_when_required_port_open(db_session, test_org, audit_a
     with patch("services.audit_runner._dispatch_background_run") as mock_dispatch:
         result = dispatch_audit_run(
             db=db_session, org=test_org,
-            protocol="smb", mission="share_audit",
+            protocol="smb", mission="exposure_audit",
             asset_ids=[audit_asset.id],
             relay_agent_id="relay-1", credential_id=None,
         )

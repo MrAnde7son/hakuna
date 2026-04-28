@@ -129,6 +129,9 @@ def _run_sync(target: str, port: int | None, creds: dict, op: str, op_params: di
             return _op_acl(conn, op_params)
         if op == "resolve_sids":
             return _op_resolve_sids(conn, op_params)
+        # Write ops use ldap3 (impacket's LDAP stack is read-only by design).
+        if op in ("add", "modify", "delete"):
+            return _op_write(target, port, creds, op, op_params)
         return {"_errors": {op: f"unknown op: {op}"}}
     finally:
         try:
@@ -823,3 +826,96 @@ def _rootdse_search(conn, attributes: list[str]) -> list:
         searchFilter="(objectClass=*)",
         attributes=attributes,
     )
+
+
+# ── Write ops via ldap3 ──────────────────────────────────────────────
+#
+# impacket's LDAP stack is read-only by design (no add/modify/delete in the
+# public surface). For the gated write tools the backend exposes we use
+# ldap3, which has clean APIs for those operations. Each call opens its own
+# connection — write traffic is rare (every call is user-approved) so the
+# extra bind cost is negligible.
+
+
+def _ldap3():
+    import ldap3
+    return ldap3
+
+
+def _op_write(target: str, port: int | None, creds: dict, op: str, op_params: dict) -> dict:
+    """Run an add/modify/delete via ldap3.
+
+    op_params shape:
+      - add:    {dn, object_class: [str], attributes: {name: value | [values]}}
+      - modify: {dn, changes: {attr: [{action: 'replace'|'add'|'delete', values: [...]}]}}
+      - delete: {dn}
+    Returns: {result: 'success'|'failure', op, dn, message?, raw?}
+    """
+    ldap3 = _ldap3()
+    dn = (op_params.get("dn") or "").strip()
+    if not dn:
+        return {"_errors": {op: "dn is required"}}
+
+    username = creds.get("username", "")
+    password = creds.get("password", "")
+    domain = creds.get("domain", "") or ""
+    user_dn = f"{domain}\\{username}" if domain and "\\" not in username else username
+
+    use_ssl = bool(port) and int(port) in (636, 3269)
+    server_port = int(port) if port else 636 if use_ssl else 389
+    server = ldap3.Server(target, port=server_port, use_ssl=use_ssl, get_info=ldap3.NONE)
+    try:
+        conn = ldap3.Connection(
+            server, user=user_dn, password=password,
+            authentication=ldap3.NTLM, auto_bind=True, raise_exceptions=False,
+        )
+    except Exception as e:
+        # Fall back to simple bind if NTLM fails (OpenLDAP / hardened DCs).
+        try:
+            conn = ldap3.Connection(
+                server, user=user_dn, password=password,
+                authentication=ldap3.SIMPLE, auto_bind=True, raise_exceptions=False,
+            )
+        except Exception as e2:
+            return {"_errors": {op: f"bind failed: NTLM={e}; SIMPLE={e2}"}}
+
+    try:
+        if op == "add":
+            object_class = op_params.get("object_class") or []
+            attributes = op_params.get("attributes") or {}
+            ok = conn.add(dn, object_class=object_class or None, attributes=attributes)
+        elif op == "modify":
+            action_map = {
+                "replace": ldap3.MODIFY_REPLACE,
+                "add": ldap3.MODIFY_ADD,
+                "delete": ldap3.MODIFY_DELETE,
+            }
+            changes_in = op_params.get("changes") or {}
+            changes: dict[str, list] = {}
+            for attr, ops in changes_in.items():
+                changes[attr] = []
+                for entry in ops:
+                    action = (entry.get("action") or "replace").lower()
+                    values = entry.get("values") or []
+                    code = action_map.get(action)
+                    if code is None:
+                        return {"_errors": {op: f"unknown change action: {action}"}}
+                    changes[attr].append((code, values))
+            ok = conn.modify(dn, changes)
+        elif op == "delete":
+            ok = conn.delete(dn)
+        else:
+            return {"_errors": {op: f"unsupported write op: {op}"}}
+
+        return {
+            "op": op,
+            "dn": dn,
+            "result": "success" if ok else "failure",
+            "message": (conn.result or {}).get("description"),
+            "raw": conn.result,
+        }
+    finally:
+        try:
+            conn.unbind()
+        except Exception:
+            pass

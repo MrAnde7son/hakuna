@@ -105,6 +105,10 @@ def _run_sync(target: str, port: int, creds: dict, op: str, op_params: dict, ano
             return _op_reg_read(conn, op_params)
         if op == "samr_password_policy":
             return _op_samr_password_policy(conn)
+        if op == "write_file":
+            return _op_write_file(conn, op_params)
+        if op == "service_control":
+            return _op_service_control(conn, op_params)
         return {"_errors": {op: f"unknown op: {op}"}}
     finally:
         try:
@@ -661,3 +665,124 @@ def _signing_state(conn) -> str:
     except Exception:
         return "unknown"
     return "required" if required else "disabled"
+
+
+# ── Write ops (gated by backend approval) ───────────────────────────
+
+
+def _op_write_file(conn, op_params: dict) -> dict:
+    """Write bytes to a file on a share. Bytes come in base64-encoded; the
+    relay decodes and pushes via SMB putFile.
+
+    op_params: ``{share, path, content_b64, max_bytes?}``. The 256 KB cap
+    matches the read side; larger writes need to be split.
+    """
+    import base64
+    share = (op_params.get("share") or "").strip()
+    path = (op_params.get("path") or "").strip()
+    content_b64 = op_params.get("content_b64") or ""
+    max_bytes = min(int(op_params.get("max_bytes") or 262144), 262144)
+    if not share or not path:
+        return {"_errors": {"write_file": "share and path are required"}}
+    try:
+        data = base64.b64decode(content_b64)
+    except Exception as e:
+        return {"_errors": {"write_file": f"base64 decode failed: {e}"}}
+    if len(data) > max_bytes:
+        return {"_errors": {"write_file": f"payload {len(data)} > cap {max_bytes}"}}
+    import io as _io
+    buf = _io.BytesIO(data)
+    try:
+        conn.putFile(share, path, buf.read)
+    except Exception as e:
+        return {"_errors": {"write_file": f"{type(e).__name__}: {e}"}}
+    return {"share": share, "path": path, "bytes_written": len(data),
+            "result": "success"}
+
+
+def _op_service_control(conn, op_params: dict) -> dict:
+    """Service control via DCERPC over \\PIPE\\svcctl (MS-SCMR).
+
+    op_params: ``{action: 'start'|'stop'|'restart'|'delete'|'change_start_mode',
+    service_name, start_mode?: 'auto'|'manual'|'disabled'}``. The backend's
+    `smb_service_control` tool gates every call through user approval.
+    """
+    action = (op_params.get("action") or "").strip().lower()
+    service = (op_params.get("service_name") or "").strip()
+    start_mode = (op_params.get("start_mode") or "").strip().lower()
+    if not action or not service:
+        return {"_errors": {"service_control": "action and service_name are required"}}
+
+    try:
+        from impacket.dcerpc.v5 import transport, scmr
+    except Exception as e:
+        return {"_errors": {"service_control": f"impacket import: {e}"}}
+
+    rpctransport = transport.SMBTransport(
+        conn.getRemoteName(), conn.getRemoteHost(),
+        filename=r"\svcctl", smb_connection=conn,
+    )
+    try:
+        dce = rpctransport.get_dce_rpc()
+        dce.connect()
+        dce.bind(scmr.MSRPC_UUID_SCMR)
+    except Exception as e:
+        return {"_errors": {"service_control": f"bind \\svcctl failed: {type(e).__name__}: {e}"}}
+
+    try:
+        scm_handle = scmr.hROpenSCManagerW(dce)["lpScHandle"]
+        try:
+            svc_handle = scmr.hROpenServiceW(dce, scm_handle, service + "\x00")["lpServiceHandle"]
+        except Exception as e:
+            return {"_errors": {"service_control": f"open service {service!r}: {type(e).__name__}: {e}"}}
+        try:
+            if action == "start":
+                scmr.hRStartServiceW(dce, svc_handle)
+            elif action == "stop":
+                scmr.hRControlService(dce, svc_handle, scmr.SERVICE_CONTROL_STOP)
+            elif action == "restart":
+                try:
+                    scmr.hRControlService(dce, svc_handle, scmr.SERVICE_CONTROL_STOP)
+                except Exception:
+                    pass
+                scmr.hRStartServiceW(dce, svc_handle)
+            elif action == "delete":
+                scmr.hRDeleteService(dce, svc_handle)
+            elif action == "change_start_mode":
+                start_map = {
+                    "auto": scmr.SERVICE_AUTO_START,
+                    "manual": scmr.SERVICE_DEMAND_START,
+                    "disabled": scmr.SERVICE_DISABLED,
+                }
+                code = start_map.get(start_mode)
+                if code is None:
+                    return {"_errors": {"service_control": f"unknown start_mode: {start_mode}"}}
+                scmr.hRChangeServiceConfigW(
+                    dce, svc_handle,
+                    dwServiceType=scmr.SERVICE_NO_CHANGE,
+                    dwStartType=code,
+                    dwErrorControl=scmr.SERVICE_NO_CHANGE,
+                    lpBinaryPathName=None, lpLoadOrderGroup=None,
+                    lpdwTagId=None, lpDependencies=None, dwDependSize=0,
+                    lpServiceStartName=None, lpPassword=None, dwPwSize=0,
+                    lpDisplayName=None,
+                )
+            else:
+                return {"_errors": {"service_control": f"unknown action: {action}"}}
+            return {"service": service, "action": action, "result": "success"}
+        finally:
+            try:
+                scmr.hRCloseServiceHandle(dce, svc_handle)
+            except Exception:
+                pass
+            try:
+                scmr.hRCloseServiceHandle(dce, scm_handle)
+            except Exception:
+                pass
+    except Exception as e:
+        return {"_errors": {"service_control": f"{action}: {type(e).__name__}: {e}"}}
+    finally:
+        try:
+            dce.disconnect()
+        except Exception:
+            pass

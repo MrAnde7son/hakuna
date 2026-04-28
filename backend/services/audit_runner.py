@@ -650,9 +650,9 @@ def _build_user_input(audit: ProtocolAudit, mission: MissionTemplate, asset: Ass
         f"Host: {host_ref}\n"
         f"OS: {asset.os or 'unknown'}\n"
         f"Mission: {mission.description}\n\n"
-        f"Start with `wmi_get_computer_system` to orient, then work through "
-        f"the checklist. Emit findings via `emit_finding` with "
-        f"`protocol=\"{audit.protocol}\"` and `mission=\"{mission.key}\"`."
+        f"Follow the mission checklist in the system prompt. Emit findings "
+        f"via `emit_finding` with `protocol=\"{audit.protocol}\"` and "
+        f"`mission=\"{mission.key}\"`."
     )
 
 

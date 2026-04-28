@@ -151,7 +151,7 @@ def test_smb_dispatched_on_445(db_session, test_org, linked_asset, connected_rel
     assert scan is not None
     md = scan.raw_metadata or {}
     assert md["protocol"] == "smb"
-    assert md["mission"] == "null_session"
+    assert md["mission"] == "exposure_audit"
     assert md["credential_id"] is None
     assert md["relay_agent_id"] == connected_relay.id
     assert md["asset_ids"] == [linked_asset.id]
@@ -175,7 +175,7 @@ def test_snmp_dispatched_on_161(db_session, test_org, linked_asset, connected_re
     scan = db_session.query(Scan).filter_by(scan_type="snmp_audit").first()
     assert scan is not None
     assert scan.raw_metadata["protocol"] == "snmp"
-    assert scan.raw_metadata["mission"] == "device_posture"
+    assert scan.raw_metadata["mission"] == "exposure_audit"
     assert scan.raw_metadata["credential_id"] is None
 
 
@@ -405,13 +405,13 @@ def test_auto_trigger_rules_registry_seeded_with_smb_and_snmp():
 
     smb = by_protocol["smb"]
     assert set(smb.ports) == {445, 139}
-    assert smb.mission == "null_session"
+    assert smb.mission == "exposure_audit"
     assert smb.enabled_setting_key == "auto_audit_anon"
     assert smb.requires_per_asset_consent is False
 
     snmp = by_protocol["snmp"]
     assert set(snmp.ports) == {161,}
-    assert snmp.mission == "device_posture"
+    assert snmp.mission == "exposure_audit"
     assert snmp.transport == "udp"
 
 
@@ -425,7 +425,7 @@ def test_per_rule_setting_key_isolates_families(db_session, test_org, linked_ass
 
     fake_rule = AutoTriggerRule(
         protocol="smb",  # reuse existing protocol so dispatch resolves
-        mission="null_session",
+        mission="exposure_audit",
         ports=(8888,),  # not in any other rule
         cooldown=timedelta(hours=24),
         enabled_setting_key="auto_audit_datastore",  # new family key
@@ -462,7 +462,7 @@ def test_per_asset_consent_gate_blocks_dispatch_when_missing(
 
     consent_rule = AutoTriggerRule(
         protocol="smb",
-        mission="null_session",
+        mission="exposure_audit",
         ports=(9999,),
         cooldown=timedelta(hours=24),
         enabled_setting_key="auto_audit_ot",
@@ -496,7 +496,7 @@ def test_per_asset_consent_gate_allows_dispatch_when_fresh(
 
     consent_rule = AutoTriggerRule(
         protocol="smb",
-        mission="null_session",
+        mission="exposure_audit",
         ports=(9999,),
         cooldown=timedelta(hours=24),
         enabled_setting_key="auto_audit_ot",
@@ -585,7 +585,7 @@ def test_dispatch_rejects_credentialed_audit_without_cred(db_session, test_org):
             db=db_session,
             org=test_org,
             protocol="wmi",
-            mission="identity",
+            mission="exposure_audit",
             asset_ids=[asset.id],
             relay_agent_id="relay-x",
             credential_id=None,

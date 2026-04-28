@@ -97,7 +97,9 @@ def _pysnmp():
     from pysnmp.hlapi import (
         SnmpEngine, CommunityData, UsmUserData, UdpTransportTarget,
         ContextData, ObjectType, ObjectIdentity,
-        getCmd, nextCmd,
+        getCmd, nextCmd, setCmd,
+        Integer, Unsigned32, Counter32, Counter64, Gauge32, OctetString,
+        IpAddress, ObjectIdentifier, TimeTicks,
         usmHMACMD5AuthProtocol, usmHMACSHAAuthProtocol,
         usmHMAC128SHA224AuthProtocol, usmHMAC192SHA256AuthProtocol,
         usmHMAC256SHA384AuthProtocol, usmHMAC384SHA512AuthProtocol,
@@ -116,6 +118,18 @@ def _pysnmp():
         "ObjectIdentity": ObjectIdentity,
         "getCmd": getCmd,
         "nextCmd": nextCmd,
+        "setCmd": setCmd,
+        "types": {
+            "Integer": Integer,
+            "Unsigned32": Unsigned32,
+            "Counter32": Counter32,
+            "Counter64": Counter64,
+            "Gauge32": Gauge32,
+            "OctetString": OctetString,
+            "IpAddress": IpAddress,
+            "ObjectIdentifier": ObjectIdentifier,
+            "TimeTicks": TimeTicks,
+        },
         "auth": {
             "none": usmNoAuthProtocol,
             "MD5": usmHMACMD5AuthProtocol,
@@ -184,6 +198,8 @@ def _run_sync(target: str, port: int, creds: dict, op: str, op_params: dict) -> 
         return _op_host_resources(mods, target, port, auth, op_params)
     if op == "listeners":
         return _op_listeners(mods, target, port, auth)
+    if op == "set":
+        return _op_set(mods, target, port, auth, op_params)
     return {"_errors": {op: f"unknown op: {op}"}}
 
 
@@ -328,6 +344,64 @@ def _op_get(mods: dict, target: str, port: int, auth, op_params: dict) -> dict:
     except Exception as e:
         return {"_errors": {"get": f"{type(e).__name__}: {e}"}}
     return {"oid": oid, "value": value}
+
+
+def _op_set(mods: dict, target: str, port: int, auth, op_params: dict) -> dict:
+    """SNMP SET — write one or more OID values.
+
+    op_params: ``{values: [{oid, value, type?}, ...]}``. ``type`` selects
+    the SNMP datatype (`Integer`, `OctetString`, `Unsigned32`, `Counter32`,
+    `Counter64`, `Gauge32`, `IpAddress`, `ObjectIdentifier`, `TimeTicks`);
+    defaults to `Integer` for ints and `OctetString` for strings. The
+    backend's `snmp_set` tool gates every call through user approval; this
+    handler just executes what the relay was authorized to send.
+    """
+    items = op_params.get("values") or []
+    if not items:
+        return {"_errors": {"set": "values is required"}}
+
+    types = mods["types"]
+    object_types = []
+    for entry in items:
+        oid = (entry.get("oid") or "").strip()
+        raw_value = entry.get("value")
+        type_name = (entry.get("type") or "").strip()
+        if not oid:
+            return {"_errors": {"set": f"oid is required (entry: {entry})"}}
+        # Pick type: explicit if given; else infer from python type.
+        if type_name:
+            cls = types.get(type_name)
+            if cls is None:
+                return {"_errors": {"set": f"unknown SNMP type: {type_name}"}}
+        else:
+            cls = types["Integer"] if isinstance(raw_value, int) else types["OctetString"]
+        try:
+            wrapped = cls(raw_value)
+        except Exception as e:
+            return {"_errors": {"set": f"value coercion failed for {oid}: {e}"}}
+        object_types.append(mods["ObjectType"](mods["ObjectIdentity"](oid), wrapped))
+
+    try:
+        iterator = mods["setCmd"](
+            mods["SnmpEngine"](),
+            auth,
+            mods["UdpTransportTarget"]((target, port), timeout=5, retries=1),
+            mods["ContextData"](),
+            *object_types,
+        )
+        err_indication, err_status, err_index, var_binds = next(iterator)
+    except Exception as e:
+        return {"_errors": {"set": f"{type(e).__name__}: {e}"}}
+
+    if err_indication:
+        return {"_errors": {"set": f"SNMP indication: {err_indication}"}}
+    if err_status:
+        return {"_errors": {"set": f"SNMP status: {err_status.prettyPrint()} at index {err_index}"}}
+
+    results = []
+    for vb in var_binds:
+        results.append({"oid": str(vb[0]), "value": vb[1].prettyPrint()})
+    return {"result": "success", "values": results}
 
 
 def _op_walk(mods: dict, target: str, port: int, auth, op_params: dict) -> dict:

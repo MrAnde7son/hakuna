@@ -19,7 +19,10 @@ from core.token_quota import check_token_quota, increment_token_usage
 from core.llm_router import router as llm_router, PROVIDER_FOR_MODEL
 
 from models.models import Agent, AgentRun, AgentApproval, IntegrationConfig
-from agents.agent_tools import TOOL_REGISTRY, get_claude_tool_schemas, get_openai_tool_schemas
+from agents.agent_tools import (
+    TOOL_REGISTRY, get_claude_tool_schemas, get_openai_tool_schemas,
+    NeedsApproval,
+)
 from agents.agent_context import compress_tool_result, build_context_section
 
 logger = logging.getLogger(__name__)
@@ -312,6 +315,10 @@ def _execute_tool(agent: Agent, db: Session, tool_name: str, tool_input: Optiona
                 "_org_id": agent.org_id,
             }
             result = tool_def["fn"](db, enriched_input)
+    except NeedsApproval:
+        # Per-call approval — let the caller catch this and create an
+        # AgentApproval record. Don't trace; the run is about to pause.
+        raise
     except ValueError as e:
         result = {"error": str(e)}
         ok = False
@@ -433,6 +440,50 @@ def _create_approval(
     db.add(approval)
     db.flush()  # get id without committing yet
     return approval
+
+
+def _pause_for_per_call_approval(
+    *,
+    agent: Agent,
+    run: AgentRun,
+    db: Session,
+    exc: NeedsApproval,
+    tool_name: str,
+    tool_input: dict,
+    messages_snapshot: list,
+    assistant_content: list,
+    provider: str,
+    model: str,
+    step: int,
+    tool_use_id: str,
+    trace: list,
+) -> None:
+    """Persist a per-call approval and raise ApprovalRequired.
+
+    The reason from the NeedsApproval exception is stashed inside tool_input
+    under `_approval_reason` so the UI can surface it; the same payload also
+    carries `_per_call=True` so resume logic knows to inject `_approved=True`
+    on rerun. The tool body sees `_approved=True` and skips its classifier.
+    """
+    enriched_input = {
+        **tool_input,
+        "_approval_reason": exc.reason,
+        "_approval_category": exc.category,
+        "_approval_details": exc.details,
+        "_per_call": True,
+    }
+    approval = _create_approval(
+        agent=agent, run=run, db=db,
+        tool_name=tool_name, tool_input=enriched_input,
+        messages_snapshot=messages_snapshot,
+        assistant_content=assistant_content,
+        provider=provider, model_name=model,
+        current_step=step, tool_use_id=tool_use_id,
+    )
+    run.status = "awaiting_approval"
+    run.trace = trace
+    db.commit()
+    raise ApprovalRequired(approval.id, tool_name)
 
 
 def _check_confirmation(tool_name: str, tool_input: dict):
@@ -563,7 +614,17 @@ def _run_anthropic(agent: Agent, user_input: str, db: Session, run: AgentRun, mo
                 run.trace = trace
                 db.commit()
                 raise ApprovalRequired(approval.id, block.name)
-            result_str = _execute_tool(agent, db, block.name, block.input or {}, step, trace)
+            try:
+                result_str = _execute_tool(agent, db, block.name, block.input or {}, step, trace)
+            except NeedsApproval as exc:
+                _pause_for_per_call_approval(
+                    agent=agent, run=run, db=db, exc=exc,
+                    tool_name=block.name, tool_input=block.input or {},
+                    messages_snapshot=messages[:-1],
+                    assistant_content=assistant_content,
+                    provider="anthropic", model=model,
+                    step=step, tool_use_id=block.id, trace=trace,
+                )
             tool_results.append({
                 "type": "tool_result",
                 "tool_use_id": block.id,
@@ -691,7 +752,17 @@ def _run_openai_compat(agent: Agent, user_input: str, db: Session, run: AgentRun
                 run.trace = trace
                 db.commit()
                 raise ApprovalRequired(approval.id, tc.function.name)
-            result_str = _execute_tool(agent, db, tc.function.name, tool_input, step, trace)
+            try:
+                result_str = _execute_tool(agent, db, tc.function.name, tool_input, step, trace)
+            except NeedsApproval as exc:
+                _pause_for_per_call_approval(
+                    agent=agent, run=run, db=db, exc=exc,
+                    tool_name=tc.function.name, tool_input=tool_input,
+                    messages_snapshot=messages[:-1],
+                    assistant_content=assistant_content,
+                    provider=provider, model=model,
+                    step=step, tool_use_id=tc.id, trace=trace,
+                )
             messages.append({
                 "role": "tool",
                 "tool_call_id": tc.id,
@@ -848,7 +919,19 @@ def _run_gemini(agent: Agent, user_input: str, db: Session, run: AgentRun, model
         function_responses = []
         for fc in function_calls:
             tool_input = dict(fc.args) if fc.args else {}
-            result_str = _execute_tool(agent, db, fc.name, tool_input, step, trace)
+            try:
+                result_str = _execute_tool(agent, db, fc.name, tool_input, step, trace)
+            except NeedsApproval as exc:
+                # Gemini's resume support is limited (see _resume entry point);
+                # we still persist the approval so it surfaces in the UI.
+                _pause_for_per_call_approval(
+                    agent=agent, run=run, db=db, exc=exc,
+                    tool_name=fc.name, tool_input=tool_input,
+                    messages_snapshot=[],
+                    assistant_content=[],
+                    provider="google_gemini", model=model,
+                    step=step, tool_use_id="", trace=trace,
+                )
             function_responses.append(genai_types.Part.from_function_response(
                 name=fc.name,
                 response=_gemini_wrap_response(result_str),
@@ -1162,7 +1245,17 @@ def _stream_anthropic(agent, user_input, db, run, model, *, conversation_message
                 run.trace = trace
                 db.commit()
                 raise ApprovalRequired(approval.id, block.name)
-            result_str = _execute_tool(agent, db, block.name, block.input or {}, step, trace)
+            try:
+                result_str = _execute_tool(agent, db, block.name, block.input or {}, step, trace)
+            except NeedsApproval as exc:
+                _pause_for_per_call_approval(
+                    agent=agent, run=run, db=db, exc=exc,
+                    tool_name=block.name, tool_input=block.input or {},
+                    messages_snapshot=messages[:-1],
+                    assistant_content=assistant_content,
+                    provider="anthropic", model=model,
+                    step=step, tool_use_id=block.id, trace=trace,
+                )
             yield {"type": "tool_result", "name": block.name, "result": result_str[:2000], "step": step}
             tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": result_str})
 
@@ -1265,7 +1358,17 @@ def _stream_openai_compat(agent, user_input, db, run, model, provider, *, conver
                 run.trace = trace
                 db.commit()
                 raise ApprovalRequired(approval.id, tc.function.name)
-            result_str = _execute_tool(agent, db, tc.function.name, tool_input, step, trace)
+            try:
+                result_str = _execute_tool(agent, db, tc.function.name, tool_input, step, trace)
+            except NeedsApproval as exc:
+                _pause_for_per_call_approval(
+                    agent=agent, run=run, db=db, exc=exc,
+                    tool_name=tc.function.name, tool_input=tool_input,
+                    messages_snapshot=messages[:-1],
+                    assistant_content=assistant_content,
+                    provider=provider, model=model,
+                    step=step, tool_use_id=tc.id, trace=trace,
+                )
             yield {"type": "tool_result", "name": tc.function.name, "result": result_str[:2000], "step": step}
             messages.append({"role": "tool", "tool_call_id": tc.id, "content": result_str})
 
@@ -1354,7 +1457,16 @@ def _stream_gemini(agent, user_input, db, run, model, *, conversation_messages=N
         function_responses = []
         for fc in function_calls:
             tool_input = dict(fc.args) if fc.args else {}
-            result_str = _execute_tool(agent, db, fc.name, tool_input, step, trace)
+            try:
+                result_str = _execute_tool(agent, db, fc.name, tool_input, step, trace)
+            except NeedsApproval as exc:
+                _pause_for_per_call_approval(
+                    agent=agent, run=run, db=db, exc=exc,
+                    tool_name=fc.name, tool_input=tool_input,
+                    messages_snapshot=[], assistant_content=[],
+                    provider="google_gemini", model=model,
+                    step=step, tool_use_id="", trace=trace,
+                )
             yield {"type": "tool_result", "name": fc.name, "result": result_str[:2000], "step": step}
             function_responses.append(genai_types.Part.from_function_response(name=fc.name, response=_gemini_wrap_response(result_str)))
 
@@ -1372,6 +1484,26 @@ def update_agent_memory(agent: Agent, memory_updates: dict, db: Session):
     mem = agent.memory or {}
     mem.update(memory_updates)
     agent.memory = mem
+    db.commit()
+
+
+def update_run_ctx(db: Session, agent_id: int, updates: dict) -> None:
+    """Merge updates into ``agent.memory["_run_ctx"]`` so subsequent tool calls
+    in the same run see them. Used by protocol-audit tools that discover a
+    fact mid-run (e.g. SNMP probe finding an accepted community) and want
+    later tools to fall back to it without exposing it to the LLM schema.
+    """
+    from sqlalchemy.orm.attributes import flag_modified
+
+    agent = db.query(Agent).filter(Agent.id == agent_id).first()
+    if not agent:
+        return
+    mem = dict(agent.memory or {})
+    rc = dict(mem.get("_run_ctx") or {})
+    rc.update(updates)
+    mem["_run_ctx"] = rc
+    agent.memory = mem
+    flag_modified(agent, "memory")
     db.commit()
 
 
@@ -1455,9 +1587,21 @@ def _resume_anthropic(agent, run, approval, decision, reason, model, trace, db):
         tool_input = block.get("input") or {}
 
         if block_id == approval.tool_use_id:
-            # This is the gated tool — execute or inject rejection
+            # This is the gated tool — execute or inject rejection.
+            # `_approved=True` tells per-call classifiers (e.g. ssh_run_command)
+            # to skip their NeedsApproval check; harmless for static-HITL tools.
             if decision == "approved":
-                result_str = _execute_tool(agent, db, tool_name, {**tool_input, "confirmed": True}, approval.current_step, trace)
+                try:
+                    result_str = _execute_tool(agent, db, tool_name, {**tool_input, "confirmed": True, "_approved": True}, approval.current_step, trace)
+                except NeedsApproval as exc:
+                    _pause_for_per_call_approval(
+                        agent=agent, run=run, db=db, exc=exc,
+                        tool_name=tool_name, tool_input=tool_input,
+                        messages_snapshot=approval.messages_snapshot or [],
+                        assistant_content=assistant_content,
+                        provider="anthropic", model=model,
+                        step=approval.current_step, tool_use_id=block_id, trace=trace,
+                    )
             else:
                 result_str = json.dumps({
                     "status": "rejected",
@@ -1470,7 +1614,17 @@ def _resume_anthropic(agent, run, approval, decision, reason, model, trace, db):
                 })
         else:
             # Other tool_use blocks in the same step — execute normally
-            result_str = _execute_tool(agent, db, tool_name, tool_input, approval.current_step, trace)
+            try:
+                result_str = _execute_tool(agent, db, tool_name, tool_input, approval.current_step, trace)
+            except NeedsApproval as exc:
+                _pause_for_per_call_approval(
+                    agent=agent, run=run, db=db, exc=exc,
+                    tool_name=tool_name, tool_input=tool_input,
+                    messages_snapshot=approval.messages_snapshot or [],
+                    assistant_content=assistant_content,
+                    provider="anthropic", model=model,
+                    step=approval.current_step, tool_use_id=block_id, trace=trace,
+                )
 
         tool_results.append({"type": "tool_result", "tool_use_id": block_id, "content": result_str})
 
@@ -1546,7 +1700,17 @@ def _resume_anthropic(agent, run, approval, decision, reason, model, trace, db):
                 run.trace = trace
                 db.commit()
                 raise ApprovalRequired(new_approval.id, block.name)
-            result_str = _execute_tool(agent, db, block.name, block.input or {}, step, trace)
+            try:
+                result_str = _execute_tool(agent, db, block.name, block.input or {}, step, trace)
+            except NeedsApproval as exc:
+                _pause_for_per_call_approval(
+                    agent=agent, run=run, db=db, exc=exc,
+                    tool_name=block.name, tool_input=block.input or {},
+                    messages_snapshot=messages[:-1],
+                    assistant_content=assistant_content,
+                    provider="anthropic", model=model,
+                    step=step, tool_use_id=block.id, trace=trace,
+                )
             tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": result_str})
 
         messages.append({"role": "user", "content": tool_results})
@@ -1580,7 +1744,17 @@ def _resume_openai_compat(agent, run, approval, decision, reason, model, provide
 
         if block_id == approval.tool_use_id:
             if decision == "approved":
-                result_str = _execute_tool(agent, db, tool_name, {**tool_input, "confirmed": True}, approval.current_step, trace)
+                try:
+                    result_str = _execute_tool(agent, db, tool_name, {**tool_input, "confirmed": True, "_approved": True}, approval.current_step, trace)
+                except NeedsApproval as exc:
+                    _pause_for_per_call_approval(
+                        agent=agent, run=run, db=db, exc=exc,
+                        tool_name=tool_name, tool_input=tool_input,
+                        messages_snapshot=approval.messages_snapshot or [],
+                        assistant_content=assistant_content,
+                        provider=provider, model=model,
+                        step=approval.current_step, tool_use_id=block_id, trace=trace,
+                    )
             else:
                 result_str = json.dumps({
                     "status": "rejected",
@@ -1588,7 +1762,17 @@ def _resume_openai_compat(agent, run, approval, decision, reason, model, provide
                 })
                 trace.append({"role": "tool", "tool_name": tool_name, "input": tool_input, "output": result_str, "step": approval.current_step})
         else:
-            result_str = _execute_tool(agent, db, tool_name, tool_input, approval.current_step, trace)
+            try:
+                result_str = _execute_tool(agent, db, tool_name, tool_input, approval.current_step, trace)
+            except NeedsApproval as exc:
+                _pause_for_per_call_approval(
+                    agent=agent, run=run, db=db, exc=exc,
+                    tool_name=tool_name, tool_input=tool_input,
+                    messages_snapshot=approval.messages_snapshot or [],
+                    assistant_content=assistant_content,
+                    provider=provider, model=model,
+                    step=approval.current_step, tool_use_id=block_id, trace=trace,
+                )
 
         messages.append({"role": "tool", "tool_call_id": block_id, "content": result_str})
 
@@ -1644,7 +1828,17 @@ def _resume_openai_compat(agent, run, approval, decision, reason, model, provide
                 run.trace = trace
                 db.commit()
                 raise ApprovalRequired(new_approval.id, tc.function.name)
-            result_str = _execute_tool(agent, db, tc.function.name, tool_input, step, trace)
+            try:
+                result_str = _execute_tool(agent, db, tc.function.name, tool_input, step, trace)
+            except NeedsApproval as exc:
+                _pause_for_per_call_approval(
+                    agent=agent, run=run, db=db, exc=exc,
+                    tool_name=tc.function.name, tool_input=tool_input,
+                    messages_snapshot=messages[:-1],
+                    assistant_content=assistant_content,
+                    provider=provider, model=model,
+                    step=step, tool_use_id=tc.id, trace=trace,
+                )
             messages.append({"role": "tool", "tool_call_id": tc.id, "content": result_str})
         run.steps_used = step + 1
     else:

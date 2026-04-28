@@ -5,6 +5,10 @@ impacket==0.12.0
 pysnmp>=5.0,<6.0
 pyasn1<0.5  # pysnmp 5.x uses pyasn1.compat.octets, removed in pyasn1 0.5+
 paramiko>=3.4,<4.0
+# Pure-Python LDAP client for write ops (add/modify/delete). impacket's LDAP
+# stack is read-only by design; ldap3 covers the gated write surface used by
+# the LDAP audit agent's ldap_modify / ldap_add / ldap_delete tools.
+ldap3>=2.9,<3.0
 # Phase 1a — datastore_probe family. httpx (above) covers Elasticsearch,
 # Docker, Kubernetes API, and etcd. Redis + MongoDB need their own clients.
 redis>=5.0,<6.0

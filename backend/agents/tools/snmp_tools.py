@@ -1,18 +1,17 @@
 """SNMP tool palette for the SNMP Audit ReAct agent.
 
-Each tool dispatches a `method=snmp_query` task to the relay. The relay handler
-(hakuna-relay-agent/agent/snmp_query.py) wraps pysnmp's sync hlapi per op:
+Three primitives. The relay handler (hakuna-relay-agent/agent/snmp_query.py)
+wraps pysnmp's ``getCmd`` / ``nextCmd`` only — it never invokes ``setCmd``,
+so the protocol enforces read-only end-to-end:
 
-  - `op="sys_info"`        — sysDescr / sysObjectID / sysUpTime / contact / location
-  - `op="interfaces"`      — ifTable walk (descr, type, speed, admin/oper status)
-  - `op="arp_table"`       — ipNetToMedia walk (L2/L3 neighbor discovery)
-  - `op="ip_addrs"`        — ipAddrTable (local addresses + masks)
-  - `op="routing_table"`   — ipRouteTable walk
-  - `op="community_probe"` — try a short list of default community strings
-  - `op="get"`             — single OID GET (escape hatch)
-  - `op="walk"`            — bounded GETNEXT walk (escape hatch)
+  - ``snmp_get(oid)``                — single OID GET
+  - ``snmp_walk(base_oid)``          — bounded GETNEXT walk
+  - ``snmp_probe_default_communities`` — credential-less sweep of common
+    default community strings; if any answers, it's stashed in run_ctx so
+    subsequent get/walk calls work without an explicit credential
 
-All tool results summarize rather than dump — raw varBinds stay on the relay.
+Mission-specific recipes (sysDescr, ifTable, ipNetToMedia, hrSWInstalled,
+etc.) live in the prompts — the agent picks the OID for the question.
 """
 
 from __future__ import annotations
@@ -20,10 +19,9 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import logging
-from typing import Any
 
 from models.models import Asset
-from agents.agent_tools import agent_tool
+from agents.agent_tools import agent_tool, NeedsApproval
 from agents.audit_registry import MissionTemplate, ProtocolAudit, register_audit
 from agents.tools._target_utils import resolve_asset_target, split_host_port
 from services.credential_manager import load_credentials
@@ -58,11 +56,11 @@ async def _dispatch_snmp(
     relay_agent_id: str | None,
     credential_id: str | None,
     unauthenticated: bool = False,
+    fallback_community: str | None = None,
 ) -> tuple[Asset, dict]:
     asset = db.query(Asset).filter(Asset.id == asset_id).first()
     if not asset:
         raise ValueError(f"asset {asset_id} not found")
-    # SNMP prefers the IP over hostname (UDP, no TLS SNI to care about).
     raw_target = asset.ip or asset.fqdn or asset.hostname
     if not raw_target:
         raise ValueError(f"asset {asset_id} has no ip or hostname")
@@ -71,9 +69,6 @@ async def _dispatch_snmp(
 
     target, target_port = split_host_port(raw_target)
     if target_port is None:
-        # Fall back to the user-supplied audit port stashed by the free-form
-        # target flow, since _upsert_asset_by_target no longer stores it in
-        # the identity fields.
         _, target_port = resolve_asset_target(asset)
 
     broker = get_relay_broker()
@@ -81,11 +76,8 @@ async def _dispatch_snmp(
         raise ConnectionError(f"relay agent {relay_agent_id} is not connected")
 
     if unauthenticated:
-        # community_probe op needs no creds — the relay sweeps defaults itself.
         snmp_creds: dict = {}
-    else:
-        if not credential_id:
-            raise ValueError("credential_id missing from audit context")
+    elif credential_id:
         raw_creds = await load_credentials(db, credential_id, org_id)
         if not raw_creds:
             raise ValueError(f"credential {credential_id} not found")
@@ -98,6 +90,21 @@ async def _dispatch_snmp(
             "priv_protocol": raw_creds.get("priv_protocol") or "none",
             "priv_key": raw_creds.get("priv_key") or "",
         }
+    elif fallback_community:
+        snmp_creds = {
+            "version": "v2c",
+            "community": fallback_community,
+            "username": "",
+            "auth_protocol": "none",
+            "auth_key": "",
+            "priv_protocol": "none",
+            "priv_key": "",
+        }
+    else:
+        raise ValueError(
+            "no SNMP credential available — call snmp_probe_default_communities "
+            "first; if it accepts a community, subsequent SNMP tools will use it"
+        )
 
     result = await broker.send_task(
         agent_id=relay_agent_id,
@@ -109,35 +116,20 @@ async def _dispatch_snmp(
     return asset, (result or {})
 
 
-def _ctx(params: dict) -> tuple[str | None, str | None]:
+def _ctx(params: dict) -> tuple[str | None, str | None, str | None]:
     relay = params.get("_relay_agent_id") or params.get("relay_agent_id")
     cred = params.get("_credential_id") or params.get("credential_id")
-    return relay, cred
+    community = params.get("_snmp_community")
+    return relay, cred, community
 
 
-def _trim(rows: list, limit: int = 40) -> list:
+def _trim(rows: list, limit: int = 60) -> list:
     if len(rows) <= limit:
         return rows
     return rows[:limit] + [{"_truncated": True, "_total": len(rows)}]
 
 
-# ── Orientation ───────────────────────────────────────────────────────
-
-
-@agent_tool(
-    "snmp_get_system_info",
-    "Return the device's MIB-2 system group: sysDescr (vendor/model/firmware), "
-    "sysObjectID, sysName, sysContact, sysLocation, sysUpTime. Call once at "
-    "the start of every audit — sysDescr reveals what kind of device you're "
-    "talking to and shapes the rest of the audit.",
-    {"asset_id": {"type": "integer"}},
-)
-def snmp_get_system_info_tool(db, params: dict) -> dict:
-    asset_id = params.get("asset_id")
-    relay, cred = _ctx(params)
-    org_id = params.get("_org_id")
-    _, result = _run_async(_dispatch_snmp(db, org_id, asset_id, "sys_info", {}, relay, cred))
-    return result
+# ── Generic primitives ───────────────────────────────────────────────
 
 
 @agent_tool(
@@ -146,99 +138,33 @@ def snmp_get_system_info_tool(db, params: dict) -> dict:
     "(public, private, cisco, manager, community, admin, monitor, default) "
     "and return any that answer. Every accepted community is a finding — "
     "weak/default community = unauthenticated read of the entire device. "
-    "READ-ONLY; this is not a brute-force.",
+    "READ-ONLY. If a community is accepted, it's stashed in run_ctx so "
+    "subsequent snmp_get/snmp_walk calls use it automatically.",
     {"asset_id": {"type": "integer"}},
 )
 def snmp_probe_default_communities_tool(db, params: dict) -> dict:
     asset_id = params.get("asset_id")
-    relay, cred = _ctx(params)
+    relay, cred, _ = _ctx(params)
     org_id = params.get("_org_id")
     _, result = _run_async(_dispatch_snmp(
         db, org_id, asset_id, "community_probe", {}, relay, cred, unauthenticated=True,
     ))
+    accepted = (result or {}).get("accepted_communities") or []
+    agent_id = params.get("_agent_id")
+    if accepted and agent_id:
+        from agents.agent_engine import update_run_ctx
+        update_run_ctx(db, agent_id, {"_snmp_community": accepted[0]})
     return result
-
-
-# ── Inventory / topology ──────────────────────────────────────────────
-
-
-@agent_tool(
-    "snmp_list_interfaces",
-    "Walk ifTable and return every interface with descr, type, speed, MAC, "
-    "and admin/oper status. Useful for inventorying physical ports, spotting "
-    "admin-down interfaces that are still plugged in, or odd types "
-    "(tunnel/loopback proliferation).",
-    {"asset_id": {"type": "integer"}},
-)
-def snmp_list_interfaces_tool(db, params: dict) -> dict:
-    asset_id = params.get("asset_id")
-    relay, cred = _ctx(params)
-    org_id = params.get("_org_id")
-    _, result = _run_async(_dispatch_snmp(db, org_id, asset_id, "interfaces", {}, relay, cred))
-    ifaces = result.get("interfaces") or []
-    return {
-        "total": len(ifaces),
-        "up_count": sum(1 for i in ifaces if i.get("oper") == "up"),
-        "interfaces": _trim(ifaces, 60),
-    }
-
-
-@agent_tool(
-    "snmp_get_arp_table",
-    "Walk ipNetToMediaTable and return ARP/neighbor cache entries (ip, mac, "
-    "type). Excellent for asset discovery — every MAC in this table is a host "
-    "the device has recently seen on its L2 segments.",
-    {"asset_id": {"type": "integer"}},
-)
-def snmp_get_arp_table_tool(db, params: dict) -> dict:
-    asset_id = params.get("asset_id")
-    relay, cred = _ctx(params)
-    org_id = params.get("_org_id")
-    _, result = _run_async(_dispatch_snmp(db, org_id, asset_id, "arp_table", {}, relay, cred))
-    entries = result.get("entries") or []
-    return {"total": len(entries), "entries": _trim(entries, 80)}
-
-
-@agent_tool(
-    "snmp_get_ip_addresses",
-    "Walk ipAddrTable and return local IP addresses + masks per interface. "
-    "Use to map the device's L3 presence — transit/management/service VLANs.",
-    {"asset_id": {"type": "integer"}},
-)
-def snmp_get_ip_addresses_tool(db, params: dict) -> dict:
-    asset_id = params.get("asset_id")
-    relay, cred = _ctx(params)
-    org_id = params.get("_org_id")
-    _, result = _run_async(_dispatch_snmp(db, org_id, asset_id, "ip_addrs", {}, relay, cred))
-    addrs = result.get("addresses") or []
-    return {"total": len(addrs), "addresses": _trim(addrs, 40)}
-
-
-@agent_tool(
-    "snmp_get_routing_table",
-    "Walk ipRouteTable and return destination / mask / next-hop triplets. "
-    "Flags: unexpected default routes, routes to RFC1918 space that shouldn't "
-    "exist on a public device, or routes to management networks leaking into "
-    "user-facing devices.",
-    {"asset_id": {"type": "integer"}},
-)
-def snmp_get_routing_table_tool(db, params: dict) -> dict:
-    asset_id = params.get("asset_id")
-    relay, cred = _ctx(params)
-    org_id = params.get("_org_id")
-    _, result = _run_async(_dispatch_snmp(db, org_id, asset_id, "routing_table", {}, relay, cred))
-    routes = result.get("routes") or []
-    return {"total": len(routes), "routes": _trim(routes, 60)}
-
-
-# ── Escape hatch ──────────────────────────────────────────────────────
 
 
 @agent_tool(
     "snmp_get",
-    "Fetch a single OID by GET. Use for vendor-specific OIDs the focused "
-    "tools don't cover (e.g. a Cisco running-config MIB, a PDU load sensor). "
-    "READ-ONLY — never invokes SET.",
+    "Fetch a single OID by GET. READ-ONLY — never invokes SET. Use for any "
+    "scalar value: sysDescr (1.3.6.1.2.1.1.1.0), sysObjectID "
+    "(1.3.6.1.2.1.1.2.0), sysName (1.3.6.1.2.1.1.5.0), sysContact "
+    "(1.3.6.1.2.1.1.4.0), sysLocation (1.3.6.1.2.1.1.6.0), sysUpTime "
+    "(1.3.6.1.2.1.1.3.0), or any vendor-specific OID (Cisco config-copy, "
+    "PDU sensors, etc.).",
     {
         "asset_id": {"type": "integer"},
         "oid": {"type": "string", "description": "Dotted OID, e.g. '1.3.6.1.2.1.1.1.0'"},
@@ -247,16 +173,30 @@ def snmp_get_routing_table_tool(db, params: dict) -> dict:
 def snmp_get_tool(db, params: dict) -> dict:
     asset_id = params.get("asset_id")
     oid = (params.get("oid") or "").strip()
-    relay, cred = _ctx(params)
+    relay, cred, community = _ctx(params)
     org_id = params.get("_org_id")
-    _, result = _run_async(_dispatch_snmp(db, org_id, asset_id, "get", {"oid": oid}, relay, cred))
+    _, result = _run_async(_dispatch_snmp(
+        db, org_id, asset_id, "get", {"oid": oid}, relay, cred,
+        fallback_community=community,
+    ))
     return result
 
 
 @agent_tool(
     "snmp_walk",
-    "GETNEXT walk rooted at an OID. Capped at 500 rows. Use for arbitrary "
-    "subtree exploration. READ-ONLY.",
+    "GETNEXT walk rooted at an OID. READ-ONLY. Capped at 500 rows on the "
+    "relay. Use for arbitrary subtree exploration. Common subtrees:\n"
+    "  • System group: 1.3.6.1.2.1.1 (sysDescr/Name/Contact/Location/UpTime)\n"
+    "  • Interfaces (ifTable): 1.3.6.1.2.1.2.2.1 (descr/type/speed/admin/oper)\n"
+    "  • IP addresses (ipAddrTable): 1.3.6.1.2.1.4.20\n"
+    "  • Routing table (ipRouteTable): 1.3.6.1.2.1.4.21\n"
+    "  • ARP / neighbor cache (ipNetToMedia): 1.3.6.1.2.1.4.22\n"
+    "  • TCP listeners (tcpConnTable): 1.3.6.1.2.1.6.13\n"
+    "  • UDP bound ports (udpTable): 1.3.6.1.2.1.7.5\n"
+    "  • Host resources — installed software (hrSWInstalled): 1.3.6.1.2.1.25.6.3\n"
+    "  • Host resources — running processes (hrSWRun): 1.3.6.1.2.1.25.4.2\n"
+    "  • Host resources — devices (hrDevice): 1.3.6.1.2.1.25.3.2\n"
+    "  • Cisco running-config copy MIB: 1.3.6.1.4.1.9.9.96 (vendor-specific)",
     {
         "asset_id": {"type": "integer"},
         "oid": {"type": "string", "description": "Base OID to walk"},
@@ -265,9 +205,12 @@ def snmp_get_tool(db, params: dict) -> dict:
 def snmp_walk_tool(db, params: dict) -> dict:
     asset_id = params.get("asset_id")
     oid = (params.get("oid") or "").strip()
-    relay, cred = _ctx(params)
+    relay, cred, community = _ctx(params)
     org_id = params.get("_org_id")
-    _, result = _run_async(_dispatch_snmp(db, org_id, asset_id, "walk", {"oid": oid}, relay, cred))
+    _, result = _run_async(_dispatch_snmp(
+        db, org_id, asset_id, "walk", {"oid": oid}, relay, cred,
+        fallback_community=community,
+    ))
     rows = result.get("rows") or []
     return {
         "base_oid": result.get("base_oid"),
@@ -276,93 +219,70 @@ def snmp_walk_tool(db, params: dict) -> dict:
     }
 
 
-# ── HOST-RESOURCES-MIB (installed software / processes / devices) ─────
+# ── Write op (always behind NeedsApproval) ───────────────────────────
 
 
 @agent_tool(
-    "snmp_host_resources",
-    "Walk HOST-RESOURCES-MIB (RFC 2790) to enumerate what's running on the "
-    "target: installed software (hrSWInstalledTable), running processes "
-    "(hrSWRunTable), and hardware devices (hrDeviceTable). Works on any "
-    "host with net-snmp or the Windows SNMP service configured. Use this "
-    "to correlate with CVE feeds (installed software) and spot persistence "
-    "/ malware (running processes from non-standard paths). Optionally "
-    "scope the walk: `scope=[installed_software]` for just software, etc. "
-    "Can return hundreds of rows on Windows servers — capped at 500 each.",
+    "snmp_set",
+    "SNMP SET — write one or more OID values. ALWAYS PAUSES for user "
+    "approval. Each entry: `{oid, value, type?}`. `type` selects the SNMP "
+    "datatype (`Integer`, `OctetString`, `Unsigned32`, `Counter32`, "
+    "`Counter64`, `Gauge32`, `IpAddress`, `ObjectIdentifier`, `TimeTicks`); "
+    "defaults to `Integer` for ints and `OctetString` for strings. Common "
+    "uses: change sysContact / sysLocation, toggle an interface admin status "
+    "(ifAdminStatus.<idx> = 1 up / 2 down), reload a Cisco config "
+    "(ccCopyEntryRowStatus = 4 for createAndGo). The remote device must "
+    "permit SNMP writes (separate read/write community or v3 user with "
+    "write-perm).",
     {
         "asset_id": {"type": "integer"},
-        "scope": {
+        "values": {
             "type": "array",
-            "description": "Optional subset of ['installed_software', 'running_processes', 'devices']",
-            "items": {"type": "string", "enum": ["installed_software", "running_processes", "devices"]},
+            "description": "List of {oid, value, type?} entries to SET",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "oid": {"type": "string"},
+                    "value": {},
+                    "type": {"type": "string"},
+                },
+                "required": ["oid", "value"],
+            },
         },
     },
 )
-def snmp_host_resources_tool(db, params: dict) -> dict:
+def snmp_set_tool(db, params: dict) -> dict:
     asset_id = params.get("asset_id")
-    scope = params.get("scope") or None
-    relay, cred = _ctx(params)
-    org_id = params.get("_org_id")
-    op_params = {"scope": scope} if scope else {}
-    _, result = _run_async(_dispatch_snmp(
-        db, org_id, asset_id, "host_resources", op_params, relay, cred,
-    ))
-    # Result already grouped; just slim for LLM consumption.
-    out: dict[str, Any] = {}
-    for key in ("installed_software", "running_processes", "devices"):
-        if key in result:
-            section = result[key]
-            items = section.get("items") or []
-            out[key] = {
-                "total": section.get("total", len(items)),
-                "items": _trim(items, 40),
-            }
-    if result.get("_errors"):
-        out["errors"] = result["_errors"]
-    return out
-
-
-@agent_tool(
-    "snmp_list_listeners",
-    "List TCP listening ports (tcpConnTable filtered to state=listen) and "
-    "UDP bound ports (udpTable) on the target. This is the inside view of "
-    "what services the host exposes — compare against an external scan to "
-    "spot ports only reachable from localhost / internal networks vs those "
-    "exposed externally. Useful on embedded devices (printers, switches, "
-    "cameras) where nmap fingerprinting is unreliable.",
-    {"asset_id": {"type": "integer"}},
-)
-def snmp_list_listeners_tool(db, params: dict) -> dict:
-    asset_id = params.get("asset_id")
-    relay, cred = _ctx(params)
+    values = params.get("values") or []
+    if not isinstance(values, list) or not values:
+        return {"error": "values must be a non-empty list of {oid, value, type?}"}
+    if not params.get("_approved"):
+        summary = ", ".join(
+            f"{v.get('oid')}={v.get('value')!r}" for v in values
+        )
+        raise NeedsApproval(
+            reason=f"SNMP SET on {len(values)} OID(s): {summary}",
+            category="snmp_set",
+            details={"values": values},
+        )
+    relay, cred, community = _ctx(params)
     org_id = params.get("_org_id")
     _, result = _run_async(_dispatch_snmp(
-        db, org_id, asset_id, "listeners", {}, relay, cred,
+        db, org_id, asset_id, "set", {"values": values}, relay, cred,
+        fallback_community=community,
     ))
-    tcp = result.get("tcp") or {}
-    udp = result.get("udp") or {}
-    return {
-        "tcp_total": tcp.get("total", 0),
-        "udp_total": udp.get("total", 0),
-        "tcp_listeners": _trim(tcp.get("listeners") or [], 40),
-        "udp_listeners": _trim(udp.get("listeners") or [], 40),
-        "errors": result.get("_errors") or {},
-    }
+    return result
 
 
 # ── Registry ──────────────────────────────────────────────────────────
 
 
 _SNMP_TOOL_NAMES = [
-    # Orientation
-    "snmp_get_system_info", "snmp_probe_default_communities",
-    # Inventory / topology
-    "snmp_list_interfaces", "snmp_get_arp_table",
-    "snmp_get_ip_addresses", "snmp_get_routing_table",
-    # HOST-RESOURCES-MIB — software/processes/devices/listeners
-    "snmp_host_resources", "snmp_list_listeners",
-    # Escape hatch
-    "snmp_get", "snmp_walk",
+    "snmp_probe_default_communities",
+    "snmp_get",
+    "snmp_walk",
+    # Write primitive — every call routes through user approval.
+    "snmp_set",
     # CVE correlation — deterministic inventory→CVE matching pass
     "correlate_software_to_cves",
     # Shared
@@ -387,9 +307,6 @@ register_audit(ProtocolAudit(
     relay_method="snmp_query",
     credential_connector_ids=["snmp_device", "snmp-device"],
     tool_names=_SNMP_TOOL_NAMES,
-    # UDP 161 is the only way into SNMP. Listed here for open_ports-based
-    # preflight — note that our discovery scanners do record UDP-open ports
-    # when they observe them, so this is still actionable when positive.
     required_ports=(161,),
     safety_class="anon_standard",
     auto_trigger_policy="auto_org_opt_in",
@@ -397,27 +314,18 @@ register_audit(ProtocolAudit(
     compliance_tags=("cis_benchmarks", "nist_csf_pr_ac"),
     missions=[
         MissionTemplate(
-            key="device_posture",
-            label="Device Posture",
-            description="Weak community strings, default credentials, outdated firmware in sysDescr, exposed management surfaces.",
-            prompt_key="snmp_audit_device_posture",
-            suggested_budget=10,
-            cost_hint="low",
-        ),
-        MissionTemplate(
-            key="inventory_discovery",
-            label="Inventory & Discovery",
-            description="Use ARP/routing tables to discover adjacent hosts; map interfaces; surface L3 presence.",
-            prompt_key="snmp_audit_inventory_discovery",
-            suggested_budget=15,
-            cost_hint="low",
-        ),
-        MissionTemplate(
-            key="explore",
-            label="Explore (creative)",
-            description="No fixed checklist — agent reasons freely about SNMP-surface exposures given the device type.",
-            prompt_key="snmp_audit_explore",
-            suggested_budget=20,
+            key="exposure_audit",
+            label="Exposure Audit",
+            description=(
+                "End-to-end SNMP exposure hunt: device posture (weak "
+                "communities, default credentials, EOL firmware in sysDescr, "
+                "missing contact/location), inventory + topology (interfaces, "
+                "ARP / routing / IP tables, listening ports), and host "
+                "resources (installed software, running processes) when "
+                "HOST-RESOURCES-MIB is reachable."
+            ),
+            prompt_key="snmp_audit_exposure_audit",
+            suggested_budget=25,
             cost_hint="medium",
         ),
     ],

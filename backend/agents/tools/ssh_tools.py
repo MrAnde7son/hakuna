@@ -1,22 +1,18 @@
 """SSH tool palette for the Linux Audit ReAct agent.
 
-Each tool dispatches a `method=ssh_query` task to the relay. The relay handler
-(hakuna-relay-agent/agent/ssh_query.py) opens one paramiko SSHClient per
-target and routes the task's `op` to a HARDCODED command or ALLOWLISTED file
-read. There is no `run_command` escape hatch — the safety boundary is the
-fact that the agent can't submit arbitrary shell input.
+Three primitives:
 
-  - `op="sys_info"`           — uname + /etc/os-release + uptime
-  - `op="read_file"`          — one allowlisted path (see _FILE_ALLOWLIST on relay)
-  - `op="users"`              — /etc/passwd + /etc/group + /etc/shadow status
-  - `op="sshd_config"`        — parsed sshd_config directives
-  - `op="sudoers_effective"`  — sudo -ln + sudoers files
-  - `op="find_suid"`          — SUID/SGID binaries (find -perm)
-  - `op="listening_ports"`    — ss -tlnp
-  - `op="installed_packages"` — dpkg/rpm/apk
-  - `op="cron_scan"`          — crontab files
-  - `op="process_list"`       — ps
-  - `op="authorized_keys"`    — root + home authorized_keys metadata
+  - ``ssh_run_command(command)`` — runs an arbitrary shell command. The
+    backend classifier categorizes the command as read-only / write /
+    network / privileged / unknown. Read-only auto-executes; everything
+    else raises ``NeedsApproval`` so the user can sign off on each
+    write/network/privileged action before the relay touches the host.
+  - ``ssh_read_file(path)`` — reads any file the SSH user can access
+    (subject to a 256 KB cap on the relay).
+  - ``ssh_list_directory(path, all_files?)`` — directory listing.
+
+The mission prompts carry the audit checklists (which commands to run
+for kernel hardening, sshd config, sudoers, etc.).
 """
 
 from __future__ import annotations
@@ -24,9 +20,11 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import logging
+import re
+import shlex
 
 from models.models import Asset
-from agents.agent_tools import agent_tool
+from agents.agent_tools import agent_tool, NeedsApproval
 from agents.audit_registry import MissionTemplate, ProtocolAudit, register_audit
 from agents.tools._target_utils import resolve_asset_target
 from services.credential_manager import load_credentials
@@ -104,483 +102,411 @@ def _ctx(params: dict) -> tuple[str | None, str | None]:
     return relay, cred
 
 
-def _trim(rows: list, limit: int = 40) -> list:
-    if len(rows) <= limit:
-        return rows
-    return rows[:limit] + [{"_truncated": True, "_total": len(rows)}]
+# ── Command classifier ───────────────────────────────────────────────
+#
+# Goal: decide whether a shell command is safely read-only or should
+# require user approval. Any command we can't confidently call read-only
+# is routed through NeedsApproval — false positives waste a click; false
+# negatives hand the agent a write/network primitive without review.
+#
+# The classifier is conservative: when in doubt, it asks for approval.
+# It is NOT a sandbox — the relay still runs whatever the user approves.
+
+_READ_ONLY_HEADS = {
+    # File / text inspection
+    "cat", "head", "tail", "less", "more", "view", "bat",
+    "grep", "egrep", "fgrep", "rg", "ack", "zgrep", "zcat", "zless",
+    "wc", "sort", "uniq", "cut", "tr", "tac", "rev", "fold", "fmt",
+    "xxd", "od", "hexdump", "strings", "file",
+    "md5sum", "sha1sum", "sha256sum", "sha512sum", "b2sum", "cksum",
+    "cmp", "diff", "comm", "join", "paste",
+    "awk", "gawk", "nawk",
+    # Filesystem inspection
+    "ls", "dir", "stat", "readlink", "realpath", "dirname", "basename",
+    "pwd", "tree", "lsattr", "getfacl", "find", "locate", "which", "whereis",
+    "df", "du", "lsblk", "mount", "lsof", "fuser",
+    # System info
+    "uname", "hostname", "hostnamectl", "uptime", "free", "vmstat", "iostat",
+    "lscpu", "lspci", "lsusb", "lshw", "dmidecode", "lsmod", "modinfo",
+    "getconf", "ulimit",
+    # Process / service
+    "ps", "pgrep", "pidof", "top", "htop", "btop", "iotop", "pstree",
+    "systemctl", "service", "rc-status", "initctl", "chkconfig",
+    "journalctl", "dmesg", "logger",  # journalctl -f is interactive but bounded by relay timeout
+    # Identity
+    "id", "whoami", "who", "w", "last", "lastlog", "groups", "getent",
+    # Networking (read-only inspection)
+    "ip", "ifconfig", "route", "ss", "netstat", "arp",
+    "nslookup", "host", "dig", "drill", "getent",
+    # Firewall (read paths only — modifying ones go through privileged classifier)
+    "iptables-save", "ip6tables-save", "nft", "ufw", "firewall-cmd",
+    # MAC / SELinux / AppArmor inspection
+    "getenforce", "sestatus", "semanage", "seinfo", "aa-status", "aa-enabled",
+    # Audit
+    "auditctl", "ausearch", "aureport",
+    # Cron
+    "crontab",
+    # Package managers (query subcommands handled by deeper inspection below)
+    "dpkg", "dpkg-query", "dpkg-deb", "rpm", "apk", "pacman", "snap",
+    "pip", "pip3", "npm", "gem", "cargo",
+    # SSH inspection
+    "ssh-keyscan", "ssh-keygen", "sshd",  # sshd -T tests config
+    # Sysctl
+    "sysctl",
+    # Kerberos / time
+    "klist", "date", "timedatectl", "ntpq", "chronyc",
+    # Containers (read paths)
+    "docker", "podman", "kubectl", "crictl", "ctr",  # most subcommands read; specific writes handled below
+    "command", "type", "alias",
+    # Misc
+    "env", "printenv", "echo", "true", "false", "test",
+}
+
+_WRITE_HEADS = {
+    "rm", "rmdir", "shred", "mv", "rename", "cp", "dd", "install",
+    "touch", "mkdir", "mkfile",
+    "chmod", "chown", "chgrp", "setfacl", "setcap", "chattr",
+    "ln", "link", "unlink",
+    "useradd", "userdel", "usermod", "groupadd", "groupdel", "groupmod",
+    "passwd", "chpasswd", "gpasswd",
+    "mkfs", "fsck", "fdisk", "parted", "gparted", "lvcreate", "lvremove",
+    "vgcreate", "vgremove", "pvcreate", "pvremove",
+    "umount", "swapon", "swapoff",
+    "tee", "patch",
+    "tar", "unzip", "gunzip",  # archive extraction can clobber files
+    "git",  # git commit/push/checkout/reset are writes; let the user approve
+}
+
+_NETWORK_HEADS = {
+    "curl", "wget", "fetch",
+    "nc", "ncat", "netcat", "socat",
+    "ping", "ping6", "traceroute", "tracepath", "mtr", "fping",
+    "nmap", "masscan", "rustscan",
+    "tcpdump", "tshark", "wireshark", "tcpflow",
+    "ftp", "tftp", "sftp", "scp", "rsync",
+    "ssh", "mosh", "telnet",
+    "smbclient", "rpcclient",
+    "ldapsearch", "ldapmodify",
+    "openssl",  # s_client / s_server make connections
+    "rclone",
+    "aws", "gcloud", "az",
+}
+
+_PRIVILEGED_HEADS = {
+    "sudo", "su", "doas", "pkexec", "runuser",
+    "modprobe", "insmod", "rmmod",
+    "kexec", "reboot", "shutdown", "halt", "poweroff",
+    "mount",  # mount can change filesystem state
+    "iptables", "ip6tables",  # modifying chains needs root
+}
+
+# Subcommand-aware allow/deny for binaries that have both read and write modes.
+# Format: { command: { "read": {subcmd1, subcmd2, ...}, "default": "approval" } }
+_SUBCOMMAND_RULES: dict[str, dict] = {
+    "systemctl": {
+        "read": {"status", "is-active", "is-enabled", "is-failed", "show",
+                 "list-units", "list-unit-files", "list-sockets", "list-timers",
+                 "list-jobs", "list-dependencies", "cat", "help", "--version"},
+        "default_category": "privileged",
+    },
+    "service": {
+        "read": {"status", "--status-all"},
+        "default_category": "privileged",
+    },
+    "docker": {
+        "read": {"ps", "images", "inspect", "logs", "version", "info", "diff",
+                 "history", "port", "top", "stats", "events", "system", "network",
+                 "volume", "context"},
+        "default_category": "privileged",
+    },
+    "podman": {
+        "read": {"ps", "images", "inspect", "logs", "version", "info", "diff",
+                 "history", "port", "top", "stats", "events", "network", "volume"},
+        "default_category": "privileged",
+    },
+    "kubectl": {
+        "read": {"get", "describe", "logs", "explain", "version", "cluster-info",
+                 "api-resources", "api-versions", "config", "diff", "top", "auth"},
+        "default_category": "privileged",
+    },
+    "git": {
+        "read": {"status", "log", "show", "diff", "blame", "branch", "tag",
+                 "remote", "config", "rev-parse", "rev-list", "ls-files",
+                 "ls-tree", "describe", "shortlog"},
+        "default_category": "write",
+    },
+    "apt": {"read": {"list", "show", "search", "depends"}, "default_category": "privileged"},
+    "apt-get": {"read": {}, "default_category": "privileged"},  # mostly write
+    "dnf": {"read": {"list", "info", "search", "repolist", "history"}, "default_category": "privileged"},
+    "yum": {"read": {"list", "info", "search", "repolist", "history"}, "default_category": "privileged"},
+    "zypper": {"read": {"search", "info", "repos", "lr"}, "default_category": "privileged"},
+    "pacman": {"read": {"-Q", "-Qi", "-Qs", "-Si", "-Ss"}, "default_category": "privileged"},
+    "snap": {"read": {"list", "info", "find", "version"}, "default_category": "privileged"},
+    "pip": {"read": {"list", "show", "freeze", "config"}, "default_category": "write"},
+    "pip3": {"read": {"list", "show", "freeze", "config"}, "default_category": "write"},
+    "npm": {"read": {"list", "ls", "view", "info", "config", "outdated"}, "default_category": "write"},
+    "crontab": {"read": {"-l"}, "default_category": "write"},
+    "iptables-save": {"read": {""}, "default_category": "read_only"},
+    "ip6tables-save": {"read": {""}, "default_category": "read_only"},
+    "iptables": {"read": {"-L", "-S", "-n", "--list", "--list-rules"}, "default_category": "privileged"},
+    "ip6tables": {"read": {"-L", "-S", "-n", "--list", "--list-rules"}, "default_category": "privileged"},
+    "nft": {"read": {"list"}, "default_category": "privileged"},
+    "ufw": {"read": {"status"}, "default_category": "privileged"},
+    "firewall-cmd": {
+        "read": {"--state", "--list-all", "--list-all-zones", "--get-default-zone",
+                 "--get-active-zones", "--get-zones"},
+        "default_category": "privileged",
+    },
+    "auditctl": {"read": {"-l", "-s"}, "default_category": "privileged"},
+    "sysctl": {"read": {"-a", "-n", "-N"}, "default_category": "privileged"},
+    "ssh-keygen": {"read": {"-l", "-y", "-F"}, "default_category": "write"},
+    "openssl": {"read": set(), "default_category": "network"},  # everything network/cert ops
+}
 
 
-# ── Orientation ───────────────────────────────────────────────────────
+def _classify_segment(seg: str) -> tuple[str, str]:
+    """Classify one shell segment (between |, ;, &&, ||).
+
+    Returns (category, reason). Category is one of:
+      - "read_only" — auto-execute
+      - "write"      — needs approval (modifies on-host state)
+      - "network"    — needs approval (makes outbound connections)
+      - "privileged" — needs approval (requires elevation)
+      - "unknown"    — needs approval (we don't recognize the command)
+    """
+    try:
+        tokens = shlex.split(seg, comments=False)
+    except ValueError as e:
+        return ("unknown", f"cannot parse: {e}")
+    if not tokens:
+        return ("read_only", "")
+
+    # `command -v X` and `which X` style: keep the segment, look at the
+    # first non-flag token.
+    head = tokens[0]
+    # Strip leading `time `, `nice `, `nohup `, `env VAR=VAL ` etc.
+    while head in {"time", "nice", "nohup", "ionice", "stdbuf", "exec"} and len(tokens) > 1:
+        tokens = tokens[1:]
+        head = tokens[0]
+    # `env VAR=VAL cmd ...` — env can prefix any command. We only allow read-only
+    # uses (`env`/`printenv` alone) when env *is* the head.
+    if head == "env" and len(tokens) > 1 and "=" in tokens[1]:
+        # env VAR=VAL <real_cmd> ...
+        idx = 1
+        while idx < len(tokens) and "=" in tokens[idx]:
+            idx += 1
+        if idx < len(tokens):
+            tokens = tokens[idx:]
+            head = tokens[0]
+
+    bare = head.rsplit("/", 1)[-1]
+
+    # Subcommand rules apply first (e.g. `systemctl status` is read-only,
+    # `systemctl start` is privileged).
+    if bare in _SUBCOMMAND_RULES:
+        rule = _SUBCOMMAND_RULES[bare]
+        sub_args = [t for t in tokens[1:] if not t.startswith("-")] or [""]
+        flag_args = [t for t in tokens[1:] if t.startswith("-")]
+        first_sub = sub_args[0] if sub_args else ""
+        # Read mode if either the first subcommand or any flag matches.
+        if first_sub in rule["read"] or any(f in rule["read"] for f in flag_args):
+            return ("read_only", "")
+        return (rule["default_category"], f"{bare} {first_sub or (flag_args[0] if flag_args else '')} requires approval")
+
+    if bare in _PRIVILEGED_HEADS:
+        return ("privileged", f"requires elevation: {bare}")
+    if bare in _NETWORK_HEADS:
+        return ("network", f"makes network connections: {bare}")
+    if bare in _WRITE_HEADS:
+        return ("write", f"modifies system state: {bare}")
+    if bare in _READ_ONLY_HEADS:
+        return ("read_only", "")
+    return ("unknown", f"unrecognized command: {bare}")
+
+
+def _classify_command(command: str) -> tuple[str, str]:
+    """Classify a full command line into (category, reason).
+
+    Conservative: any sign of write redirects, command substitution, or
+    unknown commands → escalates to non-read_only so the user approves.
+    """
+    if not command or not command.strip():
+        return ("read_only", "")
+    cmd = command.strip()
+
+    # Strip quoted strings before scanning for shell metacharacters so we
+    # don't false-positive on grep patterns containing `>` etc.
+    scan = re.sub(r'"(?:\\.|[^"\\])*"', '""', cmd)
+    scan = re.sub(r"'(?:\\.|[^'\\])*'", "''", scan)
+
+    # Output redirection to file: `>`, `>>`, `&>`, `|& tee`, `>&-`. We allow
+    # `2>&1` and `2>/dev/null` (stderr management is read-side).
+    redir = re.compile(r"(?<![0-9&])>(?!\&)")
+    for m in redir.finditer(scan):
+        # Allow `>/dev/null` and `>>/dev/null`
+        tail = scan[m.end():].lstrip()
+        if tail.startswith("/dev/null"):
+            continue
+        return ("write", "shell redirect writes to a file")
+
+    # Command substitution — could hide anything inside.
+    if "$(" in scan or "`" in scan:
+        return ("unknown", "command substitution requires manual review")
+    # Process substitution with write side
+    if "<(" in scan and "tee" in scan:
+        return ("write", "process substitution writing via tee")
+
+    # Split on shell separators. We split on `;`, `&&`, `||`, and `|`, and
+    # classify each segment. Worst category wins.
+    segments = re.split(r'(\|\||&&|;|\||(?<![0-9])\s&\s)', scan)
+    # Drop the separator capture groups
+    segments = [s for s in segments if s and not re.fullmatch(r'(\|\||&&|;|\||\s&\s)', s.strip())]
+
+    worst = "read_only"
+    reasons: list[str] = []
+    severity = {"read_only": 0, "write": 2, "network": 2, "privileged": 2, "unknown": 1}
+    for seg in segments:
+        seg = seg.strip()
+        if not seg:
+            continue
+        cat, reason = _classify_segment(seg)
+        if severity[cat] > severity[worst] or (
+            severity[cat] == severity[worst] and worst == "read_only" and cat != "read_only"
+        ):
+            worst = cat
+            if reason:
+                reasons.append(reason)
+        elif cat != "read_only" and reason and reason not in reasons:
+            reasons.append(reason)
+    return (worst, "; ".join(reasons))
+
+
+# ── Tools ─────────────────────────────────────────────────────────────
 
 
 @agent_tool(
-    "ssh_get_system_info",
-    "Return kernel (uname -a), OS release (/etc/os-release parsed: ID, NAME, "
-    "VERSION_ID, PRETTY_NAME), and uptime. Call once at the start of every "
-    "audit — the distro and version determine what findings matter.",
-    {"asset_id": {"type": "integer"}},
+    "ssh_run_command",
+    "Run a shell command on the target via SSH and return stdout, stderr, "
+    "and exit code. The output is capped at 512 KB and the command at 60 s. "
+    "BEHAVIOR DEPENDS ON THE COMMAND:\n"
+    "  • Read-only commands (cat, ls, grep, find, ss, ps, systemctl status, "
+    "sysctl -a, getenforce, sestatus, journalctl -n, dpkg -l, rpm -qa, etc.) "
+    "execute immediately.\n"
+    "  • Commands that write (rm, mv, chmod, useradd, package installs, "
+    "service start/stop, etc.), make outbound network connections (curl, "
+    "wget, ssh, scp, nmap, tcpdump, …), or require elevation (sudo, su, "
+    "modprobe, mount, iptables -A, …) PAUSE the run for user approval. "
+    "After approval, the command runs as written.\n"
+    "  • Unknown commands also pause for approval — the classifier prefers "
+    "false positives over false negatives.\n"
+    "Shell redirects to files (`>`, `>>`) and command substitution `$(...)` "
+    "always pause for approval. `2>/dev/null` / `2>&1` is fine.",
+    {
+        "asset_id": {"type": "integer"},
+        "command": {
+            "type": "string",
+            "description": "Shell command to run (a /bin/sh -c string)",
+        },
+    },
 )
-def ssh_get_system_info_tool(db, params: dict) -> dict:
+def ssh_run_command_tool(db, params: dict) -> dict:
     asset_id = params.get("asset_id")
+    command = (params.get("command") or "").strip()
+    if not command:
+        return {"error": "command is required"}
+
+    if not params.get("_approved"):
+        category, reason = _classify_command(command)
+        if category != "read_only":
+            raise NeedsApproval(
+                reason=(
+                    f"Command requires approval ({category}): {reason or command}"
+                ),
+                category=f"ssh_{category}",
+                details={"command": command, "category": category},
+            )
+
     relay, cred = _ctx(params)
     org_id = params.get("_org_id")
-    _, result = _run_async(_dispatch_ssh(db, org_id, asset_id, "sys_info", {}, relay, cred))
-    return result
+    _, result = _run_async(_dispatch_ssh(
+        db, org_id, asset_id, "exec",
+        {"command": command}, relay, cred,
+    ))
+    # Trim very large stdout for LLM consumption — full bytes are still on
+    # the relay's side but token cost on the agent grows linearly.
+    stdout = result.get("stdout") or ""
+    stderr = result.get("stderr") or ""
+    truncated = False
+    if len(stdout) > 16000:
+        stdout = stdout[:16000]
+        truncated = True
+    if len(stderr) > 4000:
+        stderr = stderr[:4000]
+        truncated = True
+    return {
+        "command": command,
+        "exit_code": result.get("exit_code"),
+        "stdout": stdout,
+        "stderr": stderr,
+        "stdout_truncated": truncated,
+        "error": result.get("error"),
+    }
 
 
 @agent_tool(
     "ssh_read_file",
-    "Read one file from the target's allowlist (/etc/os-release, sshd_config, "
-    "/etc/passwd, /etc/group, /etc/shadow, sudoers, crontabs, /etc/hosts, "
-    "/etc/resolv.conf, /etc/login.defs, pam.d/*, authorized_keys). Paths "
-    "outside the allowlist are rejected by the relay. 256 KB cap.",
+    "Read a file from the target over SFTP. The relay enforces a 256 KB "
+    "size cap. Returns content as text. Use for any config file the SSH "
+    "user can read (sshd_config, /etc/passwd, /etc/sudoers, /etc/audit/*, "
+    "/etc/security/*, /proc/* pseudo-files, etc.).",
     {
         "asset_id": {"type": "integer"},
-        "path": {"type": "string", "description": "Absolute path; must match allowlist"},
+        "path": {"type": "string", "description": "Absolute path to the file"},
     },
 )
 def ssh_read_file_tool(db, params: dict) -> dict:
     asset_id = params.get("asset_id")
     path = (params.get("path") or "").strip()
+    if not path:
+        return {"error": "path is required"}
     relay, cred = _ctx(params)
     org_id = params.get("_org_id")
-    _, result = _run_async(_dispatch_ssh(db, org_id, asset_id, "read_file",
-                                          {"path": path}, relay, cred))
-    return result
-
-
-# ── Identity ──────────────────────────────────────────────────────────
-
-
-@agent_tool(
-    "ssh_list_users",
-    "Parse /etc/passwd + /etc/group + /etc/shadow. Returns login-capable user "
-    "count, every UID=0 account (should only be root — anything else is critical), "
-    "and shadow entry STATUS only (empty / locked / disabled / hashed_<algo>). "
-    "Password hashes themselves are never returned.",
-    {"asset_id": {"type": "integer"}},
-)
-def ssh_list_users_tool(db, params: dict) -> dict:
-    asset_id = params.get("asset_id")
-    relay, cred = _ctx(params)
-    org_id = params.get("_org_id")
-    _, result = _run_async(_dispatch_ssh(db, org_id, asset_id, "users", {}, relay, cred))
-    users = result.get("users") or []
-    return {
-        "user_count": result.get("user_count", len(users)),
-        "login_capable_count": result.get("login_capable_count"),
-        "uid0_accounts": result.get("uid0_accounts") or [],
-        "shadow_readable": result.get("shadow_readable", False),
-        "shadow_statuses": _trim(result.get("shadow_statuses") or [], 80),
-        "users": _trim(users, 80),
-        "errors": result.get("_errors") or {},
-    }
-
-
-@agent_tool(
-    "ssh_get_sudoers",
-    "Run `sudo -ln` for the current user and read /etc/sudoers + /etc/sudoers.d/*. "
-    "Flag: NOPASSWD rules, rules granting ALL without command restriction, "
-    "user:ALL=(ALL) with no password, and shell escapes (vi, less, awk, env) "
-    "in permitted commands.",
-    {"asset_id": {"type": "integer"}},
-)
-def ssh_get_sudoers_tool(db, params: dict) -> dict:
-    asset_id = params.get("asset_id")
-    relay, cred = _ctx(params)
-    org_id = params.get("_org_id")
-    _, result = _run_async(_dispatch_ssh(db, org_id, asset_id, "sudoers_effective", {}, relay, cred))
+    _, result = _run_async(_dispatch_ssh(
+        db, org_id, asset_id, "read_file",
+        {"path": path}, relay, cred,
+    ))
     return result
 
 
 @agent_tool(
-    "ssh_scan_authorized_keys",
-    "Walk /root/.ssh/authorized_keys and every /home/*/.ssh/authorized_keys. "
-    "Returns per-key metadata: file, line number, key type, SHA256 fingerprint, "
-    "whether options (command=, from=, restrict) are present. Flag: keys "
-    "with no restrictions on root; ecdsa/ssh-dss weak keys; keys with no comment.",
-    {"asset_id": {"type": "integer"}},
-)
-def ssh_scan_authorized_keys_tool(db, params: dict) -> dict:
-    asset_id = params.get("asset_id")
-    relay, cred = _ctx(params)
-    org_id = params.get("_org_id")
-    _, result = _run_async(_dispatch_ssh(db, org_id, asset_id, "authorized_keys", {}, relay, cred))
-    keys = result.get("keys") or []
-    return {
-        "files": result.get("files") or [],
-        "total_keys": len(keys),
-        "keys": _trim(keys, 60),
-        "weak_key_types": [k for k in keys if k.get("key_type") in ("ssh-dss", "ssh-rsa")],
-    }
-
-
-# ── Hardening ─────────────────────────────────────────────────────────
-
-
-@agent_tool(
-    "ssh_get_sshd_config",
-    "Return the parsed sshd_config directives relevant for audit: "
-    "PermitRootLogin, PasswordAuthentication, PermitEmptyPasswords, "
-    "ChallengeResponseAuthentication, MaxAuthTries, Ciphers, MACs, "
-    "KexAlgorithms, X11Forwarding, UsePAM, ClientAliveInterval, and more. "
-    "Flag: PermitRootLogin yes, PasswordAuthentication yes with no MFA, "
-    "PermitEmptyPasswords yes, weak ciphers (arcfour, 3des-cbc, etc.).",
-    {"asset_id": {"type": "integer"}},
-)
-def ssh_get_sshd_config_tool(db, params: dict) -> dict:
-    asset_id = params.get("asset_id")
-    relay, cred = _ctx(params)
-    org_id = params.get("_org_id")
-    _, result = _run_async(_dispatch_ssh(db, org_id, asset_id, "sshd_config", {}, relay, cred))
-    return result
-
-
-@agent_tool(
-    "ssh_find_suid_binaries",
-    "Find all SUID/SGID files on the root filesystem. Returns path, octal "
-    "mode, owner, group. Flag: SUID on non-standard paths (/home, /tmp, /opt), "
-    "SUID on known-exploitable binaries (nmap, vim, find, awk — GTFOBins), "
-    "or SGID on anything in a user-writable directory.",
-    {"asset_id": {"type": "integer"}},
-)
-def ssh_find_suid_binaries_tool(db, params: dict) -> dict:
-    asset_id = params.get("asset_id")
-    relay, cred = _ctx(params)
-    org_id = params.get("_org_id")
-    _, result = _run_async(_dispatch_ssh(db, org_id, asset_id, "find_suid", {}, relay, cred))
-    binaries = result.get("binaries") or []
-    return {"total": len(binaries), "binaries": _trim(binaries, 80)}
-
-
-@agent_tool(
-    "ssh_list_listening_ports",
-    "Run `ss -tlnp` (netstat fallback) and return every listening TCP socket "
-    "with its process. Flag: unexpected services on public interfaces, "
-    "sensitive services (mysql, postgres, redis, memcached, docker API) on "
-    "0.0.0.0, or processes running as root that shouldn't.",
-    {"asset_id": {"type": "integer"}},
-)
-def ssh_list_listening_ports_tool(db, params: dict) -> dict:
-    asset_id = params.get("asset_id")
-    relay, cred = _ctx(params)
-    org_id = params.get("_org_id")
-    _, result = _run_async(_dispatch_ssh(db, org_id, asset_id, "listening_ports", {}, relay, cred))
-    listeners = result.get("listeners") or []
-    return {"total": len(listeners), "listeners": _trim(listeners, 80)}
-
-
-@agent_tool(
-    "ssh_list_installed_packages",
-    "Detect the package manager (dpkg/rpm/apk) and list installed packages "
-    "with versions. Useful for CVE correlation against the Software inventory. "
-    "Capped at 5000 rows on the relay.",
-    {"asset_id": {"type": "integer"}},
-)
-def ssh_list_installed_packages_tool(db, params: dict) -> dict:
-    asset_id = params.get("asset_id")
-    relay, cred = _ctx(params)
-    org_id = params.get("_org_id")
-    _, result = _run_async(_dispatch_ssh(db, org_id, asset_id, "installed_packages", {}, relay, cred))
-    packages = result.get("packages") or []
-    return {
-        "package_manager": result.get("package_manager"),
-        "total": len(packages),
-        "packages": _trim(packages, 100),
-    }
-
-
-@agent_tool(
-    "ssh_scan_cron_jobs",
-    "Read /etc/crontab, /etc/cron.{d,daily,hourly,weekly,monthly}/*, and every "
-    "user crontab in /var/spool/cron[/crontabs]/. Returns file contents + mode. "
-    "Flag: world-writable crontab files, crontabs running as root invoking "
-    "scripts in world-writable directories, or scripts with missing shebangs.",
-    {"asset_id": {"type": "integer"}},
-)
-def ssh_scan_cron_jobs_tool(db, params: dict) -> dict:
-    asset_id = params.get("asset_id")
-    relay, cred = _ctx(params)
-    org_id = params.get("_org_id")
-    _, result = _run_async(_dispatch_ssh(db, org_id, asset_id, "cron_scan", {}, relay, cred))
-    crontabs = result.get("crontabs") or []
-    return {"total": len(crontabs), "crontabs": _trim(crontabs, 40)}
-
-
-@agent_tool(
-    "ssh_list_processes",
-    "Run `ps -eo pid,user,comm,cmd` and return up to 400 processes. Useful "
-    "after listening-port analysis to understand what's running.",
-    {"asset_id": {"type": "integer"}},
-)
-def ssh_list_processes_tool(db, params: dict) -> dict:
-    asset_id = params.get("asset_id")
-    relay, cred = _ctx(params)
-    org_id = params.get("_org_id")
-    _, result = _run_async(_dispatch_ssh(db, org_id, asset_id, "process_list", {}, relay, cred))
-    processes = result.get("processes") or []
-    return {"total": len(processes), "processes": _trim(processes, 80)}
-
-
-# ── Kernel / sysctl hardening ─────────────────────────────────────────
-
-
-@agent_tool(
-    "ssh_sysctl_audit",
-    "Dump live sysctl state (`sysctl -a`) and compare against a baseline of "
-    "kernel hardening settings. Returns: deviations from the hardening "
-    "baseline (e.g., kptr_restrict=0, accept_redirects=1, suid_dumpable=1), "
-    "a focus slice of kernel/fs/net keys, and keys we couldn't read. "
-    "Hardening baseline is consensus-level (Lynis / CIS-aligned); treat "
-    "deviations as hypotheses, not auto-findings — some are intentional in "
-    "routers/edge hosts.",
-    {"asset_id": {"type": "integer"}},
-)
-def ssh_sysctl_audit_tool(db, params: dict) -> dict:
-    asset_id = params.get("asset_id")
-    relay, cred = _ctx(params)
-    org_id = params.get("_org_id")
-    _, result = _run_async(_dispatch_ssh(db, org_id, asset_id, "sysctl", {}, relay, cred))
-    # Trim the focus dict — 60 keys max — to keep token cost bounded.
-    focus = result.get("focus_keys") or {}
-    focus_items = list(focus.items())
-    return {
-        "total_keys": result.get("total_keys"),
-        "hardening_deviations": result.get("hardening_deviations") or [],
-        "unreadable_hardening_keys": result.get("unreadable_hardening_keys") or [],
-        "focus_keys": dict(focus_items[:60]),
-        "focus_truncated": len(focus_items) > 60,
-    }
-
-
-# ── PAM audit ─────────────────────────────────────────────────────────
-
-
-@agent_tool(
-    "ssh_pam_audit",
-    "Audit /etc/pam.d/* for classic weakness patterns. Returns: files "
-    "scanned, every `nullok` occurrence (empty-password acceptance) with "
-    "line reference, whether any lockout module (pam_tally2/pam_faillock) "
-    "is configured anywhere, whether a password-quality module "
-    "(pam_pwquality/pam_cracklib) is configured. Missing lockout or quality "
-    "modules on a general-purpose host is a finding.",
-    {"asset_id": {"type": "integer"}},
-)
-def ssh_pam_audit_tool(db, params: dict) -> dict:
-    asset_id = params.get("asset_id")
-    relay, cred = _ctx(params)
-    org_id = params.get("_org_id")
-    _, result = _run_async(_dispatch_ssh(db, org_id, asset_id, "pam_audit", {}, relay, cred))
-    return {
-        "total_files": result.get("total_files"),
-        "nullok_occurrences": result.get("nullok_occurrences") or [],
-        "lockout_modules_configured": result.get("lockout_modules_configured") or [],
-        "quality_modules_configured": result.get("quality_modules_configured") or [],
-        "lockout_missing": bool(result.get("lockout_missing")),
-        "password_quality_missing": bool(result.get("password_quality_missing")),
-    }
-
-
-# ── Shadow aging audit ────────────────────────────────────────────────
-
-
-@agent_tool(
-    "ssh_shadow_audit",
-    "Audit /etc/shadow for password aging and empty/locked state. NEVER "
-    "returns hashes — output is strictly derived (account name + status). "
-    "Requires read access to /etc/shadow (root or group:shadow). Findings: "
-    "empty_password_accounts (critical), no_expiration_accounts (flag "
-    "non-service users), passwords_older_than_max_age, zero_min_age_accounts.",
-    {"asset_id": {"type": "integer"}},
-)
-def ssh_shadow_audit_tool(db, params: dict) -> dict:
-    asset_id = params.get("asset_id")
-    relay, cred = _ctx(params)
-    org_id = params.get("_org_id")
-    _, result = _run_async(_dispatch_ssh(db, org_id, asset_id, "shadow_audit", {}, relay, cred))
-    if not result.get("readable"):
-        return {"readable": False, "note": result.get("error") or "shadow not readable — need root or group:shadow"}
-    return {
-        "readable": True,
-        "total_users": result.get("total_users"),
-        "empty_password_accounts": result.get("empty_password_accounts") or [],
-        "no_expiration_accounts": result.get("no_expiration_accounts") or [],
-        "passwords_older_than_max_age": result.get("passwords_older_than_max_age") or [],
-        "zero_min_age_accounts": result.get("zero_min_age_accounts") or [],
-        "locked_accounts_sample": (result.get("locked_accounts") or [])[:20],
-    }
-
-
-# ── Firewall state ────────────────────────────────────────────────────
-
-
-@agent_tool(
-    "ssh_firewall_state",
-    "Detect active firewall (nftables / iptables / ufw / firewalld) and "
-    "return the current rule set + default policies. An empty result "
-    "(`no_firewall_detected=true`) on a non-containerized host is a "
-    "finding. Compare default policies to the host's exposure — e.g., a "
-    "public-facing host with default-ACCEPT INPUT chain is critical.",
-    {"asset_id": {"type": "integer"}},
-)
-def ssh_firewall_state_tool(db, params: dict) -> dict:
-    asset_id = params.get("asset_id")
-    relay, cred = _ctx(params)
-    org_id = params.get("_org_id")
-    _, result = _run_async(_dispatch_ssh(db, org_id, asset_id, "firewall", {}, relay, cred))
-    # Truncate big rule dumps — the agent rarely needs the whole thing; it
-    # reasons about defaults + per-chain counts.
-    for key in ("nftables", "iptables_v4", "iptables_v6"):
-        if key in result and isinstance(result[key], dict):
-            rules = result[key].get("rules") or ""
-            if len(rules) > 4000:
-                result[key]["rules"] = rules[:4000]
-                result[key]["_truncated"] = True
-    return result
-
-
-# ── systemd unit audit ────────────────────────────────────────────────
-
-
-@agent_tool(
-    "ssh_systemd_unit_audit",
-    "List systemd service units and their hardening properties "
-    "(NoNewPrivileges, ProtectSystem, ProtectHome, User, etc. via "
-    "`systemctl show`). Returns up to 20 sample units in full + up to 40 "
-    "flagged `unsandboxed_root_units` (running as root with NoNewPrivileges=false). "
-    "Flagged units are not automatic findings — they're the subset worth "
-    "inspecting for privilege escalation and persistence surface.",
+    "ssh_list_directory",
+    "List entries of a directory on the target. Returns name, type "
+    "(file/dir/link), mode (octal), owner, group, size for each entry. "
+    "Equivalent to `ls -la` but structured. Set `all_files=true` to "
+    "include dotfiles (default true).",
     {
         "asset_id": {"type": "integer"},
-        "cap": {"type": "integer", "description": "Max units to inspect (default 80)"},
+        "path": {"type": "string", "description": "Absolute directory path"},
+        "all_files": {"type": "boolean", "description": "Include dotfiles (default true)"},
     },
 )
-def ssh_systemd_unit_audit_tool(db, params: dict) -> dict:
+def ssh_list_directory_tool(db, params: dict) -> dict:
     asset_id = params.get("asset_id")
-    cap = params.get("cap")
+    path = (params.get("path") or "").strip()
+    if not path:
+        return {"error": "path is required"}
+    all_files = params.get("all_files")
+    if all_files is None:
+        all_files = True
     relay, cred = _ctx(params)
     org_id = params.get("_org_id")
-    op_params = {"cap": cap} if cap else {}
-    _, result = _run_async(_dispatch_ssh(db, org_id, asset_id, "systemd_units", op_params, relay, cred))
-    return {
-        "total_units": result.get("total_units"),
-        "unsandboxed_root_units": result.get("unsandboxed_root_units") or [],
-        "sample": result.get("sample") or [],
-    }
-
-
-# ── MAC posture ───────────────────────────────────────────────────────
-
-
-@agent_tool(
-    "ssh_mac_posture",
-    "Detect SELinux and AppArmor enforcement state. Reports which MAC "
-    "system is present and its mode (enforcing/permissive/disabled). "
-    "`no_mac_enforcement=true` on RHEL/CentOS/Ubuntu hosts is a finding — "
-    "both ship a MAC system enabled by default; an operator turned it off.",
-    {"asset_id": {"type": "integer"}},
-)
-def ssh_mac_posture_tool(db, params: dict) -> dict:
-    asset_id = params.get("asset_id")
-    relay, cred = _ctx(params)
-    org_id = params.get("_org_id")
-    _, result = _run_async(_dispatch_ssh(db, org_id, asset_id, "mac_posture", {}, relay, cred))
-    return result
-
-
-# ── Container runtime surface ─────────────────────────────────────────
-
-
-@agent_tool(
-    "ssh_container_surface",
-    "Detect Docker/Podman/Kubelet and report their risk surface: "
-    "docker.sock permissions (group/world-writable = trivial root privesc), "
-    "running containers (if listable without sudo), kubelet listening "
-    "ports (10250/10255). Chain: non-root user in `docker` group + "
-    "docker.sock group-writable == effective local root via "
-    "`docker run -v /:/host --privileged`.",
-    {"asset_id": {"type": "integer"}},
-)
-def ssh_container_surface_tool(db, params: dict) -> dict:
-    asset_id = params.get("asset_id")
-    relay, cred = _ctx(params)
-    org_id = params.get("_org_id")
-    _, result = _run_async(_dispatch_ssh(db, org_id, asset_id, "containers", {}, relay, cred))
-    return result
-
-
-# ── Audit daemon config ───────────────────────────────────────────────
-
-
-@agent_tool(
-    "ssh_audit_daemon",
-    "Read auditd config (/etc/audit/auditd.conf) + rules "
-    "(/etc/audit/rules.d/*). Reports whether auditd is active, log file "
-    "path, rotation settings, loaded rule count. Findings: auditd inactive "
-    "on a production host, no rule files, loaded_rule_count=0.",
-    {"asset_id": {"type": "integer"}},
-)
-def ssh_audit_daemon_tool(db, params: dict) -> dict:
-    asset_id = params.get("asset_id")
-    relay, cred = _ctx(params)
-    org_id = params.get("_org_id")
-    _, result = _run_async(_dispatch_ssh(db, org_id, asset_id, "audit_daemon", {}, relay, cred))
-    # Trim rule content per file — the agent's reasoning is on rule counts,
-    # not the exact rule text.
-    rule_files = result.get("rule_files") or []
-    for rf in rule_files:
-        content = rf.get("content") or ""
-        if len(content) > 1500:
-            rf["content"] = content[:1500]
-            rf["_truncated"] = True
-    result["rule_files"] = rule_files
-    return result
-
-
-# ── World-writable / unsafe permission scan ───────────────────────────
-
-
-@agent_tool(
-    "ssh_world_writable_scan",
-    "Scan for world-writable files and files with no valid owner/group, "
-    "scoped to /etc /usr /opt /var /root /home (full-fs scans are too "
-    "expensive). Results are capped at 200 world-writable + 100 orphaned "
-    "entries. Any world-writable file under /etc is a finding; orphaned "
-    "files are an indicator of removed users whose data lingers (sometimes "
-    "with sensitive content).",
-    {"asset_id": {"type": "integer"}},
-)
-def ssh_world_writable_scan_tool(db, params: dict) -> dict:
-    asset_id = params.get("asset_id")
-    relay, cred = _ctx(params)
-    org_id = params.get("_org_id")
-    _, result = _run_async(_dispatch_ssh(db, org_id, asset_id, "world_writable", {}, relay, cred))
-    return {
-        "world_writable_total": len(result.get("world_writable_files") or []),
-        "world_writable_files": _trim(result.get("world_writable_files") or [], 60),
-        "orphaned_total": len(result.get("orphaned_files") or []),
-        "orphaned_files": _trim(result.get("orphaned_files") or [], 40),
-    }
-
-
-# ── Cloud instance metadata reachability ──────────────────────────────
-
-
-@agent_tool(
-    "ssh_cloud_metadata_reachable",
-    "Probe AWS/GCP/Azure instance-metadata endpoints from the target. "
-    "The finding isn't 'reachable' per se — every VM reaches its own "
-    "metadata — it's 'IMDSv1 reachable without IMDSv2 enforcement' "
-    "(`aws_imdsv1_without_v2=true`), which makes any SSRF on the host "
-    "exfiltrate the instance role. Also surfaces GCP/Azure reachability "
-    "for correlation with the host's cloud provider.",
-    {"asset_id": {"type": "integer"}},
-)
-def ssh_cloud_metadata_reachable_tool(db, params: dict) -> dict:
-    asset_id = params.get("asset_id")
-    relay, cred = _ctx(params)
-    org_id = params.get("_org_id")
-    _, result = _run_async(_dispatch_ssh(db, org_id, asset_id, "cloud_metadata", {}, relay, cred))
+    _, result = _run_async(_dispatch_ssh(
+        db, org_id, asset_id, "list_dir",
+        {"path": path, "all_files": bool(all_files)}, relay, cred,
+    ))
+    entries = result.get("entries") or []
+    if len(entries) > 200:
+        result["entries"] = entries[:200] + [{"_truncated": True, "_total": len(entries)}]
     return result
 
 
@@ -588,22 +514,9 @@ def ssh_cloud_metadata_reachable_tool(db, params: dict) -> dict:
 
 
 _SSH_TOOL_NAMES = [
-    # Orientation
-    "ssh_get_system_info", "ssh_read_file",
-    # Identity
-    "ssh_list_users", "ssh_get_sudoers", "ssh_scan_authorized_keys",
-    # Hardening
-    "ssh_get_sshd_config", "ssh_find_suid_binaries",
-    "ssh_list_listening_ports", "ssh_list_installed_packages",
-    "ssh_scan_cron_jobs", "ssh_list_processes",
-    # Kernel / PAM / shadow / MAC
-    "ssh_sysctl_audit", "ssh_pam_audit", "ssh_shadow_audit",
-    "ssh_mac_posture",
-    # Firewall + logging
-    "ssh_firewall_state", "ssh_audit_daemon",
-    # systemd / containers / permission hygiene / cloud
-    "ssh_systemd_unit_audit", "ssh_container_surface",
-    "ssh_world_writable_scan", "ssh_cloud_metadata_reachable",
+    "ssh_run_command",
+    "ssh_read_file",
+    "ssh_list_directory",
     # CVE correlation — deterministic inventory→CVE matching pass
     "correlate_software_to_cves",
     # Shared
@@ -618,12 +531,12 @@ register_audit(ProtocolAudit(
     protocol="ssh",
     label="Linux Audit (SSH)",
     description=(
-        "Credentialed Linux/Unix audit over SSH. A ReAct agent reads a curated "
-        "allowlist of system files and runs read-only inspection commands to "
-        "surface hardening (sshd_config, SUID, listening services), identity "
-        "(users, sudoers, SSH keys), and software-inventory findings. There "
-        "is no arbitrary command execution — every op is a hardcoded command "
-        "or an allowlisted file read."
+        "Credentialed Linux/Unix audit over SSH. The agent runs arbitrary "
+        "shell commands via `ssh_run_command`, reads files via "
+        "`ssh_read_file`, and lists directories via `ssh_list_directory`. "
+        "Read-only commands execute immediately; writes / network access / "
+        "privileged operations pause for user approval before the relay "
+        "touches the host."
     ),
     supported_os=["linux", "unix", "macos"],
     auth_modes=["password", "key"],
@@ -633,47 +546,18 @@ register_audit(ProtocolAudit(
     required_ports=(22,),
     missions=[
         MissionTemplate(
-            key="hardening_posture",
-            label="Hardening Posture",
-            description="sshd_config weaknesses, SUID/SGID anomalies, listening services, kernel/OS patch level.",
-            prompt_key="ssh_audit_hardening_posture",
-            suggested_budget=20,
-            cost_hint="medium",
-        ),
-        MissionTemplate(
-            key="identity_audit",
-            label="Identity Audit",
-            description="UID=0 accounts, shadow anomalies (locked/empty/weak algo), sudoers NOPASSWD, authorized_keys risk.",
-            prompt_key="ssh_audit_identity_audit",
-            suggested_budget=20,
-            cost_hint="medium",
-        ),
-        MissionTemplate(
-            key="software_inventory",
-            label="Software Inventory",
-            description="Full package inventory from dpkg/rpm/apk for downstream CVE correlation.",
-            prompt_key="ssh_audit_software_inventory",
-            suggested_budget=10,
-            cost_hint="low",
-        ),
-        MissionTemplate(
-            key="software_cve",
-            label="CVE Hunt",
+            key="exposure_audit",
+            label="Exposure Audit",
             description=(
-                "Correlate installed packages against the threat-intel CVE DB, "
-                "then triage top candidates by checking host config + reachability "
-                "to separate truly exploitable from mitigated/not-applicable."
+                "End-to-end Linux/Unix exposure hunt: hardening (sshd_config, "
+                "SUID/SGID, listening services, kernel age), identity (UID=0, "
+                "shadow anomalies, sudoers, authorized_keys), software "
+                "inventory + CVE triage via the correlator. Read-only commands "
+                "auto-execute; writes / network / privileged operations pause "
+                "for user approval."
             ),
-            prompt_key="ssh_audit_software_cve",
-            suggested_budget=25,
-            cost_hint="medium",
-        ),
-        MissionTemplate(
-            key="explore",
-            label="Explore (creative)",
-            description="No fixed checklist — agent reasons freely about Linux exposures within the read-only boundary.",
-            prompt_key="ssh_audit_explore",
-            suggested_budget=25,
+            prompt_key="ssh_audit_exposure_audit",
+            suggested_budget=50,
             cost_hint="high",
         ),
     ],

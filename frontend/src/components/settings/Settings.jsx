@@ -624,7 +624,7 @@ export default function Settings() {
       </div>
 
       {/* Content */}
-      <div style={{ flex: 1, padding: 24, maxWidth: ['integration-builder', 'users', 'relay-agents'].includes(activeTab) ? 1200 : 760 }}>
+      <div style={{ flex: 1, padding: 24, maxWidth: ['integration-builder', 'users', 'relay-agents', 'upload'].includes(activeTab) ? 1200 : 760 }}>
 
       {/* Scans tab */}
       {activeTab === 'upload' && <ScanManagement />}
