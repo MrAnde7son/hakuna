@@ -67,6 +67,14 @@ class CapabilityType:
     WEB_ROOT = "web_root"             # value: {"path": str}
     WAF = "waf"                       # value: {"vendor": str?}
 
+    # App-model facts. Populated deterministically by ``response_signals``
+    # after every http_request, so specialists see a structured picture of
+    # the target's stack/routes/inputs without re-deriving from raw bodies.
+    FRAMEWORK = "framework"           # value: {"name": str, "language": str?, "version": str?, "evidence": str}
+    ROUTE_TEMPLATE = "route_template" # value: {"path": str, "method": str, "status": int?}
+    PARAM_REFLECTION = "param_reflection"  # value: {"endpoint": str, "param": str, "location": "body|header", "encoding": "raw|html|json|url"}
+    VALIDATION_RULE = "validation_rule"    # value: {"endpoint": str, "param": str?, "rule": str, "rejected_with": int}
+
     # Fallback — any string fact that doesn't fit a typed slot.
     NOTE = "note"
 
@@ -77,6 +85,8 @@ _KNOWN_TYPES = frozenset({
     CapabilityType.FILE_READ, CapabilityType.FILE_WRITE,
     CapabilityType.SSRF_PRIMITIVE, CapabilityType.CSRF_WEAK,
     CapabilityType.INTERNAL_HOST, CapabilityType.WEB_ROOT, CapabilityType.WAF,
+    CapabilityType.FRAMEWORK, CapabilityType.ROUTE_TEMPLATE,
+    CapabilityType.PARAM_REFLECTION, CapabilityType.VALIDATION_RULE,
     CapabilityType.NOTE,
 })
 

@@ -48,6 +48,7 @@ import secrets
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
+from urllib.parse import urlparse
 
 import httpx
 
@@ -57,6 +58,7 @@ from scanner.vm.capabilities import (
     capability_from_legacy_memory,
     note_capability,
 )
+from scanner.vm.response_signals import commit_signals, extract_signals
 
 logger = logging.getLogger(__name__)
 
@@ -1065,12 +1067,51 @@ def _request_handler(params: dict, ctx: AgentContext) -> dict:
     except Exception:
         pass
 
+    full_headers = {k.lower(): v for k, v in resp.headers.items()}
+    redacted_headers = {
+        k: v for k, v in full_headers.items() if k not in _REDACT_HEADERS
+    }
+
+    # Auto-extract signals (framework, web_root, route, reflection,
+    # validation rules) so every probe maintains the app model without
+    # the LLM having to call a separate "analyse" tool. The store dedups
+    # so re-probes don't bloat the prompt; provenance encodes which
+    # specialist's request produced the fact. Run BEFORE building the
+    # LLM-facing response dict so signal detectors see Set-Cookie (the
+    # primary framework fingerprint) — that header is redacted out of
+    # the LLM view.
+    try:
+        provenance = (
+            f"signal:{ctx.current_specialist}" if ctx.current_specialist
+            else "signal:http"
+        )
+        signal_response = {
+            "url": url,
+            "method": method,
+            "status_code": resp.status_code,
+            "elapsed_ms": elapsed_ms,
+            "headers": full_headers,
+            "body": body_text,
+            "body_length": len(resp.content or b""),
+        }
+        caps = extract_signals(
+            method=method, url=url, request_body=body,
+            response=signal_response,
+            asset_id=ctx.asset_id, provenance=provenance,
+        )
+        commit_signals(ctx.capabilities, caps)
+    except Exception:
+        # Signal extraction must never break the request path. The LLM
+        # still gets the response; it just won't see the auto-derived
+        # capabilities for this turn.
+        logger.exception("extract_signals failed for %s", url)
+
     return {
         "url": url,
         "method": method,
         "status_code": resp.status_code,
         "elapsed_ms": elapsed_ms,
-        "headers": {k.lower(): v for k, v in resp.headers.items() if k.lower() not in _REDACT_HEADERS},
+        "headers": redacted_headers,
         "body": body_text,
         "body_length": len(resp.content or b""),
     }
@@ -1225,6 +1266,206 @@ def _diff_responses_handler(params: dict, ctx: AgentContext) -> dict:
         "elapsed_delta_ms": ms_b - ms_a,
         "added_lines": [line[:300] for line in added],
         "removed_lines": [line[:300] for line in removed],
+    }
+
+
+# ── Error-oracle probe ──────────────────────────────────────────
+# A fixed battery of error-inducing requests. Designed to provoke the
+# server into leaking framework, validation behaviour, and routing
+# rules — the things business-logic fuzzers need to know but rarely
+# get from a baseline GET.
+#
+# Each entry: (probe_name, method_override, path_suffix, body, headers).
+# Empty fields keep the original request shape. Probes are intentionally
+# bounded — at most ~6 extra requests per call so the LLM can fire one
+# probe per endpoint without burning the iteration budget.
+
+_ERROR_PROBES = [
+    # Malformed JSON: validators that accept JSON return a structured
+    # error shape (FastAPI's pydantic 422, Express's body-parser SyntaxError,
+    # Rails' JSON::ParserError) — VALIDATION_RULE harvests it.
+    ("malformed_json", None, "", '{"a":', {"Content-Type": "application/json"}),
+    # Empty body on a POST/PUT — exposes "field required" shapes.
+    ("empty_body", None, "", "", {"Content-Type": "application/json"}),
+    # Unknown content-type — many frameworks 415; the response chrome
+    # often names the framework ("Unsupported Media Type — FastAPI").
+    ("unsupported_media_type", None, "", "x", {"Content-Type": "application/x-hakuna-probe"}),
+    # Method swap — GET → POST or POST → GET. 405 responses are
+    # high-signal (framework name in body, allowed methods in Allow
+    # header) and reveal route templates we didn't know existed.
+    ("method_swap", "FLIP", "", None, {}),
+    # Path with traversal pattern that should NOT match a real route —
+    # if the server still 200s, that's a routing curiosity worth flagging.
+    ("nonsense_suffix", None, "/__hakuna_probe_404", None, {}),
+    # Oversize-ish header to provoke 431 / parser limits. Capped
+    # conservatively (4KB) so we don't trigger WAF lockouts.
+    ("oversize_header", None, "", None, {"X-Hakuna-Probe": "A" * 4_000}),
+]
+
+
+# Hard cap on total bytes returned to the LLM by the oracle, so an
+# information-rich error page can't balloon the tool_result.
+_ORACLE_MAX_BODY_PER_PROBE = 1_500
+
+
+def _probe_error_oracle_handler(params: dict, ctx: AgentContext) -> dict:
+    """Drive a fixed battery of error-inducing requests against an endpoint.
+
+    The LLM passes ``url`` (and optional ``method``); the handler runs
+    each probe in :data:`_ERROR_PROBES`, hands every response through the
+    same ``extract_signals`` pipeline as ``http_request``, and returns a
+    compact summary of (probe_name → status, framework_hint, validation
+    rule). Capabilities are committed automatically so subsequent
+    specialists see the inferred app-model in their CAPABILITIES block.
+
+    Designed to be called ONCE per interesting endpoint, early in a
+    specialist's run — the output then steers payload selection. Calling
+    it on every endpoint is wasteful (the probes overlap heavily across
+    routes that share a router/middleware).
+    """
+    base_url = (params.get("url") or "").strip()
+    base_method = (params.get("method") or "GET").upper()
+    if not base_url:
+        return {"error": "url required"}
+    if not _safe_url(base_url):
+        return {"error": "unsafe url scheme"}
+    if time.monotonic() >= ctx.deadline:
+        return {"error": "asset deadline reached"}
+    client = ctx.http_client
+    if client is None:
+        return {"error": "http client not configured"}
+
+    merged_base_headers = dict(ctx.headers or {})
+    provenance = (
+        f"signal:{ctx.current_specialist}:oracle" if ctx.current_specialist
+        else "signal:oracle"
+    )
+
+    probes_out: list[dict] = []
+    inferred: dict[str, Any] = {
+        "frameworks": [],
+        "web_root": None,
+        "validation_rules": [],
+        "routes": [],
+    }
+    seen_fw: set[str] = set()
+
+    for probe_name, method_override, path_suffix, body, extra_headers in _ERROR_PROBES:
+        if time.monotonic() >= ctx.deadline:
+            break
+
+        probe_url = base_url
+        if path_suffix:
+            # Append a path suffix without breaking the query string.
+            try:
+                parts = urlparse(base_url)
+                probe_url = parts._replace(path=(parts.path or "") + path_suffix).geturl()
+            except Exception:
+                probe_url = base_url + path_suffix
+
+        if method_override == "FLIP":
+            probe_method = "POST" if base_method == "GET" else "GET"
+        elif method_override:
+            probe_method = method_override
+        else:
+            probe_method = base_method
+
+        probe_headers = dict(merged_base_headers)
+        if extra_headers:
+            probe_headers.update(extra_headers)
+
+        started = time.monotonic()
+        try:
+            resp = client.request(
+                method=probe_method,
+                url=probe_url,
+                headers=probe_headers or None,
+                content=body if isinstance(body, (str, bytes)) else None,
+                json=body if isinstance(body, dict) else None,
+                timeout=8.0,
+                follow_redirects=False,
+            )
+        except httpx.TimeoutException:
+            probes_out.append({"probe": probe_name, "url": probe_url,
+                               "method": probe_method, "error": "timeout"})
+            continue
+        except Exception as e:
+            probes_out.append({"probe": probe_name, "url": probe_url,
+                               "method": probe_method, "error": str(e)[:200]})
+            continue
+
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        try:
+            body_text = resp.text[:_ORACLE_MAX_BODY_PER_PROBE]
+        except Exception:
+            body_text = ""
+
+        # Pass full headers (incl. Set-Cookie) to the signal extractor —
+        # framework detection leans heavily on cookie names, which the
+        # LLM-facing summary redacts.
+        full_headers = {k.lower(): v for k, v in resp.headers.items()}
+        signal_response = {
+            "url": probe_url,
+            "method": probe_method,
+            "status_code": resp.status_code,
+            "elapsed_ms": elapsed_ms,
+            "headers": full_headers,
+            "body": body_text,
+            "body_length": len(resp.content or b""),
+        }
+
+        caps = extract_signals(
+            method=probe_method, url=probe_url, request_body=body,
+            response=signal_response,
+            asset_id=ctx.asset_id, provenance=provenance,
+        )
+        commit_signals(ctx.capabilities, caps)
+
+        # Accumulate the per-probe summary the LLM will read.
+        probe_summary: dict[str, Any] = {
+            "probe": probe_name,
+            "url": probe_url,
+            "method": probe_method,
+            "status": resp.status_code,
+            "body_length": signal_response["body_length"],
+            "body_excerpt": body_text[:300],
+        }
+        for cap in caps:
+            if cap.type == "framework":
+                fw = cap.value.get("name")
+                if fw and fw not in seen_fw:
+                    inferred["frameworks"].append({
+                        "name": fw,
+                        "language": cap.value.get("language"),
+                        "evidence": cap.value.get("evidence"),
+                        "confidence": round(cap.confidence, 2),
+                    })
+                    seen_fw.add(fw)
+            elif cap.type == "web_root" and inferred["web_root"] is None:
+                inferred["web_root"] = cap.value.get("path")
+            elif cap.type == "validation_rule":
+                inferred["validation_rules"].append({
+                    "param": cap.value.get("param"),
+                    "rule": cap.value.get("rule"),
+                    "rejected_with": cap.value.get("rejected_with"),
+                })
+            elif cap.type == "route_template":
+                inferred["routes"].append({
+                    "path": cap.value.get("path"),
+                    "method": cap.value.get("method"),
+                    "status": cap.value.get("status"),
+                })
+        probes_out.append(probe_summary)
+
+    return {
+        "probes": probes_out,
+        "inferred": inferred,
+        "note": (
+            "Every probe response was already passed through the signal "
+            "extractor — typed capabilities (framework, web_root, "
+            "validation_rule, route_template) are committed to the "
+            "capability store and visible in the next initial message."
+        ),
     }
 
 
@@ -2228,6 +2469,36 @@ TOOLS: dict[str, Tool] = {
             "required": ["baseline", "probe"],
         },
         handler=_diff_responses_handler,
+    ),
+    "probe_error_oracle": Tool(
+        name="probe_error_oracle",
+        description=(
+            "Drive a fixed battery of error-inducing requests against an "
+            "endpoint to reverse-engineer how the app validates input "
+            "and which framework runs behind the route. Sends ~6 probes "
+            "(malformed JSON, empty body, bad content-type, method swap, "
+            "nonsense path suffix, oversize header) and feeds every "
+            "response through the signal extractor — framework, "
+            "validation rules, web_root, and routes are auto-committed "
+            "to capabilities, visible to later specialists in their "
+            "CAPABILITIES block. Use ONCE per interesting endpoint, "
+            "early in the run, to steer payload selection. Returns "
+            "per-probe status + body excerpt and an `inferred` summary "
+            "of what was learned. Cheap (~1s wall, no LLM tokens beyond "
+            "the tool_result)."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "Target endpoint URL."},
+                "method": {
+                    "type": "string",
+                    "description": "Baseline method (the probes vary it). Default GET.",
+                },
+            },
+            "required": ["url"],
+        },
+        handler=_probe_error_oracle_handler,
     ),
     "oob_get_probe": Tool(
         name="oob_get_probe",

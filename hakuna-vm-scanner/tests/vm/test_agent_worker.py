@@ -579,6 +579,109 @@ class TestRequestHandler:
         result = _request_handler({"url": "https://x/"}, ctx)
         assert result["error"] == "timeout"
 
+    def test_signals_extracted_into_capability_store(self):
+        """Every successful response auto-populates capabilities. This is
+        the contract that lets specialists rely on the typed app-model
+        instead of re-deriving it from raw bytes — if the wiring breaks,
+        the whole signal-extraction pipeline goes silently dark."""
+        mock_client = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = ""
+        mock_resp.content = b""
+        # PHPSESSID → FRAMEWORK=php; the URL contributes ROUTE_TEMPLATE.
+        mock_resp.headers = {"Set-Cookie": "PHPSESSID=abc; Path=/"}
+        mock_client.request.return_value = mock_resp
+        ctx = _ctx(http_client=mock_client)
+
+        _request_handler({"url": "https://x/api/users"}, ctx)
+
+        types = [c.type for c in ctx.capabilities.all()]
+        assert "framework" in types
+        assert "route_template" in types
+
+    def test_signal_extraction_failure_does_not_break_response(self):
+        """The signal extractor is best-effort; an exception inside it
+        must not prevent the LLM from getting the response. Without this
+        guarantee one bad regex would brick every http_request call."""
+        from unittest.mock import patch
+        mock_client = MagicMock()
+        mock_resp = MagicMock(status_code=200, text="", content=b"", headers={})
+        mock_client.request.return_value = mock_resp
+        ctx = _ctx(http_client=mock_client)
+
+        with patch(
+            "scanner.vm.agent_specialists.extract_signals",
+            side_effect=RuntimeError("boom"),
+        ):
+            result = _request_handler({"url": "https://x/"}, ctx)
+        assert result["status_code"] == 200
+
+
+class TestProbeErrorOracle:
+    def test_runs_battery_and_summarises(self):
+        """End-to-end: call the oracle on an endpoint, confirm we fire
+        the full probe set, attribute framework/web_root capabilities
+        from each response, and return the per-probe summary the LLM
+        will read back."""
+        from scanner.vm.agent_specialists import _probe_error_oracle_handler
+
+        # First probe (malformed JSON) returns a Pydantic-style 422;
+        # the rest 404. We expect a FastAPI fingerprint via body chrome
+        # and a validation rule attribution.
+        responses = [
+            MagicMock(
+                status_code=422,
+                text=(
+                    '{"detail":[{"loc":["body","email"],'
+                    '"msg":"value is not a valid email address",'
+                    '"type":"value_error.email"}]}'
+                ),
+                content=b"x",
+                headers={"Content-Type": "application/json", "Server": "uvicorn"},
+            ),
+            MagicMock(status_code=400, text="bad", content=b"x", headers={}),
+            MagicMock(status_code=415, text="Unsupported Media Type",
+                      content=b"x", headers={}),
+            MagicMock(status_code=405, text="Method Not Allowed",
+                      content=b"x", headers={"Allow": "GET"}),
+            MagicMock(status_code=404, text="not found", content=b"x", headers={}),
+            MagicMock(status_code=431, text="too big", content=b"x", headers={}),
+        ]
+        mock_client = MagicMock()
+        mock_client.request.side_effect = responses
+        ctx = _ctx(http_client=mock_client, target="https://api.example.com")
+
+        out = _probe_error_oracle_handler(
+            {"url": "https://api.example.com/users", "method": "POST"},
+            ctx,
+        )
+
+        # Fired the full battery (one request per probe in _ERROR_PROBES).
+        assert len(out["probes"]) == 6
+        # Validation rule was attributed (FastAPI shape on probe 1).
+        rules = out["inferred"]["validation_rules"]
+        assert any(r.get("param") == "email" for r in rules)
+        # uvicorn → asgi framework hint surfaced.
+        names = {fw["name"] for fw in out["inferred"]["frameworks"]}
+        assert "asgi" in names
+        # Capabilities were committed to the store, not just returned.
+        store_types = [c.type for c in ctx.capabilities.all()]
+        assert "framework" in store_types
+        assert "validation_rule" in store_types
+
+    def test_rejects_missing_url(self):
+        from scanner.vm.agent_specialists import _probe_error_oracle_handler
+        out = _probe_error_oracle_handler({}, _ctx(http_client=MagicMock()))
+        assert "error" in out
+
+    def test_rejects_unsafe_url(self):
+        from scanner.vm.agent_specialists import _probe_error_oracle_handler
+        out = _probe_error_oracle_handler(
+            {"url": "file:///etc/passwd"}, _ctx(http_client=MagicMock()),
+        )
+        assert "error" in out
+
 
 class TestCheckPatternHandler:
     def test_matches_returns_group(self):
