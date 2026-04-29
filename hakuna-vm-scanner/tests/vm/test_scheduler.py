@@ -1,5 +1,6 @@
 """Tests for the VM scanner scheduler."""
 
+import json
 import socket
 import urllib.error
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -117,6 +118,129 @@ class TestBeatSchedule:
 
         job = celery_app.conf.beat_schedule["dast-template-sync-daily"]
         assert job["task"] == "vm.dast_template_sync"
+
+    def test_zombie_reaper_scheduled(self):
+        """The zombie task reaper must be on the beat schedule, otherwise
+        orphaned `unacked` entries from dead workers leak forever (the
+        2026-04-29 nadlaner.com incident — two scans pinned at STARTED
+        for 10 days because kombu's visibility_timeout-based restore
+        only acts on entries claimed by the *current* client_id).
+        """
+        from scanner.vm.celery_app import celery_app
+
+        job = celery_app.conf.beat_schedule["reap-zombie-tasks-every-30m"]
+        assert job["task"] == "vm.reap_zombie_tasks"
+
+
+class TestZombieTaskReaper:
+    """When a vm-worker container is killed mid-task, kombu does not
+    redeliver the unacked entry — its visibility_timeout-based restore
+    only acts on entries claimed by the *current* client_id. The reaper
+    is the recovery mechanism."""
+
+    def _fake_redis(self, entries):
+        """Build a MagicMock redis client preloaded with `entries`.
+
+        entries: list of (delivery_tag, score, body_dict_or_bytes).
+        """
+        unacked = {tag: (body if isinstance(body, bytes) else json.dumps(body).encode())
+                   for tag, _, body in entries}
+        index = {tag: score for tag, score, _ in entries}
+
+        client = MagicMock()
+        client.zrangebyscore = MagicMock(
+            side_effect=lambda key, lo, hi: [
+                tag for tag, s in index.items() if s <= hi
+            ]
+        )
+        client.hget = MagicMock(side_effect=lambda key, tag: unacked.get(tag))
+        client.hdel = MagicMock(side_effect=lambda key, tag: unacked.pop(tag, None))
+        client.zrem = MagicMock(side_effect=lambda key, tag: index.pop(tag, None))
+        return client, unacked, index
+
+    def test_no_stale_entries_returns_zero(self):
+        from scanner.vm.scheduler import _reap_zombie_tasks_impl
+
+        client, _, _ = self._fake_redis([])
+        with patch("scanner.vm.scheduler.redis.from_url", return_value=client):
+            result = _reap_zombie_tasks_impl(now=1_000_000.0)
+
+        assert result == {"status": "ok", "reaped": 0}
+
+    def test_reaps_stale_entry_and_marks_failure(self):
+        """Entries older than the threshold must be marked FAILURE in the
+        result backend AND removed from unacked / unacked_index — both
+        halves matter, since the backend poller keys off result-meta
+        status to finalize the scan."""
+        from scanner.vm.scheduler import _reap_zombie_tasks_impl
+
+        body = [
+            {"headers": {"id": "task-abc", "task": "scanner.vm.nuclei_worker.run_nuclei_adhoc"}},
+            {}, {},
+        ]
+        # Stale: claimed 6h ago, threshold is 5h.
+        client, unacked, index = self._fake_redis([(b"deliv-1", 0.0, body)])
+
+        from scanner.vm.celery_app import celery_app as _app
+
+        with patch("scanner.vm.scheduler.redis.from_url", return_value=client), \
+             patch.object(_app.backend, "mark_as_failure") as mark_as_failure:
+            result = _reap_zombie_tasks_impl(now=6 * 3600.0)
+
+        assert result["status"] == "ok"
+        assert result["reaped"] == 1
+        assert result["tasks"] == [{
+            "task_id": "task-abc",
+            "task_name": "scanner.vm.nuclei_worker.run_nuclei_adhoc",
+        }]
+        # Result backend was told about the failure so the API stops returning STARTED.
+        mark_as_failure.assert_called_once()
+        called_task_id, called_exc = mark_as_failure.call_args.args
+        assert called_task_id == "task-abc"
+        assert "abandoned" in str(called_exc).lower()
+        # Bookkeeping was cleaned.
+        assert not unacked
+        assert not index
+
+    def test_unparseable_body_is_dropped_without_crashing(self):
+        """A malformed unacked entry must not block the reaper — drop it
+        and continue. (Better to leak one unrecoverable result-meta key
+        than wedge the sweeper for everyone.)"""
+        from scanner.vm.scheduler import _reap_zombie_tasks_impl
+
+        client, unacked, index = self._fake_redis([(b"deliv-bad", 0.0, b"not-json")])
+
+        from scanner.vm.celery_app import celery_app as _app
+
+        with patch("scanner.vm.scheduler.redis.from_url", return_value=client), \
+             patch.object(_app.backend, "mark_as_failure") as mark_as_failure:
+            result = _reap_zombie_tasks_impl(now=6 * 3600.0)
+
+        assert result["reaped"] == 0
+        mark_as_failure.assert_not_called()
+        assert not unacked
+        assert not index
+
+    def test_fresh_entry_is_left_alone(self):
+        """Entries inside the threshold belong to a worker that may still
+        be running — touching them would race with a real ack."""
+        from scanner.vm.scheduler import _reap_zombie_tasks_impl
+
+        body = [{"headers": {"id": "task-fresh", "task": "x"}}, {}, {}]
+        # Fresh: claimed 1h ago, threshold is 5h.
+        client, unacked, index = self._fake_redis(
+            [(b"deliv-fresh", 4 * 3600.0, body)]
+        )
+
+        from scanner.vm.celery_app import celery_app as _app
+
+        with patch("scanner.vm.scheduler.redis.from_url", return_value=client), \
+             patch.object(_app.backend, "mark_as_failure") as mark_as_failure:
+            result = _reap_zombie_tasks_impl(now=5 * 3600.0)
+
+        assert result == {"status": "ok", "reaped": 0}
+        mark_as_failure.assert_not_called()
+        assert b"deliv-fresh" in unacked
 
 
 class TestDastTemplateSync:
