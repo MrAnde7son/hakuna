@@ -1164,8 +1164,12 @@ function AuditScanPanel({
           }
         }
         setCredentials(Array.isArray(creds) ? creds : [])
-        const connected = (relays?.items || relays || []).filter(r => r.is_connected || r.status === 'connected')
-        setRelayAgents(connected)
+        // Keep all relays — disconnected ones are rendered as disabled options
+        // so users can see (e.g.) "Hakuna Cloud Scanner — not deployed" rather
+        // than the dropdown silently showing nothing.
+        const allRelays = (relays?.items || relays || [])
+        setRelayAgents(allRelays)
+        const connected = allRelays.filter(r => r.is_connected || r.status === 'connected')
         if (connected.length === 1) setRelayAgentId(connected[0].id)
         setUsage(usageResp || null)
       } finally {
@@ -1545,11 +1549,29 @@ function AuditScanPanel({
           style={_selectStyle}
         >
           <option value="">Select relay agent…</option>
-          {relayAgents.map(r => (
-            <option key={r.id} value={r.id}>{r.name || r.id}</option>
-          ))}
+          {relayAgents.map(r => {
+            const connected = r.is_connected || r.status === 'connected'
+            const isManaged = r.relay_type === 'cloud_scanner'
+            const suffix = connected
+              ? ''
+              : isManaged ? ' — not deployed' : ' — disconnected'
+            return (
+              <option key={r.id} value={r.id} disabled={!connected}>
+                {(r.name || r.id) + suffix}
+              </option>
+            )
+          })}
         </select>
       </AuditRow>
+      {relayAgents.length > 0 && !relayAgents.some(r => r.is_connected || r.status === 'connected') && (
+        <div style={{
+          marginTop: 4, marginBottom: 10, padding: '8px 10px', borderRadius: 6,
+          background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.3)',
+          fontSize: 11, color: '#92400e',
+        }}>
+          No relay agents are connected. Audits run through a relay — deploy an on-prem agent (Settings → Relay Agents) for internal targets, or run the Hakuna Cloud Scanner for external targets.
+        </div>
+      )}
 
       {/* Target source — tab switcher mirrors VM scan for UX parity */}
       <div style={{ display: 'flex', borderBottom: '1px solid var(--border)', marginTop: 14, marginBottom: 10 }}>
@@ -2121,6 +2143,16 @@ function ScanProgressBar({ metadata }) {
   const errorStages = new Set(
     stageLog.filter(s => s.status === 'error').flatMap(s => [...stageMembers(s.stage)])
   )
+  // Map each errored step → its exception string so the dot tooltip can
+  // show *why* a stage failed instead of just "(error)". Composite stages
+  // (e.g. "dnsx+naabu") share one error entry across all members.
+  const errorMessages = {}
+  for (const s of stageLog) {
+    if (s.status !== 'error' || !s.error) continue
+    for (const member of stageMembers(s.stage)) {
+      errorMessages[member] = s.error
+    }
+  }
   const pct = totalStages > 0 ? Math.round(((stageIndex - 1) / totalStages) * 100) : 0
 
   // Estimate time remaining: elapsed / completed% = total → remaining = total - elapsed
@@ -2169,7 +2201,7 @@ function ScanProgressBar({ metadata }) {
           return (
             <div
               key={step}
-              title={`${STAGE_LABELS[step] || step}${isDone ? ' (done)' : isError ? ' (error)' : isActive ? ' (running)' : ''}`}
+              title={`${STAGE_LABELS[step] || step}${isDone ? ' (done)' : isError ? ` (error): ${errorMessages[step] || 'unknown'}` : isActive ? ' (running)' : ''}`}
               style={{
                 display: 'flex', alignItems: 'center', gap: 3,
               }}
@@ -2195,6 +2227,19 @@ function ScanProgressBar({ metadata }) {
           )
         })}
       </div>
+
+      {/* Stage errors — surface failed-step exception text so a red dot
+          actually tells the operator what broke without having to grep
+          worker logs. */}
+      {stageLog.filter(s => s.status === 'error' && s.error).map((s, i) => (
+        <div key={`err-${i}`} style={{
+          fontSize: 10, color: '#dc2626', marginTop: 4,
+          fontFamily: 'ui-monospace, monospace',
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+        }} title={`${s.stage}: ${s.error}`}>
+          <strong>{STAGE_LABELS[s.stage] || s.stage}:</strong> {s.error}
+        </div>
+      ))}
 
       {/* ETA */}
       {etaSeconds > 0 && completedDurations.length >= 2 && (

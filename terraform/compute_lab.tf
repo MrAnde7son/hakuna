@@ -275,8 +275,24 @@ resource "google_compute_instance" "lab" {
     # Strip the `hakuna_default: external: true` reference (host-only network
     # used by the dev compose; not present in the cloud lab).
     sed -i 's/external: true/driver: bridge/' /opt/hakuna-lab/docker-compose.lab.yml
+    # Strip the `127.0.0.1:` host-binding prefix on port mappings. On the dev
+    # laptop loopback-only is the safe default; on the lab VM the scanner +
+    # audit-worker reach services through the VM's private VPC IP, so we
+    # need the host ports bound on 0.0.0.0. Network-level safety comes from
+    # the firewall (lab_allow_scanners) which only admits the two scanner SAs.
+    sed -i 's/"127\.0\.0\.1:/"/g' /opt/hakuna-lab/docker-compose.lab.yml
     REFRESH
     chmod +x /opt/hakuna-lab/refresh.sh
+
+    # ── Compose env: satisfy interpolation for profiled services ───────────
+    # The `relay` service (under `profiles: [relay]`) references
+    # ${HAKUNA_AGENT_TOKEN:?...}. Compose evaluates env interpolation for
+    # ALL services at parse time, even profiled ones, so the var must be set
+    # even though we never start that service in the cloud. The other relay
+    # vars use `:-` defaults and don't need to be set.
+    cat > /opt/hakuna-lab/.env <<ENVFILE
+    HAKUNA_AGENT_TOKEN=unused-relay-not-started-in-cloud-lab
+    ENVFILE
 
     # ── First-time refresh + build + up ─────────────────────────────────────
     /opt/hakuna-lab/refresh.sh

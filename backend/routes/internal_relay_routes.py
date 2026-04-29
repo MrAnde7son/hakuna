@@ -123,12 +123,17 @@ class CloudRegistration(BaseModel):
     name: str
 
 
-def _ensure_cloud_relay_for_org(db: Session, org: Organization) -> RelayAgent:
+def ensure_cloud_relay_for_org(db: Session, org: Organization) -> RelayAgent:
     """Idempotently create the cloud_scanner row for ``org``.
 
     One row per org. Token fields are set to a sentinel — the cloud relay
     authenticates via INTERNAL_SHARED_SECRET on /ws/relay/cloud, not a
     bearer token, so token_hash never gets verified for these rows.
+
+    Called both by the cloud-relay registrations poll (production path,
+    where the GCP container picks up the row and opens a WebSocket) and by
+    the user-facing list_agents endpoint (so the row is visible in the UI
+    even in environments where no cloud relay is deployed).
     """
     existing = (
         db.query(RelayAgent)
@@ -163,7 +168,7 @@ async def cloud_relay_registrations(
     """Return cloud_scanner agent IDs for every org. Auto-provisions missing rows."""
     out: list[dict[str, Any]] = []
     for org in db.query(Organization).all():
-        agent = _ensure_cloud_relay_for_org(db, org)
+        agent = ensure_cloud_relay_for_org(db, org)
         out.append({
             "agent_id": agent.id,
             "org_id": org.id,

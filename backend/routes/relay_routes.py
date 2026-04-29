@@ -16,7 +16,8 @@ from sqlalchemy.orm import Session
 from core.database import get_db
 from core.auth import get_current_user, require_auth
 from core.time_utils import iso_utc
-from models.models import RelayAgent, Integration
+from models.models import Organization, RelayAgent, Integration
+from routes.internal_relay_routes import ensure_cloud_relay_for_org
 from services.relay_broker import get_relay_broker
 
 logger = logging.getLogger(__name__)
@@ -68,6 +69,7 @@ def _agent_to_dict(agent: RelayAgent, integration_count: int = 0) -> dict:
     return {
         "id": agent.id,
         "name": agent.name,
+        "relay_type": agent.relay_type or "agent",
         "status": agent.status or "disconnected",
         "last_seen_at": iso_utc(agent.last_seen_at),
         "agent_version": agent.agent_version,
@@ -81,6 +83,16 @@ def _agent_to_dict(agent: RelayAgent, integration_count: int = 0) -> dict:
     }
 
 
+def _reject_if_managed(agent: RelayAgent, action: str) -> None:
+    """Cloud-managed relays are auto-provisioned and operated by Hakuna;
+    customers can't rename them, rotate their token, or delete them."""
+    if agent.relay_type == "cloud_scanner":
+        raise HTTPException(
+            400,
+            f"Cannot {action} the Hakuna Cloud Scanner — it's a managed relay.",
+        )
+
+
 # ─────────────────────────────────────────────────────────
 # REST Endpoints
 # ─────────────────────────────────────────────────────────
@@ -92,6 +104,16 @@ async def list_agents(
 ):
     """List all relay agents for the current org."""
     org_id = current_user.org_id
+
+    # Auto-provision the managed cloud_scanner row so it's always visible —
+    # in environments where the GCP cloud-relay container isn't polling
+    # /internal/cloud-relay/registrations, the row would otherwise never
+    # exist and the user would have no way to know external scans are
+    # supposed to be possible.
+    org = db.query(Organization).filter(Organization.id == org_id).first()
+    if org is not None:
+        ensure_cloud_relay_for_org(db, org)
+
     agents = db.query(RelayAgent).filter(RelayAgent.org_id == org_id).order_by(RelayAgent.created_at.desc()).all()
 
     broker = get_relay_broker()
@@ -178,6 +200,7 @@ async def update_agent(
     ).first()
     if not agent:
         raise HTTPException(404, "Relay agent not found")
+    _reject_if_managed(agent, "modify")
 
     if body.name is not None:
         agent.name = body.name
@@ -206,6 +229,7 @@ async def delete_agent(
     ).first()
     if not agent:
         raise HTTPException(404, "Relay agent not found")
+    _reject_if_managed(agent, "delete")
 
     # Check for linked integrations
     linked = db.query(Integration).filter(Integration.relay_agent_id == agent_id).count()
@@ -235,6 +259,7 @@ async def rotate_token(
     ).first()
     if not agent:
         raise HTTPException(404, "Relay agent not found")
+    _reject_if_managed(agent, "rotate the token for")
 
     raw_token = TOKEN_PREFIX + secrets.token_urlsafe(48)
     agent.token_hash = _pwd_ctx.hash(raw_token)
@@ -266,6 +291,7 @@ async def get_setup_instructions(
     ).first()
     if not agent:
         raise HTTPException(404, "Relay agent not found")
+    _reject_if_managed(agent, "fetch setup instructions for")
 
     relay_image = os.environ.get("HAKUNA_RELAY_IMAGE", DEFAULT_RELAY_IMAGE)
 

@@ -223,7 +223,8 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
     }).catch(console.error)
     getIntegrationSchema().then(s => setSchema(s)).catch(console.error)
     getTargetModels().then(setTargetModels).catch(console.error)
-    getRelayAgents().then(setRelayAgents).catch(() => {})
+    // Cloud scanner is for external audits, not integration relay traffic.
+    getRelayAgents().then(rs => setRelayAgents((rs || []).filter(r => r.relay_type !== 'cloud_scanner'))).catch(() => {})
   }, [])
 
   // If editing, load existing integration
