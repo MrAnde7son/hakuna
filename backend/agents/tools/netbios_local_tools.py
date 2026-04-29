@@ -175,6 +175,7 @@ _NETBIOS_LOCAL_TOOL_NAMES = [
     "llmnr_probe",
     "mdns_probe",
     "emit_finding",
+    "emit_edge",
     "get_asset_profile",
     "read_scratchpad", "write_scratchpad",
     "request_clarification",

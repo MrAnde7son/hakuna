@@ -49,3 +49,12 @@ For each top-10 CVE candidate from the correlator, reach a verdict before emitti
 - Never let Tier 3 probes crowd out a Tier 1 emit.
 
 Call `emit_finding` with `protocol="wmi"` and `mission="exposure_audit"`.
+
+### Attack-graph edges (emit alongside findings)
+After a Tier-1 emit, also call `emit_edge` once per kill-chain capability you proved. The Coordinator chains these into multi-hop paths.
+- **AlwaysInstallElevated = 1** (Tier-1 #2) → `emit_edge(edge_type="local_root", src_asset_id=<this host>, dst_asset_id=<this host>, properties={"method": "always_install_elevated"}, confidence="confirmed", enabled_by_finding_id=<id>)`. Any user-context process gets SYSTEM via MSI — local privesc proven.
+- **Unquoted service path with writable intermediate** (Tier-1 #3) → `emit_edge(edge_type="local_root", src_asset_id=<this host>, dst_asset_id=<this host>, properties={"method": "unquoted_service_path", "service": "<name>", "writable_path": "<path>"}, confidence="confirmed", enabled_by_finding_id=<id>)`.
+- **SeImpersonate-class service writable on disk** (Tier-1 #4) → `emit_edge(edge_type="local_root", src_asset_id=<this host>, dst_asset_id=<this host>, properties={"method": "service_binary_writable", "service": "<name>", "account": "<LocalSystem|NetworkService|LocalService>"}, confidence="confirmed", enabled_by_finding_id=<id>)`.
+- **Local Administrators bloat with non-tier-0 principals on a DC** (Tier-1 #5) → `emit_edge(edge_type="user_to_asset", dst_asset_id=<this DC>, properties={"auth": "local_admin", "principal": "<name>"}, confidence="confirmed", enabled_by_finding_id=<id>)`. Skip on non-DCs unless the principal is "Authenticated Users" / "Domain Users" — that's still chain-relevant.
+
+Don't emit edges for Tier 2/3 hygiene. Don't emit a `local_root` edge from EOL-OS or unpatched-CVE findings alone — those are *preconditions*, not proven privesc; the Coordinator stitches them via separate `cve_on_asset` edges already written by the VM scanner.

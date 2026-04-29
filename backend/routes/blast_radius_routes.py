@@ -23,6 +23,12 @@ from services.blast_radius import (
     AD_ACCESS_GROUPS, LOCAL_ACCESS_GROUPS, LINUX_ACCESS_GROUPS,
     LINUX_OS_HINTS, RISKY_PORTS, GROUP_ACCESS_LABELS,
 )
+from services.asset_edges_query import (
+    REACHABILITY_EDGE_TYPES,
+    internet_facing_assets,
+    list_outbound_edges,
+    reachable_targets,
+)
 
 router = APIRouter()
 
@@ -60,14 +66,30 @@ def get_blast_radius_bulk(
     all_asset_ids = list(asset_map.keys())
     ip_to_asset_id = {a.ip: a.id for a in all_assets if a.ip}
 
-    # Pre-fetch all inventory data scoped by asset_id (not scan_id)
-    all_conns = db.query(InventoryNetConn).filter(
-        InventoryNetConn.asset_id.in_(all_asset_ids),
-        InventoryNetConn.state.in_(["ESTABLISHED", "established"]),
-    ).all()
-    conns_by_asset = {}
-    for c in all_conns:
-        conns_by_asset.setdefault(c.asset_id, []).append(c)
+    # Pre-resolve org for edge queries (every asset in the result set
+    # belongs to one or more orgs — pick the first scan's org).
+    asset_org_map: dict[int, int] = {}
+    for a in all_assets:
+        if a.scan_id is None:
+            continue
+        s = db.query(Scan.org_id).filter(Scan.id == a.scan_id).first()
+        if s:
+            asset_org_map[a.id] = s[0]
+
+    # Phase 2 read path: pull reachable targets from the unified edge
+    # graph (asset_to_asset_port + asset_to_asset_auth + legacy types),
+    # rather than re-querying InventoryNetConn here. The materializer
+    # has already deduplicated and capped the netconn graph.
+    reachable_via_edges: dict[int, set[int]] = {}
+    if org_ids is not None:
+        for oid in org_ids:
+            scoped = [aid for aid in all_asset_ids if asset_org_map.get(aid) == oid]
+            if not scoped:
+                continue
+            for src, targets in reachable_targets(
+                db, org_id=oid, src_asset_ids=scoped,
+            ).items():
+                reachable_via_edges.setdefault(src, set()).update(targets)
 
     all_logons = db.query(InventoryLoggedOn).filter(
         InventoryLoggedOn.asset_id.in_(all_asset_ids),
@@ -155,13 +177,12 @@ def get_blast_radius_bulk(
                     schtask_priv_assets.add(t.asset_id)
                     break
 
-    # Pre-fetch AssetRelationship edges for reachable asset calculation
-    all_rels = db.query(AssetRelationship).filter(
-        AssetRelationship.source_asset_id.in_(all_asset_ids),
-    ).all()
+    # AssetRelationship edges that don't fit the unified reachability
+    # taxonomy but are still meaningful (knowledge-graph infra hops).
+    # Cheaper to skip — the unified edge query above already covers
+    # `resolves_to` / `alias_of`. Kept as an empty dict so the loop
+    # below preserves shape.
     rels_by_asset: dict[int, list] = {}
-    for r in all_rels:
-        rels_by_asset.setdefault(r.source_asset_id, []).append(r)
 
     results = {}
 
@@ -174,17 +195,13 @@ def get_blast_radius_bulk(
         group_access_exposed = False
         seen_users = set()
 
-        # 1. Network connections to other known assets
-        for conn in conns_by_asset.get(asset_id, []):
-            if conn.remote_addr and conn.remote_addr in ip_to_asset_id:
-                dst_id = ip_to_asset_id[conn.remote_addr]
-                if dst_id != asset_id:
-                    reachable.add(dst_id)
-
-        # 1b. AssetRelationship edges (DNS, alias, integration links)
-        for rel in rels_by_asset.get(asset_id, []):
-            if rel.target_asset_id != asset_id:
-                reachable.add(rel.target_asset_id)
+        # 1. Reachable assets via unified edge graph (asset_to_asset_port,
+        # asset_to_asset_auth, legacy connects_to / member_of_domain /
+        # trusts_domain / shares_credential_with / runs_as_principal,
+        # and infra resolves_to / alias_of).
+        for dst_id in reachable_via_edges.get(asset_id, ()):
+            if dst_id != asset_id:
+                reachable.add(dst_id)
 
         # 2. Privileged users logged on
         for logon in logons_by_asset.get(asset_id, []):
@@ -490,28 +507,39 @@ def get_blast_radius(
             if not cur:
                 continue
 
-            # 1. Established network connections to other known assets
-            for conn in db.query(InventoryNetConn).filter(
-                InventoryNetConn.asset_id == cur_id,
-                InventoryNetConn.state.in_(["ESTABLISHED", "established"]),
-            ).all():
-                if not conn.remote_addr or conn.remote_addr not in ip_to_asset_id:
-                    continue
-                dst_id = ip_to_asset_id[conn.remote_addr]
-                if dst_id == cur_id:
-                    continue
-                dst = asset_map.get(dst_id)
-                if not dst:
-                    continue
-                add_node(f"asset-{dst_id}", "asset", _asset_node_data(dst))
-                add_edge(
-                    f"e-net-{cur_id}-{dst_id}-{conn.remote_port}",
-                    f"asset-{cur_id}", f"asset-{dst_id}",
-                    "network_connection", f":{conn.remote_port}",
-                )
-                if dst_id not in visited_assets:
-                    visited_assets.add(dst_id)
-                    next_queue.append(dst_id)
+            # 1. Reachable assets via the unified edge graph (Phase 2).
+            # Pulls `asset_to_asset_port` (materialized from netconns)
+            # plus legacy `connects_to`. Per-edge label encodes the
+            # port so the UI keeps the ":<port>" affordance.
+            cur_org = (
+                db.query(Scan.org_id)
+                .filter(Scan.id == cur.scan_id)
+                .scalar()
+                if cur.scan_id else None
+            )
+            if cur_org:
+                edges_out = list_outbound_edges(
+                    db, org_id=cur_org, src_asset_ids=[cur_id],
+                    edge_types=["asset_to_asset_port", "connects_to"],
+                ).get(cur_id, [])
+                for rel in edges_out:
+                    dst_id = rel.target_asset_id
+                    if not dst_id or dst_id == cur_id:
+                        continue
+                    dst = asset_map.get(dst_id)
+                    if not dst:
+                        continue
+                    props = rel.properties or {}
+                    port = props.get("port") or props.get("remote_port") or "?"
+                    add_node(f"asset-{dst_id}", "asset", _asset_node_data(dst))
+                    add_edge(
+                        f"e-net-{cur_id}-{dst_id}-{port}",
+                        f"asset-{cur_id}", f"asset-{dst_id}",
+                        "network_connection", f":{port}",
+                    )
+                    if dst_id not in visited_assets:
+                        visited_assets.add(dst_id)
+                        next_queue.append(dst_id)
 
             # 2. Privileged users currently logged on (credential exposure)
             for logon in db.query(InventoryLoggedOn).filter(
@@ -627,11 +655,22 @@ def get_blast_radius(
         queue = next_queue
 
     # ── 5b. Follow infrastructure relationships (DNS → cloud workload) ──
+    # Phase 2: filter out the unified-edge families already rendered as
+    # network_connection (step 1) or auth/coerce edges so they don't
+    # surface twice in the graph view.
+    _INFRA_EXCLUDED = {
+        "asset_to_asset_port", "asset_to_asset_auth",
+        "asset_to_asset_coerce", "user_to_asset",
+        "internet_to_asset", "cve_on_asset",
+        "connects_to", "shares_credential_with",
+        "runs_as_principal", "trusts_domain", "member_of_domain",
+    }
     infra_visited = set()
     try:
         for aid in list(visited_assets):
             for rel in db.query(AssetRelationship).filter(
                 AssetRelationship.source_asset_id == aid,
+                ~AssetRelationship.relationship_type.in_(_INFRA_EXCLUDED),
             ).all():
                 tgt_id = rel.target_asset_id
                 if tgt_id in visited_assets or tgt_id in infra_visited:

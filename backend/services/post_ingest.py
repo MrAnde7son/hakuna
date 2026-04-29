@@ -191,6 +191,16 @@ def finalize_scan(
         db, "Threat intel enrichment", lambda: _enrich_threat_intel(db, scan_id)
     )
 
+    # 6b. Mirror KEV-flagged findings into the unified edge graph as
+    # `cve_on_asset` anchors. Must run after threat-intel enrichment
+    # (which is what flips `Finding.is_kev`). Idempotent — re-runs
+    # only update last_seen_at on existing edges.
+    if org_id:
+        results["cve_edges"] = _step(
+            db, "KEV cve_on_asset edges",
+            lambda: _emit_kev_cve_edges(db, scan_id, org_id),
+        )
+
     # 7. TTP matching
     results["ttp"] = _step(
         db, "TTP matching", lambda: _match_ttps(db, scan_id)
@@ -230,6 +240,18 @@ def finalize_scan(
             lambda: _extract_inventory_edges(db, org_id, scan_id),
         )
 
+    # 9.56. Unified-edge materialization from inventory (Phase 2 of the
+    # Cross-Scan Chain Coordinator). Emits asset_to_asset_port /
+    # user_to_asset / asset_to_asset_auth using the closed taxonomy in
+    # `models.asset_edges`. Complementary to step 9.55 — both write to
+    # `asset_relationships`; the Coordinator and the new blast-radius
+    # read path consume the unified families.
+    if org_id:
+        results["inventory_unified_edges"] = _step(
+            db, "Inventory unified edges",
+            lambda: _materialize_inventory_unified_edges(db, org_id, scan_id),
+        )
+
     # 9.6. Cross-finding correlation — dispatched as a background job
     # (CVE corroboration + attack-path BFS + up to 50 LLM narrations).
     # Runs async so multi-scan ingests don't serialise on one slow run,
@@ -238,6 +260,17 @@ def finalize_scan(
         results["finding_correlation"] = _step(
             db, "Cross-finding correlation (dispatched)",
             lambda: _correlate_findings(db, org_id),
+        )
+
+    # 9.65. Chain Coordinator (Phase 3) — dispatched as a background job
+    # alongside correlation. Reads the unified edge graph, enumerates
+    # hypotheses, dispatches probes, and emits ValidatedChain findings
+    # on closure. Same per-org debounce shape as correlation so a
+    # multi-scan ingest collapses to a single tick.
+    if org_id:
+        results["chain_coordinator"] = _step(
+            db, "Chain coordinator (dispatched)",
+            lambda: _run_chain_coordinator(db, org_id, scan_id),
         )
 
     # 10. EASM enrichment
@@ -532,6 +565,14 @@ def _enrich_threat_intel(db, scan_id):
     if result["enriched"]:
         logger.info("Threat intel enrichment: %d findings enriched", result["enriched"])
     return result
+
+
+def _emit_kev_cve_edges(db, scan_id, org_id):
+    from services.asset_edges import write_kev_cve_edges_for_scan
+    written = write_kev_cve_edges_for_scan(db, org_id=org_id, scan_id=scan_id)
+    if written:
+        logger.info("KEV cve_on_asset edges: %d upserted for scan %s", written, scan_id)
+    return {"edges_upserted": written}
 
 
 def _match_ttps(db, scan_id):
@@ -1090,10 +1131,71 @@ def _correlate_findings(db, org_id):
     return {"dispatched": True, "job_id": job.id}
 
 
+def _run_chain_coordinator(db, org_id, scan_id):
+    """Dispatch a single Chain Coordinator tick as a background job.
+
+    Mirrors `_correlate_findings`: per-org debounce so EASM's multi-batch
+    polling and overlapping scan uploads collapse to one tick. Coordinator
+    reads the unified edge graph directly — it does not block on the
+    correlation job's output, and the two can run concurrently.
+
+    Returns {dispatched, reason?, job_id?} for pipeline logging.
+    """
+    from datetime import datetime, timedelta
+    from services.job_manager import dispatch, list_jobs
+    from core.database import SessionLocal
+
+    job_name = f"chain_coordinator_org{org_id}"
+    debounce = timedelta(seconds=60)
+    now = datetime.utcnow()
+
+    for j in list_jobs(limit=50):
+        if j.get("name") != job_name:
+            continue
+        status = j.get("status")
+        if status in ("pending", "running"):
+            logger.info(
+                "org=%d chain_coordinator already %s (job=%s) — skipping dispatch",
+                org_id, status, j.get("job_id"),
+            )
+            return {"dispatched": False, "reason": "already_running"}
+        completed_at = j.get("completed_at")
+        if completed_at:
+            try:
+                ts = datetime.fromisoformat(completed_at)
+                if now - ts < debounce:
+                    logger.info(
+                        "org=%d chain_coordinator ran %.0fs ago — skipping dispatch",
+                        org_id, (now - ts).total_seconds(),
+                    )
+                    return {"dispatched": False, "reason": "debounced"}
+            except (ValueError, TypeError):
+                pass
+        break
+
+    def _run():
+        bg_db = SessionLocal()
+        try:
+            from services.chain_coordinator import tick
+            return tick(bg_db, org_id=org_id, scan_id=scan_id)
+        finally:
+            bg_db.close()
+
+    job = dispatch(job_name, _run, timeout=600)
+    logger.info("org=%d chain_coordinator dispatched as job=%s", org_id, job.id)
+    return {"dispatched": True, "job_id": job.id}
+
+
 def _extract_inventory_edges(db, org_id, scan_id):
     """Materialize AssetRelationship edges from Inventory* tables."""
     from services.inventory_graph_extractor import extract_inventory_edges
     return extract_inventory_edges(db, org_id, scan_id)
+
+
+def _materialize_inventory_unified_edges(db, org_id, scan_id):
+    """Materialize unified-taxonomy edges (Phase 2)."""
+    from services.inventory_edge_materializer import materialize_inventory_edges
+    return materialize_inventory_edges(db, org_id=org_id, scan_id=scan_id)
 
 
 def _llm_validate_findings(db, org_id, scan_id):

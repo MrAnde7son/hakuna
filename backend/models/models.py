@@ -390,26 +390,44 @@ class AssetObservation(Base):
 
 
 class AssetRelationship(Base):
-    """Directional edge between two assets (e.g. DNS record → cloud workload)."""
+    """Unified edge in the asset graph.
+
+    Originally infrastructure-only (DNS resolves_to, shared certificate, …).
+    Promoted in migration 054 to also carry reachability, exploit, and
+    kill-chain edges from EASM, the VM scanner, audit agents, and parsers
+    — see `docs/cross-scan-chain-coordinator-plan.md`.
+
+    `source_asset_id` / `target_asset_id` are nullable to allow pseudo-
+    endpoints: `NULL → asset` for `internet_to_asset`, `asset → NULL` for
+    `principal_to_domain` style sinks.
+    """
     __tablename__ = "asset_relationships"
     __table_args__ = (
-        UniqueConstraint("org_id", "source_asset_id", "target_asset_id", "relationship_type",
-                         name="uq_asset_relationship"),
+        # Note: the actual uniqueness constraint lives in DB as the
+        # `uq_asset_edge` partial unique index (created in migration 054)
+        # because Postgres UNIQUE treats NULLs as distinct, which would
+        # let duplicate `(NULL, asset, internet_to_asset, "")` rows in.
         Index("ix_asset_rel_source", "source_asset_id"),
         Index("ix_asset_rel_target", "target_asset_id"),
+        Index("ix_asset_edge_type", "org_id", "relationship_type"),
+        Index("ix_asset_edge_source_system", "source_system", "last_seen_at"),
     )
 
     id = Column(Integer, primary_key=True, index=True)
     org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
-    source_asset_id = Column(Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=False)
-    target_asset_id = Column(Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=False)
-    relationship_type = Column(String, nullable=False)   # resolves_to, alias_of, hosts_service, runs_technology, shares_certificate, same_jarm_cluster, same_ip, exposes_endpoint, authenticates_via
-    confidence = Column(String, default="high")           # high / medium / low
+    source_asset_id = Column(Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=True)
+    target_asset_id = Column(Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=True)
+    relationship_type = Column(String, nullable=False)   # see models/asset_edges.EdgeType
+    confidence = Column(String, default="high")           # confirmed / high / medium / low
     source_detail = Column(JSON, default=dict)            # provenance: {connector, dns_record_type}
     weight = Column(Float, default=1.0)                  # edge weight for graph algorithms (0.0-1.0)
-    properties = Column(JSON, default=dict)              # edge-specific metadata (e.g. shared cert fingerprint, JARM hash)
+    properties = Column(JSON, default=dict)              # edge-specific metadata (port, pipe name, principal, …)
+    properties_hash = Column(String(64), nullable=False, default="")  # sha256 of canonical properties — part of the unique key
+    enabled_by_findings = Column(JSON, default=list)     # finding ids that justify the edge
+    source_system = Column(String(64), nullable=True, index=True)  # easm | vm_scanner | audit_agent | inventory | knowledge_graph | parser
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    last_seen_at = Column(DateTime, default=datetime.utcnow)
 
     source_asset = relationship("Asset", foreign_keys=[source_asset_id], back_populates="outbound_relationships")
     target_asset = relationship("Asset", foreign_keys=[target_asset_id], back_populates="inbound_relationships")
@@ -474,6 +492,14 @@ class AttackPath(Base):
     narrative = Column(Text, nullable=True)
     recommended_mitigations = Column(JSON, nullable=True)
     # [{finding_id, finding_name, severity, chains_broken, action}]
+
+    # Cross-Scan Chain Coordinator link — set when the Coordinator
+    # validated this path end-to-end (internet → crown-jewel) and emitted
+    # a `ValidatedChain` Finding summarizing it. NULL for paths produced
+    # only by the legacy `finding_correlator` BFS.
+    validated_chain_finding_id = Column(
+        Integer, ForeignKey("findings.id", ondelete="SET NULL"), nullable=True, index=True,
+    )
 
 
 class ScannerEventCursor(Base):
@@ -1922,6 +1948,86 @@ class AgentApproval(Base):
 
     run = relationship("AgentRun")
     agent = relationship("Agent")
+
+
+class AgentLead(Base):
+    """Observation emitted by an audit agent it didn't have the budget to pursue.
+
+    SMB audit ends saying "lsarpc reachable on three other DCs in this
+    domain" — that's a lead. The Cross-Scan Chain Coordinator
+    (`services.chain_coordinator`, `lead_followup` pattern) consumes
+    open leads on the next tick and dispatches the suggested probe.
+
+    Distinct from `AgentRun.trace`: leads outlive the run, carry an
+    explicit dispatch hint (protocol + mission), and are queryable
+    across ticks.
+    """
+    __tablename__ = "agent_leads"
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    agent_run_id = Column(Integer, ForeignKey("agent_runs.id"), nullable=True)
+    # Resolved asset id when the agent passed one. Falls back to
+    # `target_asset_hint` (hostname/ip) when only the hint is known —
+    # the Coordinator resolves the hint to an asset row at consume time.
+    target_asset_id = Column(Integer, ForeignKey("assets.id"), nullable=True, index=True)
+    target_asset_hint = Column(String(255), nullable=True)
+    reason = Column(Text, nullable=False)
+    suggested_protocol = Column(String(64), nullable=False)
+    suggested_mission = Column(String(64), nullable=False, default="exposure_audit")
+    properties = Column(JSON, default=dict)
+    # open → coordinator hasn't picked it up
+    # dispatched → coordinator queued an audit; consumed_by_scan_id points to it
+    # consumed → audit completed (informational; not enforced today)
+    # ignored → coordinator skipped it (e.g. asset already audited / cooldown)
+    status = Column(String(32), nullable=False, default="open")
+    consumed_by_scan_id = Column(Integer, ForeignKey("scans.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        Index("ix_agent_leads_org_status", "org_id", "status"),
+    )
+
+
+class CoordinatorPendingApproval(Base):
+    """Approval-gated chain-coordinator hypothesis awaiting an operator decision.
+
+    The `cred_found` pattern (and any other pattern marked
+    `requires_approval=True`) emits hypotheses that should not auto-fire.
+    The coordinator persists those here so the AttackPaths UI can
+    surface a "ready to validate" queue. Operator decisions flip
+    `status` to `approved` (the next coordinator tick dispatches it,
+    bypassing the approval gate) or `rejected` (terminal — never
+    re-enumerated for the same `(asset, pattern, protocol, mission)`
+    key until the row is removed).
+    """
+    __tablename__ = "coordinator_pending_approvals"
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=True, index=True)
+    pattern = Column(String(64), nullable=False)
+    protocol = Column(String(64), nullable=False)
+    mission = Column(String(64), nullable=False)
+    rationale = Column(Text, nullable=True)
+    score = Column(Float, default=0.0)
+    score_factors = Column(JSON, default=dict)
+    # pending → awaiting operator
+    # approved → operator OK'd; coordinator dispatches on next tick
+    # rejected → operator declined; not re-enumerated
+    # consumed → dispatch completed (informational)
+    status = Column(String(32), nullable=False, default="pending")
+    decided_by = Column(String(255), nullable=True)
+    decided_at = Column(DateTime, nullable=True)
+    consumed_by_scan_id = Column(Integer, ForeignKey("scans.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    last_seen_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        Index("ix_coord_pending_org_status", "org_id", "status"),
+        Index("ix_coord_pending_dedup", "org_id", "asset_id", "pattern", "protocol", "mission"),
+    )
 
 
 class CopilotConversation(Base):

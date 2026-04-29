@@ -84,6 +84,30 @@ class AutoTriggerRule:
     )
 
 
+# Discoverable registry of every ``auto_audit_*`` setting key. Both the
+# port-driven auto-trigger here and the chain coordinator's
+# `_org_setting_enables` consult this set; admins flip the value via
+# `Organization.settings[key] = True/False`. ``default`` is what
+# ``_rule_enabled_for_org`` falls back to when no explicit value is set.
+#
+# Adding a new family: register the key here AND wire it into either
+# ``AUTO_TRIGGER_RULES`` (port-driven) or
+# ``services.chain_coordinator._PROTOCOL_TO_SETTING`` (graph-driven).
+AUTO_AUDIT_SETTING_KEYS: dict[str, dict] = {
+    "auto_audit_anon":          {"default": True,  "description": "Anonymous protocol audits (SMB/SNMP/LDAP)."},
+    "auto_audit_datastore":     {"default": True,  "description": "Datastore exposure audits (MongoDB/Redis/Elastic/etc)."},
+    "auto_audit_ai":            {"default": True,  "description": "AI service exposure audits (Ollama/MCP/etc)."},
+    "auto_audit_anon_protocol": {"default": True,  "description": "Anonymous-protocol triage (FTP/Telnet/etc)."},
+    "auto_audit_ipmi":          {"default": True,  "description": "IPMI BMC exposure audits."},
+    "auto_audit_netbios":       {"default": True,  "description": "Local NetBIOS poisoning audits."},
+    "auto_audit_ot":            {"default": False, "description": "OT/ICS audits (requires per-asset consent)."},
+    # Coordinator-only keys. Default OFF — these dispatch credentialed
+    # or heavy work that operators should opt into explicitly.
+    "auto_audit_credentialed":  {"default": False, "description": "Credentialed mgmt-protocol audits (WMI/SSH) dispatched by the chain coordinator."},
+    "auto_audit_vm_rescan":     {"default": False, "description": "VM rescan markers requested by the chain coordinator's sbom_unpatched pattern."},
+}
+
+
 # Module-level rule registry. Order matters only when two rules match
 # the same (port, protocol) — first match wins. Keep it short and
 # explicit; no auto-derivation from ``AUDITS`` since not every audit

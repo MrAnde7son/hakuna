@@ -326,18 +326,23 @@ def _build_target_set(db: Session, org_id: int) -> dict[int, dict]:
     """
     result: dict[int, dict] = {}
 
-    # DC heuristic: edges from the inventory graph extractor pinpoint DCs.
+    # DC heuristic: legacy edges from `inventory_graph_extractor` pinpoint
+    # DCs. The unified `asset_to_asset_auth` (via=domain_trust) carries
+    # the same signal, but the legacy extractor still runs alongside the
+    # Phase 2 materializer, so reading either source is equivalent.
     dc_rows = db.execute(
         text("""
             SELECT DISTINCT ar.target_asset_id AS asset_id
             FROM asset_relationships ar
             WHERE ar.org_id = :org_id
               AND ar.relationship_type = 'member_of_domain'
+              AND ar.target_asset_id IS NOT NULL
             UNION
             SELECT DISTINCT ar.source_asset_id AS asset_id
             FROM asset_relationships ar
             WHERE ar.org_id = :org_id
               AND ar.relationship_type = 'trusts_domain'
+              AND ar.source_asset_id IS NOT NULL
         """),
         {"org_id": org_id},
     ).fetchall()
@@ -450,6 +455,10 @@ def _bfs_attack_chains(
             continue
         current_asset_id = current_chain[-1]["asset_id"]
 
+        # Phase 2: traverse the unified edge graph. Filter out edge
+        # types whose endpoints are pseudo (cve_on_asset / internet_to_asset
+        # / user_to_asset have NULL on one side) or whose semantics
+        # don't represent host→host hops.
         neighbors = db.execute(
             text("""
                 SELECT
@@ -468,6 +477,10 @@ def _bfs_attack_chains(
                          ELSE ar.source_asset_id END
                 WHERE ar.org_id = :org_id
                   AND (ar.source_asset_id = :aid OR ar.target_asset_id = :aid)
+                  AND ar.relationship_type NOT IN (
+                      'cve_on_asset', 'internet_to_asset',
+                      'user_to_asset', 'principal_to_domain'
+                  )
             """),
             {"org_id": org_id, "aid": current_asset_id},
         ).fetchall()
@@ -664,12 +677,12 @@ def _select_best_finding_for_edge(
     highest-severity live finding.
     """
     remote_port = None
-    if rel_type == "connects_to":
+    if rel_type in ("connects_to", "asset_to_asset_port"):
         props = properties or {}
         if isinstance(props, str):
             try: props = json.loads(props)
             except Exception: props = {}
-        remote_port = props.get("remote_port")
+        remote_port = props.get("remote_port") or props.get("port")
 
     if remote_port:
         # Port can be stored as a string ("445", "445/tcp") so compare as
@@ -759,8 +772,10 @@ def _describe_edge(
         except Exception:
             props = {}
 
-    if rel_type == "connects_to":
-        port = props.get("remote_port")
+    if rel_type in ("connects_to", "asset_to_asset_port"):
+        # `asset_to_asset_port` (Phase 1+2) carries the port in `port`,
+        # while the legacy `connects_to` edge stored it as `remote_port`.
+        port = props.get("remote_port") or props.get("port")
         service, quality = _describe_port(port)
         state = (props.get("state") or "").lower()
         state_lbl = f" ({state})" if state else ""
@@ -845,6 +860,34 @@ def _describe_edge(
         )
     if rel_type == "same_ip":
         return ("Both hostnames resolve to the same IP.", "inference")
+    if rel_type == "asset_to_asset_auth":
+        via = props.get("via") or "auth"
+        principal = props.get("principal")
+        if via == "domain_trust":
+            td = props.get("trusted_domain", "another domain")
+            direction = props.get("direction") or "trust"
+            return (
+                f"AD {direction} trust to {td} enables principal reuse.",
+                "identity",
+            )
+        if via == "shared_session" and principal:
+            return (
+                f"Shared session from principal '{principal}' bridges both hosts.",
+                "identity",
+            )
+        return (f"Auth-graph edge ({via}) bridges these hosts.", "identity")
+    if rel_type == "asset_to_asset_coerce":
+        pipe = props.get("pipe") or props.get("primitive") or "coerce primitive"
+        return (
+            f"Coercion edge — '{pipe}' reachable; attacker can force "
+            f"target authentication outbound to a relay.",
+            "identity",
+        )
+    if rel_type == "local_root":
+        return (
+            "Same-host privilege escalation collapses two hops into one.",
+            "identity",
+        )
     if rel_type == "entry":
         return ("Starting foothold.", "entry")
     return (f"Reachable via '{rel_type}' edge.", "reachability")

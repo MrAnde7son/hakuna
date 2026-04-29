@@ -75,6 +75,31 @@ output "easm_db_migration" {
   value       = "gcloud compute ssh hakuna-scanners --zone=${var.zone} --tunnel-through-iap --command='cd /opt/hakuna-scanners && sudo docker compose exec easm-api alembic upgrade head'"
 }
 
+output "lab_vm_ip" {
+  description = "Private IP of the lab VM. Point scanner / audit-worker E2E targets at this address. Empty when var.lab_enabled = false."
+  value       = try(google_compute_instance.lab[0].network_interface[0].network_ip, "")
+}
+
+output "lab_vm_ssh" {
+  description = "IAP SSH command for the lab VM."
+  value       = "gcloud compute ssh hakuna-lab --zone=${var.zone} --tunnel-through-iap"
+}
+
+output "lab_vm_logs" {
+  description = "Tail the lab VM startup log."
+  value       = "gcloud compute ssh hakuna-lab --zone=${var.zone} --tunnel-through-iap --command='sudo tail -f /var/log/startup-script.log'"
+}
+
+output "lab_vm_status" {
+  description = "Show lab container status."
+  value       = "gcloud compute ssh hakuna-lab --zone=${var.zone} --tunnel-through-iap --command='cd /opt/hakuna-lab && sudo docker compose -f docker-compose.lab.yml ps'"
+}
+
+output "lab_vm_refresh" {
+  description = "After editing lab files + terraform apply, run this to roll the new bundle onto the VM."
+  value       = "gcloud compute ssh hakuna-lab --zone=${var.zone} --tunnel-through-iap --command='sudo systemctl restart hakuna-lab'"
+}
+
 output "next_steps" {
   description = "What to do after terraform apply"
   value       = <<-EOT

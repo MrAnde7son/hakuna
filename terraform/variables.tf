@@ -158,6 +158,20 @@ variable "audit_worker_machine_type" {
   default     = "e2-small"
 }
 
+# ── Lab VM (intentionally vulnerable test targets) ────────────────────────────
+
+variable "lab_enabled" {
+  type        = bool
+  description = "Bring up the lab VM hosting docker-compose.lab.yml (DVWA, SMB, LDAP, SSH, SNMP, LocalStack, webapp, mysql, mongo, tomcat, etc.). Reachable from scanner + audit-worker VMs by internal IP. Off by default — flip on for E2E test passes, off when done. The lab is INTENTIONALLY VULNERABLE; do not leave it running."
+  default     = false
+}
+
+variable "lab_machine_type" {
+  type        = string
+  description = "Machine type for the lab VM. e2-standard-4 (4 vCPU / 16 GB) handles all twelve services concurrently."
+  default     = "e2-standard-4"
+}
+
 # ── Stripe billing ────────────────────────────────────────────────────────────
 
 variable "stripe_secret_key" {

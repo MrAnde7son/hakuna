@@ -38,6 +38,7 @@ from app.tasks.scoping import (
     build_stale_clause,
     build_target_scope,
     compose_where,
+    count_assets_in_scan_scope,
     load_scan_run_scope,
 )
 from app.runner.tools import (
@@ -828,8 +829,33 @@ def run_discovery_chain(self, org_id: str, scan_run_id: str | None = None) -> di
 async def _mark_failed(scan_run_id: str, error: str):
     sf = get_task_session()
     async with sf() as db:
-        await db.execute(
-            text("UPDATE scan_runs SET status = 'failed', finished_at = :now, error = :err WHERE id = :id"),
-            {"id": scan_run_id, "now": datetime.now(timezone.utc), "err": error},
-        )
+        # Best-effort partial-progress count: if upstream stages already
+        # populated assets before the failure, surface that on the UI
+        # instead of leaving assets_found at the default 0.
+        partial = None
+        try:
+            partial = await count_assets_in_scan_scope(db, scan_run_id)
+        except Exception:
+            logger.exception("scan_run=%s partial asset count failed", scan_run_id)
+
+        if partial is None:
+            await db.execute(
+                text("UPDATE scan_runs SET status = 'failed', finished_at = :now, error = :err WHERE id = :id"),
+                {"id": scan_run_id, "now": datetime.now(timezone.utc), "err": error},
+            )
+        else:
+            await db.execute(
+                text("""
+                    UPDATE scan_runs
+                    SET status = 'failed', finished_at = :now, error = :err,
+                        assets_found = :found
+                    WHERE id = :id
+                """),
+                {
+                    "id": scan_run_id,
+                    "now": datetime.now(timezone.utc),
+                    "err": error,
+                    "found": partial,
+                },
+            )
         await db.commit()

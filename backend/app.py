@@ -100,6 +100,7 @@ from routes.onboarding_routes import router as onboarding_router
 from routes.saml_routes import router as saml_router
 from routes.relay_routes import router as relay_router, ws_router as relay_ws_router
 from routes.blast_radius_routes import router as blast_radius_router
+from routes.chain_coordinator_routes import router as chain_coordinator_router
 from routes.asset_routes import router as asset_router
 from routes.finding_routes import router as finding_router, _finding_to_dict
 from routes.report_routes import router as report_router
@@ -333,6 +334,7 @@ app.include_router(saml_router)
 app.include_router(relay_router)
 app.include_router(relay_ws_router)
 app.include_router(blast_radius_router)
+app.include_router(chain_coordinator_router)
 app.include_router(asset_router)
 app.include_router(finding_router)
 app.include_router(report_router)
@@ -576,6 +578,11 @@ def _deferred_startup():
         start_maintenance_scheduler()
     except Exception as exc:
         logger.error("Lake maintenance scheduler failed to start: %s", exc)
+    try:
+        from services.inventory_edge_scheduler import start_scheduler as start_inv_edge_scheduler
+        start_inv_edge_scheduler()
+    except Exception as exc:
+        logger.error("Inventory edge scheduler failed to start: %s", exc)
     # Schedule threat intel auto-update every 24 hours
     from threat_intel.intel_updater import update_intel
     from apscheduler.schedulers.background import BackgroundScheduler as _BGScheduler

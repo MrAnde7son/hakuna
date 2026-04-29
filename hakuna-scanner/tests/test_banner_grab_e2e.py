@@ -26,21 +26,29 @@ def _mk_session_factory(executed: list, fetched_ids: dict[str, int]):
 
     ``executed`` collects every (sql_text_str, params_dict) tuple so
     assertions can inspect the SQL pipeline.
-    ``fetched_ids`` maps hostname → asset_id for the SELECT-by-hostname
-    lookup; missing hostnames simulate the "asset disappeared" race and
-    skip the UPDATE/INSERT.
+    ``fetched_ids`` maps hostname → asset_id for the bulk
+    ``SELECT id, hostname FROM assets ... WHERE hostname = ANY(:hosts)``
+    lookup; hostnames in the input that aren't in this map simulate the
+    "asset disappeared" race and skip the UPDATE/INSERT.
     """
     db = MagicMock()
 
     async def _execute(sql, params=None):
         sql_str = str(sql).strip()
         executed.append((sql_str, params or {}))
-        if "SELECT id FROM assets" in sql_str:
-            host = (params or {}).get("host")
-            row = MagicMock()
-            row.id = fetched_ids.get(host)
+        if "SELECT id, hostname FROM assets" in sql_str:
+            requested = (params or {}).get("hosts") or []
+            rows = []
+            for host in requested:
+                aid = fetched_ids.get(host)
+                if aid is None:
+                    continue
+                row = MagicMock()
+                row.id = aid
+                row.hostname = host
+                rows.append(row)
             cursor = MagicMock()
-            cursor.fetchone.return_value = row if row.id is not None else None
+            cursor.fetchall.return_value = rows
             return cursor
         cursor = MagicMock()
         cursor.fetchone.return_value = None
@@ -136,13 +144,16 @@ async def test_runs_all_six_modules_in_parallel_and_persists():
     # Two banners are severity-tagged (RDP + SMTP) → 2 finding rows.
     assert result["findings_created"] == 2
 
-    # SQL pipeline shape: per-asset SELECT, then UPDATE, then optional INSERT.
-    select_count = sum(1 for s, _ in executed if "SELECT id FROM assets" in s)
+    # SQL pipeline shape: one bulk SELECT (ANY-array), one UPDATE
+    # executemany over all hosts, one INSERT executemany over all
+    # severity-tagged banners. Three roundtrips total — the previous
+    # per-asset loop produced 3*N+1.
+    select_count = sum(1 for s, _ in executed if "SELECT id, hostname FROM assets" in s)
     update_count = sum(1 for s, _ in executed if "UPDATE assets" in s)
     insert_count = sum(1 for s, _ in executed if "INSERT INTO findings" in s)
-    assert select_count == 3
-    assert update_count == 3
-    assert insert_count == 2
+    assert select_count == 1
+    assert update_count == 1
+    assert insert_count == 1
 
 
 @pytest.mark.asyncio
@@ -231,6 +242,9 @@ async def test_per_host_merge_preserves_multi_module_hits():
     assert result["total_banners"] == 2
     update_calls = [(s, p) for s, p in executed if "UPDATE assets" in s]
     assert len(update_calls) == 1
-    # Both banners must be in the JSON payload sent to UPDATE.
-    payload = update_calls[0][1].get("banners")
+    # The single executemany call carries a list of param dicts —
+    # one per host. Both banners must be in the merged payload.
+    params = update_calls[0][1]
+    assert isinstance(params, list) and len(params) == 1
+    payload = params[0]["banners"]
     assert "ssh" in payload and "postgres" in payload

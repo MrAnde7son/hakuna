@@ -1319,12 +1319,18 @@ function AuditScanPanel({
   const hasTargetSource = tab === 'manual'
     ? (manualTargets.length > 0 && !manualCountExceedsCap)
     : selectedAssets.size > 0
-  // Protocols whose missions can run without a credential (SMB null sessions,
-  // SNMP default-community sweeps).
-  // Must match backend/services/audit_runner.py::_ANON_CAPABLE_PROTOCOLS.
-  const credentialOptional = selectedProtocol === 'smb' || selectedProtocol === 'snmp'
+  // Anonymous-capability is declared per-audit on the backend via
+  // ProtocolAudit.safety_class (see backend/agents/audit_registry.py). The
+  // server's dispatch guard is `safety_class != "credentialed"`; mirror that
+  // here so any audit registered as anon_* / ot_* unlocks the Run button
+  // without a credential, and credentialed audits surface a clear reason
+  // (see the helper text under the credential field below).
+  const credentialOptional = !!currentProtocol
+    && currentProtocol.safety_class
+    && currentProtocol.safety_class !== 'credentialed'
+  const credentialMissing = !credentialOptional && !credentialId
   const canStart = !!selectedProtocol && !!selectedMission
-    && (credentialOptional || !!credentialId)
+    && !credentialMissing
     && !!relayAgentId && hasTargetSource && !scanning && !quotaExhausted
 
   const handleCreateCredential = async (data) => {
@@ -1512,6 +1518,17 @@ function AuditScanPanel({
           </button>
         </div>
       </AuditRow>
+
+      {credentialMissing && !showCreateCred && (
+        <div style={{
+          marginTop: -4, marginBottom: 10, marginLeft: 90,
+          fontSize: 11, color: '#dc2626',
+        }}>
+          {eligibleCredentials.length === 0
+            ? 'This audit requires a credential — none are configured for this protocol. Click + New to add one.'
+            : 'This audit requires a credential. Pick one from the list or click + New.'}
+        </div>
+      )}
 
       {showCreateCred && (
         <AuditInlineCredForm

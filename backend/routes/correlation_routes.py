@@ -256,6 +256,7 @@ async def list_attack_paths(
             SELECT ap.id, ap.title, ap.severity, ap.steps, ap.chain_length, ap.created_at,
                    ap.narrative, ap.recommended_mitigations,
                    ap.entry_reason, ap.target_reason, ap.score, ap.score_breakdown,
+                   ap.validated_chain_finding_id,
                    entry_a.hostname as entry_hostname, target_a.hostname as target_hostname
             FROM attack_paths ap
             LEFT JOIN assets entry_a ON entry_a.id = ap.entry_asset_id
@@ -285,6 +286,7 @@ async def list_attack_paths(
             "score_breakdown": _jsonify(row.score_breakdown),
             "narrative": row.narrative,
             "recommended_mitigations": _jsonify(row.recommended_mitigations),
+            "validated_chain_finding_id": row.validated_chain_finding_id,
             "created_at": _iso(row.created_at),
         }
         for row in result.fetchall()
@@ -342,6 +344,7 @@ async def get_attack_path(
         "score_breakdown": _jsonify(row.score_breakdown),
         "narrative": row.narrative,
         "recommended_mitigations": _jsonify(row.recommended_mitigations),
+        "validated_chain_finding_id": getattr(row, "validated_chain_finding_id", None),
         "created_at": _iso(row.created_at),
     }
 

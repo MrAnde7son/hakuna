@@ -543,6 +543,8 @@ _SMB_TOOL_NAMES = [
     "correlate_software_to_cves",
     # Shared
     "emit_finding",
+    "emit_edge",
+    "emit_lead",
     "get_asset_profile",
     "read_scratchpad", "write_scratchpad",
     "request_clarification",

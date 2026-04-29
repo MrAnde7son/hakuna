@@ -429,6 +429,7 @@ _SHARED_TOOL_NAMES = [
     "correlate_software_to_cves",
     # Shared
     "emit_finding",
+    "emit_edge",
     "get_asset_profile",
     "read_scratchpad", "write_scratchpad",
     "request_clarification",

@@ -50,6 +50,7 @@ from app.tasks.scoping import (
     build_stale_clause,
     build_target_scope,
     compose_where,
+    count_assets_in_scan_scope,
 )
 
 # Batch sizes tuned for 10k+ host scans. Each batch runs as an independent
@@ -620,8 +621,12 @@ async def _do_protocol_probe(sf, org_id: str, target_scope: str | None = None) -
     IoT, and AI infrastructure. Creates critical/high findings for
     internet-exposed industrial protocols.
     """
+    # `apply_stale=True` (matching tlsx/httpx/kiterunner) so retry waves
+    # after a SoftTimeLimitExceeded skip already-probed assets via the
+    # 24h `last_enriched` window — same trade-off the rest of the
+    # enrichment pipeline already accepts.
     assets = await _get_confirmed_alive_assets(
-        sf, org_id, target_scope=target_scope, apply_stale=False,
+        sf, org_id, target_scope=target_scope, apply_stale=True,
     )
     if not assets:
         return {"probed": 0}
@@ -639,54 +644,66 @@ async def _do_protocol_probe(sf, org_id: str, target_scope: str | None = None) -
     logger.info("org=%s protocol_probe: probing %d assets with OT/IoT/AI ports", org_id, len(candidates))
 
     probe_results = await protocol_probe_batch(candidates, concurrency=10)
+    if not probe_results:
+        return {"probed": len(candidates), "assets_with_detections": 0}
 
-    # Store results and create findings
+    # Store results and create findings — bulk-resolved to avoid N
+    # serial roundtrips per asset (the unbatched loop was ~3× the
+    # actual probe time on 468-asset scans).
+    hostnames = list(probe_results.keys())
     total_detections = 0
     findings_created = 0
     async with sf() as db:
+        rows = await db.execute(
+            text("SELECT id, hostname FROM assets WHERE org_id = :org_id AND hostname = ANY(:hosts)"),
+            {"org_id": org_id, "hosts": hostnames},
+        )
+        host_to_id = {r.hostname: r.id for r in rows.fetchall()}
+
+        update_params: list[dict] = []
+        insert_params: list[dict] = []
+        now = datetime.now(timezone.utc)
         for hostname, detections in probe_results.items():
             total_detections += len(detections)
-            # Find asset
-            row = await db.execute(
-                text("SELECT id FROM assets WHERE org_id = :org_id AND hostname = :host"),
-                {"org_id": org_id, "host": hostname},
-            )
-            asset_row = row.fetchone()
-            if not asset_row:
+            aid = host_to_id.get(hostname)
+            if aid is None:
                 continue
+            update_params.append({
+                "det": json.dumps(detections),
+                "id": aid,
+            })
+            for det in detections:
+                insert_params.append({
+                    "id": uuid.uuid4(),
+                    "org_id": org_id,
+                    "aid": aid,
+                    "ftype": f"exposed_{det['protocol']}",
+                    "sev": det["severity"],
+                    "title": det["finding_title"],
+                    "desc": (
+                        f"Detected {det['name']} on port {det['port']}. "
+                        f"This service should not be exposed to the internet."
+                    ),
+                    "meta": json.dumps(det.get("metadata", {})),
+                    "now": now,
+                })
 
-            # Store protocol detections on asset
+        if update_params:
             await db.execute(
                 text("UPDATE assets SET protocol_detections = :det WHERE id = :id"),
-                {"det": json.dumps(detections), "id": asset_row.id},
+                update_params,
             )
-
-            # Create findings for critical/high exposed protocols
-            for det in detections:
-                finding_id = uuid.uuid4()
-                await db.execute(
-                    text("""
-                        INSERT INTO findings (id, org_id, asset_id, finding_type, severity,
-                                              title, description, metadata, status, created_at)
-                        VALUES (:id, :org_id, :aid, :ftype, :sev, :title, :desc, :meta, 'open', :now)
-                        ON CONFLICT DO NOTHING
-                    """),
-                    {
-                        "id": finding_id,
-                        "org_id": org_id,
-                        "aid": asset_row.id,
-                        "ftype": f"exposed_{det['protocol']}",
-                        "sev": det["severity"],
-                        "title": det["finding_title"],
-                        "desc": (
-                            f"Detected {det['name']} on port {det['port']}. "
-                            f"This service should not be exposed to the internet."
-                        ),
-                        "meta": json.dumps(det.get("metadata", {})),
-                        "now": datetime.now(timezone.utc),
-                    },
-                )
-                findings_created += 1
+        if insert_params:
+            await db.execute(
+                text("""
+                    INSERT INTO findings (id, org_id, asset_id, finding_type, severity,
+                                          title, description, metadata, status, created_at)
+                    VALUES (:id, :org_id, :aid, :ftype, :sev, :title, :desc, :meta, 'open', :now)
+                    ON CONFLICT DO NOTHING
+                """),
+                insert_params,
+            )
+            findings_created = len(insert_params)
 
         await db.commit()
 
@@ -710,8 +727,12 @@ async def _do_banner_grab(sf, org_id: str, target_scope: str | None = None) -> d
     Banner-grab is best-effort by design: any module/asset failure returns
     an empty result rather than raising, so partial coverage still ships.
     """
+    # `apply_stale=True` so a SoftTimeLimitExceeded retry doesn't redo
+    # the full 6-protocol probe over assets the previous attempt already
+    # touched (the 24h `last_enriched` window covers retry waves; full
+    # nightly rescans pick up new banners on the next day's run).
     assets = await _get_confirmed_alive_assets(
-        sf, org_id, target_scope=target_scope, apply_stale=False,
+        sf, org_id, target_scope=target_scope, apply_stale=True,
     )
     if not assets:
         return {"probed": 0}
@@ -756,19 +777,60 @@ async def _do_banner_grab(sf, org_id: str, target_scope: str | None = None) -> d
     if not per_host:
         return {"probed": len(candidates), "assets_with_banners": 0}
 
+    # Bulk-resolve hostname → asset_id, then write all UPDATEs and
+    # INSERTs via executemany. The previous serial-per-asset loop
+    # produced 468 awaits per stage on tenable.com — enough to push
+    # the scan past the 4h soft_time_limit.
+    hostnames = list(per_host.keys())
     total_banners = 0
     findings_created = 0
     async with sf() as db:
-        for hostname, banners in per_host.items():
-            total_banners += len(banners)
-            row = await db.execute(
-                text("SELECT id FROM assets WHERE org_id = :org_id AND hostname = :host"),
-                {"org_id": org_id, "host": hostname},
-            )
-            asset_row = row.fetchone()
-            if not asset_row:
-                continue
+        rows = await db.execute(
+            text("SELECT id, hostname FROM assets WHERE org_id = :org_id AND hostname = ANY(:hosts)"),
+            {"org_id": org_id, "hosts": hostnames},
+        )
+        host_to_id = {r.hostname: r.id for r in rows.fetchall()}
 
+        update_params: list[dict] = []
+        insert_params: list[dict] = []
+        now = datetime.now(timezone.utc)
+        for hostname, banners in per_host.items():
+            # Count banners regardless of whether the asset row still
+            # exists — `assets_with_banners` reflects what the modules
+            # observed; missing rows just skip the writes.
+            total_banners += len(banners)
+            aid = host_to_id.get(hostname)
+            if aid is None:
+                continue
+            update_params.append({
+                "banners": json.dumps(banners),
+                "id": aid,
+            })
+            for banner in banners:
+                if "severity" not in banner or "finding_title" not in banner:
+                    continue
+                insert_params.append({
+                    "id": uuid.uuid4(),
+                    "org_id": org_id,
+                    "aid": aid,
+                    "ftype": f"banner_{banner['protocol']}",
+                    "sev": banner["severity"],
+                    "title": banner["finding_title"],
+                    "desc": (
+                        f"Banner-grab on port {banner['port']} "
+                        f"({banner['protocol']}) flagged: {banner['finding_title']}."
+                    ),
+                    "meta": json.dumps({
+                        "protocol": banner["protocol"],
+                        "port": banner["port"],
+                        "banner": banner.get("banner"),
+                        "version": banner.get("version"),
+                        "metadata": banner.get("metadata"),
+                    }),
+                    "now": now,
+                })
+
+        if update_params:
             # Merge into easm_data.banner_findings via JSONB || semantics.
             await db.execute(
                 text("""
@@ -779,47 +841,23 @@ async def _do_banner_grab(sf, org_id: str, target_scope: str | None = None) -> d
                     )::json
                     WHERE id = :id
                 """),
-                {"banners": json.dumps(banners), "id": asset_row.id},
+                update_params,
             )
-
-            # Severity-tagged banners → findings (RDP-no-NLA, SMTP missing
-            # STARTTLS, UPnP exposed, etc.).
-            for banner in banners:
-                if "severity" not in banner or "finding_title" not in banner:
-                    continue
-                await db.execute(
-                    text("""
-                        INSERT INTO findings (
-                            id, org_id, asset_id, finding_type, severity,
-                            title, description, metadata, status, created_at
-                        ) VALUES (
-                            :id, :org_id, :aid, :ftype, :sev, :title, :desc,
-                            cast(:meta as jsonb), 'open', :now
-                        )
-                        ON CONFLICT DO NOTHING
-                    """),
-                    {
-                        "id": uuid.uuid4(),
-                        "org_id": org_id,
-                        "aid": asset_row.id,
-                        "ftype": f"banner_{banner['protocol']}",
-                        "sev": banner["severity"],
-                        "title": banner["finding_title"],
-                        "desc": (
-                            f"Banner-grab on port {banner['port']} "
-                            f"({banner['protocol']}) flagged: {banner['finding_title']}."
-                        ),
-                        "meta": json.dumps({
-                            "protocol": banner["protocol"],
-                            "port": banner["port"],
-                            "banner": banner.get("banner"),
-                            "version": banner.get("version"),
-                            "metadata": banner.get("metadata"),
-                        }),
-                        "now": datetime.now(timezone.utc),
-                    },
-                )
-                findings_created += 1
+        if insert_params:
+            await db.execute(
+                text("""
+                    INSERT INTO findings (
+                        id, org_id, asset_id, finding_type, severity,
+                        title, description, metadata, status, created_at
+                    ) VALUES (
+                        :id, :org_id, :aid, :ftype, :sev, :title, :desc,
+                        cast(:meta as jsonb), 'open', :now
+                    )
+                    ON CONFLICT DO NOTHING
+                """),
+                insert_params,
+            )
+            findings_created = len(insert_params)
 
         await db.commit()
 
@@ -1772,8 +1810,33 @@ def run_enrichment_chain(self, org_id: str, scan_run_id: str | None = None) -> d
 async def _mark_failed(scan_run_id: str, error: str):
     sf = get_task_session()
     async with sf() as db:
-        await db.execute(
-            text("UPDATE scan_runs SET status = 'failed', finished_at = :now, error = :err WHERE id = :id"),
-            {"id": scan_run_id, "now": datetime.now(timezone.utc), "err": error},
-        )
+        # Best-effort partial-progress count: enrichment runs after
+        # discovery has already populated assets, so a mid-pipeline
+        # timeout almost always has real assets to report.
+        partial = None
+        try:
+            partial = await count_assets_in_scan_scope(db, scan_run_id)
+        except Exception:
+            logger.exception("scan_run=%s partial asset count failed", scan_run_id)
+
+        if partial is None:
+            await db.execute(
+                text("UPDATE scan_runs SET status = 'failed', finished_at = :now, error = :err WHERE id = :id"),
+                {"id": scan_run_id, "now": datetime.now(timezone.utc), "err": error},
+            )
+        else:
+            await db.execute(
+                text("""
+                    UPDATE scan_runs
+                    SET status = 'failed', finished_at = :now, error = :err,
+                        assets_found = :found
+                    WHERE id = :id
+                """),
+                {
+                    "id": scan_run_id,
+                    "now": datetime.now(timezone.utc),
+                    "err": error,
+                    "found": partial,
+                },
+            )
         await db.commit()

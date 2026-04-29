@@ -263,6 +263,12 @@ def build_sbom_from_inventory(db: Session, scan_id: int):
     if not software_rows:
         return {"components": 0, "vulnerabilities": 0}
 
+    # Need org_id to write `cve_on_asset` edges tagged `source_system='sbom'`.
+    # Without it the chain coordinator's `sbom_unpatched` pattern can never fire.
+    from models.models import Scan
+    scan_row = db.query(Scan.org_id).filter(Scan.id == scan_id).first()
+    org_id = scan_row[0] if scan_row else None
+
     process_rows = db.query(InventoryProcess).filter(
         InventoryProcess.scan_id == scan_id
     ).all()
@@ -422,6 +428,18 @@ def build_sbom_from_inventory(db: Session, scan_id: int):
                 )
                 db.add(vuln)
                 vuln_count += 1
+
+                if org_id and tc and tc.in_kev and asset_id:
+                    from services.asset_edges import write_sbom_kev_edge
+                    write_sbom_kev_edge(
+                        db,
+                        org_id=org_id,
+                        asset_id=asset_id,
+                        cve_id=cve_id,
+                        finding_id=finding.id,
+                        component_name=comp.name,
+                        component_version=comp.version,
+                    )
 
                 max_sev = max(max_sev, sev)
                 max_cvss_val = max(max_cvss_val, cvss or 0)

@@ -1,7 +1,35 @@
 # Cross-Scan Chain Coordinator — Implementation Plan
 
 ## Status
-Draft — not started. Owner TBD. Capture the design before we lose context.
+Phase 1 + 2 + 3 + 4 + 5 shipped. All v1 patterns now live in
+[`services/chain_coordinator.py`](../backend/services/chain_coordinator.py):
+`easm_to_smb` (Phase 3), and Phase 4 added `coerce_to_dc`,
+`vm_kev_to_audit`, `lead_followup`, `sbom_unpatched`, and
+`cred_found` (approval-gated, off by default). Phase 5 wired
+`emit_lead` into the SMB / SSH / LDAP exposure_audit prompts and
+added the tool to those tool palettes, so audit agents now
+populate `agent_leads` at end-of-budget for `lead_followup` to
+consume on the next tick.
+
+Phase 5 followups (verification gaps closed post-shipping):
+- The SBOM pipeline ([`services/sbom_pipeline.py`](../backend/services/sbom_pipeline.py))
+  now writes `cve_on_asset` edges with `source_system='sbom'`, so
+  `sbom_unpatched` actually fires on real data instead of only on
+  hand-crafted test edges.
+- Dispatch debounce moved from an in-process dict to a DB-backed check
+  (`scans` table for audit dispatch, `_pending_vm_rescan` marker for
+  the `vm_scan` pseudo-protocol). Multi-replica deployments no longer
+  double-fire within the 60s window.
+- Approval-gated hypotheses (`cred_found` etc.) are now persisted to
+  `coordinator_pending_approvals` (migration 057) and surfaced in the
+  AttackPaths UI as a "Ready to validate" panel. Operators approve via
+  `POST /api/chain-coordinator/pending-approvals/{id}/approve`; the
+  next tick honors the decision through the normal dispatch path.
+- All `auto_audit_*` org settings (existing + the two new
+  coordinator-only keys `auto_audit_credentialed` and
+  `auto_audit_vm_rescan`) are now registered in
+  [`AUTO_AUDIT_SETTING_KEYS`](../backend/services/audit_auto_trigger.py)
+  and discoverable through `GET /api/chain-coordinator/settings`.
 
 ## Goal
 Chain findings across EASM, VM scanner, audit agents, and integration parsers
@@ -112,13 +140,15 @@ Coordinator consumes leads as one of its hypothesis sources.
 
 ### Trigger
 
-Subscribe to the existing `_fire_data_triggers` path in
-[post_ingest.py:983](../backend/services/post_ingest.py). After
-`_correlate_findings` runs (or in parallel — the Coordinator does not need
-correlation output, it reads the edge graph directly), enqueue
-`coordinator.tick(org_id, scan_id)` via `services.job_manager.dispatch`.
-Same debounce shape as `_correlate_findings` — one tick per org per minute,
-collapse multi-batch ingests.
+The coordinator is wired as a sibling step inside `finalize_scan`
+([post_ingest.py:265-274](../backend/services/post_ingest.py#L265-L274)),
+running alongside `_fire_data_triggers` and `_correlate_findings`
+rather than subscribing to them. Functionally equivalent — the
+coordinator does not need correlation output, it reads the edge graph
+directly — and keeps the post-ingest pipeline a flat list of steps.
+The dispatch helper enqueues `coordinator.tick(org_id, scan_id)` via
+`services.job_manager.dispatch` with a per-org tick debounce so
+multi-batch ingests collapse into one tick per minute.
 
 ### Loop, single tick
 
@@ -186,9 +216,12 @@ Before dispatching, check **all** of:
 3. No pending or recent (≤60s) Coordinator dispatch for the same
    `(asset, protocol, mission)` — check via `services.job_manager.list_jobs`.
 4. For credential propagation (`cred_found` pattern) and active exploitation
-   patterns: **explicit operator approval gate**, surfaced as a "ready to
-   validate" badge in [AttackPaths.jsx](../frontend/src/components/attackpaths/AttackPaths.jsx).
-   Off by default. Feature-flag the whole pattern family.
+   patterns: **explicit operator approval gate**, surfaced as a "Ready to
+   validate" panel in [AttackPaths.jsx](../frontend/src/components/attackpaths/AttackPaths.jsx).
+   Persisted to `coordinator_pending_approvals` so the queue survives
+   across ticks; an `approved` row lets the next tick dispatch through
+   the normal `_dispatch_hypothesis` path. Off by default.
+   Feature-flag the whole pattern family via `auto_audit_credentialed`.
 
 ### Closure detection
 
@@ -247,13 +280,33 @@ One pattern: `easm_to_smb`. Wire to `_fire_data_triggers`. ValidatedChain
 finding emit on closure. Approval gate scaffolding even though no pattern
 needs it yet. UI badge in AttackPaths list.
 
-**Phase 4 — pattern library (ongoing).** Each pattern is a small PR adding
-a `match(...)` function plus a row in the table above. Order: `coerce_to_dc`,
-`vm_kev_to_audit`, `lead_followup`, `sbom_unpatched`, `cred_found`
-(approval-gated, off by default).
+**Phase 4 — pattern library (shipped).** All five v1 patterns landed:
+`coerce_to_dc`, `vm_kev_to_audit`, `lead_followup`, `sbom_unpatched`,
+`cred_found`. Each is a `match(...)` function in
+[`services/chain_coordinator.py`](../backend/services/chain_coordinator.py)
+with a row in the prior/cost tables. `cred_found` is approval-gated
+(`requires_approval=True` always set); the WMI / SSH protocol switches
+default OFF org-wide. `sbom_unpatched` introduced the `vm_scan` pseudo-
+protocol — dispatch records a `_pending_vm_rescan` marker on the asset
+for the existing VM-scan pickup loop instead of firing inline.
 
-**Phase 5 — Audit agent leads (≈ 1 wk).** Add `emit_lead` tool, wire into
-SMB / SSH / LDAP exposure_audit prompts as a Tier-2/3 emit at end-of-budget.
+Phase 4 also added the storage substrate `lead_followup` reads from:
+`agent_leads` table (migration 056) and the `emit_lead` agent tool
+([`agents/tools/emit_lead.py`](../backend/agents/tools/emit_lead.py)).
+Wiring the tool into the audit prompts is left for Phase 5.
+
+**Phase 5 — Audit agent leads (shipped).** `emit_lead` is now in the
+SMB / SSH / LDAP tool palettes
+([smb_tools.py](../backend/agents/tools/smb_tools.py),
+[ssh_tools.py](../backend/agents/tools/ssh_tools.py),
+[ldap_tools.py](../backend/agents/tools/ldap_tools.py)) and a "Leads
+(end-of-budget only)" section was added to each exposure_audit
+prompt instructing agents to record one specific asset hint +
+suggested protocol per neighboring surface they observed but did
+not audit. The section explicitly forbids leads that just restate a
+Tier-1/2 finding on the host, and reminds agents that org-level
+switches and per-asset cooldowns still gate the Coordinator's
+dispatch.
 
 ## Out of scope (explicit non-goals)
 

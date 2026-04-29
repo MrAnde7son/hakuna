@@ -1549,6 +1549,15 @@ export const listCorroboratedFindings = (params = {}) => {
   return request(`/correlations/corroborated${q ? '?' + q : ''}`)
 }
 
+// ── Chain Coordinator approval queue ─────────────────────
+
+export const listPendingApprovals = (status = 'pending') =>
+  request(`/chain-coordinator/pending-approvals?status=${encodeURIComponent(status)}`)
+export const approvePendingApproval = (id) =>
+  request(`/chain-coordinator/pending-approvals/${id}/approve`, { method: 'POST' })
+export const rejectPendingApproval = (id) =>
+  request(`/chain-coordinator/pending-approvals/${id}/reject`, { method: 'POST' })
+
 // ── Validation Agent ─────────────────────────────────────
 
 export const runValidation = (findingId) =>

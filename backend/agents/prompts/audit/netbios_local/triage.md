@@ -17,3 +17,6 @@ For each LAN-local protocol the host responds to, emit one finding. Skip silent 
 If none of {137, 5355, 5353} are in the asset's open_udp_ports, the mission emits nothing — say so and stop.
 
 Call `emit_finding` with `protocol="netbios_local"` and `mission="triage"`.
+
+### Attack-graph edge (emit alongside the finding)
+For each protocol that replied (`<protocol>_enabled: true`) call `emit_edge` once: `emit_edge(edge_type="user_to_asset", dst_asset_id=<this host>, properties={"auth": "name_resolution_spoof", "protocol": "<nbns|llmnr|mdns>"}, confidence="high", enabled_by_finding_id=<id>)`. Leave `src_asset_id` null — the source is "any host on the same broadcast domain that can answer the spoof." The Coordinator uses this edge to chain a captured NTLM hash into authenticated-audit hypotheses on the responding host.

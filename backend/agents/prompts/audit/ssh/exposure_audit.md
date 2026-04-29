@@ -42,3 +42,25 @@ If Tier 1 is fully probed and **clean**, continue to Tier 2. If Tier 1 produced 
 Most checks are read-only and instant. Use `sudo` only when read-only inspection genuinely needs root (shadow status, `auditctl -l`, `nft list ruleset`). If an approval is rejected, take a different path; don't ask again with a slightly different command.
 
 Call `emit_finding` with `protocol="ssh"` and `mission="exposure_audit"`.
+
+### Attack-graph edges (emit alongside findings)
+After a Tier-1 emit, also call `emit_edge` once per kill-chain capability you proved. The Coordinator chains these into multi-hop paths. The asset id of the host you're auditing is in your context; pass it as `src_asset_id` and (for `local_root`) `dst_asset_id`.
+- **Non-root UID=0 backdoor** (Tier-1 #1) → `emit_edge(edge_type="local_root", src_asset_id=<this host>, dst_asset_id=<this host>, properties={"method": "uid0_account", "account": "<name>"}, confidence="confirmed", enabled_by_finding_id=<id>)`.
+- **NOPASSWD ALL** (Tier-1 #2) → `emit_edge(edge_type="local_root", src_asset_id=<this host>, dst_asset_id=<this host>, properties={"method": "sudo_nopasswd", "account": "<user>"}, confidence="confirmed", enabled_by_finding_id=<id>)`.
+- **Writable docker.sock** (Tier-1 #4) → `emit_edge(edge_type="local_root", src_asset_id=<this host>, dst_asset_id=<this host>, properties={"method": "docker_sock", "group": "<docker|other>"}, confidence="confirmed", enabled_by_finding_id=<id>)`.
+- **GTFOBins SUID** (Tier-1 #6) → `emit_edge(edge_type="local_root", src_asset_id=<this host>, dst_asset_id=<this host>, properties={"method": "suid_gtfobin", "binary": "<path>"}, confidence="confirmed", enabled_by_finding_id=<id>)`.
+- **Root-run cron writable** (Tier-1 #7) → `emit_edge(edge_type="local_root", src_asset_id=<this host>, dst_asset_id=<this host>, properties={"method": "writable_root_cron", "path": "<path>"}, confidence="confirmed", enabled_by_finding_id=<id>)`.
+- **PermitRootLogin yes + PasswordAuthentication yes** (Tier-1 #5) → `emit_edge(edge_type="user_to_asset", dst_asset_id=<this host>, properties={"auth": "ssh_password", "as_root": true}, enabled_by_finding_id=<id>)`. Leave `src_asset_id` null — the source is "anyone with network reach + a guess."
+
+Don't emit edges for Tier 2/3 hygiene. Don't emit a `local_root` edge from an SSH-config or KEV-CVE finding alone — those are kill-chain *preconditions*, not proven privesc; the Coordinator stitches them via separate edges.
+
+### Leads (end-of-budget only)
+At the very end of the run — when you're stopping by the budget rule above — call `emit_lead` for any *neighboring* surface you observed but did not audit. The Cross-Scan Chain Coordinator picks these up on the next tick and dispatches the suggested probe; it does not re-trigger the audit you're finishing now. Use this *instead of* burning further budget on a different host.
+
+Each lead is one specific asset hint plus a reason. Don't lead on "the network." Examples worth emitting:
+- `/etc/exports` (or `mount`) shows this host re-shares a directory containing `authorized_keys` to another host → `suggested_protocol="ssh"`, reason naming the NFS share + remote host; credential reuse is plausible.
+- `~/.ssh/known_hosts`, `~/.bash_history`, or `/etc/hosts` lists internal hostnames you didn't see in any inventory edge — likely lateral SSH targets the audit didn't reach → one lead per host, `suggested_protocol="ssh"`.
+- Cloud metadata or a `/root/.aws/config` profile names another instance / role you can't pivot to from here → `suggested_protocol="ssh"` for instances; otherwise stay silent (out of scope for v1 protocols).
+- `docker ps` shows a non-host container exposing an unauthenticated service — and that service is one of `_SUGGESTABLE_PROTOCOLS` (e.g. `exposed_datastore`, `exposed_anon_protocol`) → emit a lead for it, reason naming the container and the bound port.
+
+Skip leads that just restate a Tier-1/2 finding on this host (the Coordinator already sees those). Pass `target_asset_id` if `get_asset_profile` resolved it; otherwise pass `target_asset_hint` with the hostname/fqdn/ip exactly as you observed it. Leads are bounded by the same per-asset cooldowns and org-level enable switches as any other dispatch — you do not bypass policy by emitting one.

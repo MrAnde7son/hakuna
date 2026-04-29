@@ -2218,6 +2218,21 @@ def _import_assets_for_domain(
             scan_id=scan.id, org_id=scan.org_id,
         )
 
+        # Write internet_to_asset edges into the unified graph (Phase 1
+        # of the chain coordinator). Non-fatal — edge emission must not
+        # break asset ingest.
+        try:
+            from services.asset_edges import write_easm_internet_edges
+            write_easm_internet_edges(
+                db,
+                org_id=scan.org_id,
+                asset_id=asset.id,
+                open_ports=ea.get("open_ports"),
+                confidence="high",
+            )
+        except Exception:
+            logger.exception("internet_to_asset edge write failed for asset %s", asset.id)
+
         fcount, fids = _generate_easm_findings(db, scan.id, asset, ea)
         findings_created += fcount
         new_finding_ids.extend(fids)
@@ -2883,6 +2898,22 @@ async def enrich_assets_from_easm(db: Session, org: Organization, scan_id: int):
 
         # Store full EASM enrichment data
         asset.easm_data = _build_easm_data(ea)
+
+        # Mirror open-port reachability into the unified edge graph.
+        try:
+            from services.asset_edges import write_easm_internet_edges
+            write_easm_internet_edges(
+                db,
+                org_id=org.id,
+                asset_id=asset.id,
+                open_ports=ea.get("open_ports"),
+                confidence="high",
+            )
+        except Exception:
+            logger.exception(
+                "internet_to_asset edge write failed for asset %s during Nessus enrich",
+                asset.id,
+            )
 
         enriched += 1
 

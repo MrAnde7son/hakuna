@@ -38,3 +38,23 @@ Domain password policy weakness, stale enabled users, stale computer accounts, d
 - Never let Tier 3 probes crowd out a Tier 1 emit.
 
 Call `emit_finding` with `protocol="ldap"` and `mission="exposure_audit"`.
+
+### Attack-graph edges (emit alongside findings)
+After a Tier-1 emit, also call `emit_edge` once per kill-chain capability you proved. The Coordinator chains these into multi-hop paths.
+- **DCSync-capable principal** (Tier-1 #4 hit) → `emit_edge(edge_type="principal_to_domain", properties={"principal": "<sAMAccountName or SID>", "method": "dcsync"}, confidence="confirmed", enabled_by_finding_id=<id>)`. Leave both `src_asset_id` and `dst_asset_id` null — the principal is the source, the domain is the sink. Dump the principal name in `properties.principal`.
+- **Dangerous ACE on a tier-0 object** (Tier-1 #5: GENERIC_ALL / WriteDACL / WriteOwner held by a non-tier-0 principal on Domain Admins / AdminSDHolder / krbtgt / domain root) → `emit_edge(edge_type="principal_to_domain", properties={"principal": "<name>", "method": "ace_<right>", "target": "<dn>"}, enabled_by_finding_id=<id>)`. Same null endpoints.
+- **Unconstrained delegation on non-DC** (Tier-1 #3) → `emit_edge(edge_type="asset_to_asset_auth", src_asset_id=<the delegating computer's asset id, if known>, properties={"delegation": "unconstrained"}, enabled_by_finding_id=<id>)`. Leave `dst_asset_id` null (any TGT-holding principal can land here). If you don't have an asset id for the computer (LDAP-only data), omit the edge — don't fabricate.
+- **RBCD takeover precondition** (Tier-1 #7) → `emit_edge(edge_type="asset_to_asset_auth", src_asset_id=<tier-0 computer asset id, if known>, properties={"delegation": "rbcd", "writer": "<non-tier-0 principal>"}, enabled_by_finding_id=<id>)`.
+
+Don't emit edges for Tier 2/3 hygiene — only for capabilities a chain could traverse. Use confidence `confirmed` only when the LDAP attribute / ACE bit was directly read; `high` when inferred from membership.
+
+### Leads (end-of-budget only)
+At the very end of the run — when you're stopping by the budget rule above — call `emit_lead` for any *neighboring* surface you observed but did not audit. The Cross-Scan Chain Coordinator picks these up on the next tick and dispatches the suggested probe; it does not re-trigger the audit you're finishing now. Use this *instead of* burning further budget on a different domain object.
+
+Each lead is one specific asset hint plus a reason. Don't lead on "the domain." Examples worth emitting:
+- A computer object holds writable `nTSecurityDescriptor` for an *RBCD* takeover precondition (Tier-1 #7) — emit the edge, then emit a lead pointing the SMB audit at that computer (`suggested_protocol="smb"`, reason names the writer principal). The lead is the *follow-up exposure* hunt on the takeover target.
+- Unconstrained delegation on a non-DC computer (Tier-1 #3) → `suggested_protocol="smb"` lead against that computer; reason notes that any TGT-holding principal authenticating there is leakable, so SMB / share posture matters next.
+- `lastLogonTimestamp` reveals a tier-0 account is active on a server whose name appears in `servicePrincipalName` but didn't surface in your inventory edges → `suggested_protocol="smb"` lead on that server.
+- You saw a child / forest-trust `trustedDomain` whose `trustAttributes` lacks SID filtering and the trusted DC name is resolvable in this org's inventory → `suggested_protocol="ldap"` lead on the other DC, reason naming the trust attributes.
+
+Skip leads that just restate a Tier-1/2 finding (the Coordinator already sees those). Pass `target_asset_id` if `get_asset_profile` resolved it; otherwise pass `target_asset_hint` with the hostname/fqdn/ip exactly as you observed it. If you only have a principal / SID and no asset, prefer the existing `principal_to_domain` edge over a fabricated lead — leads need an asset target. Leads are bounded by the same per-asset cooldowns and org-level enable switches as any other dispatch — you do not bypass policy by emitting one.
