@@ -24,9 +24,11 @@ from urllib.parse import urlparse
 import httpx
 
 
-# Default probe timeout — short enough to fail fast, long enough to
-# accommodate a slow-but-alive TLS handshake on a lab machine.
-DEFAULT_PREFLIGHT_TIMEOUT = 3.0
+# Default probe timeout — matches nuclei's -timeout 10 so that any host
+# nuclei would consider live also passes preflight. 3s was tight enough
+# that cross-region cold connects (Azure → GCP me-west1) regularly hit
+# the deadline despite the host being healthy.
+DEFAULT_PREFLIGHT_TIMEOUT = 10.0
 
 
 @dataclass
