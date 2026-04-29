@@ -13,6 +13,9 @@ from app.models.asset import Asset
 logger = logging.getLogger(__name__)
 
 
+_UPSERT_BATCH_SIZE = 500
+
+
 async def upsert_discovered_hosts(
     db: AsyncSession,
     org_id: uuid.UUID,
@@ -22,48 +25,76 @@ async def upsert_discovered_hosts(
     """Upsert discovered hostnames into assets table.
 
     Returns (total_upserted, list_of_new_asset_ids).
+
+    Group 1 of the discovery chain runs subfinder/crtsh/uncover/shodan/
+    wildcard_bruteforce concurrently. A per-row UPSERT loop produced
+    DeadlockDetectedError when two tasks acquired locks on the same
+    (org_id, hostname) rows in opposite order. We collapse each batch
+    into one statement (Postgres orders conflict targets internally,
+    so a single statement cannot deadlock with itself) and sort the
+    rows so two concurrent batches with overlapping hosts also acquire
+    locks in the same order.
     """
     if not hosts:
         return 0, []
 
     now = datetime.now(timezone.utc)
+
+    # Dedupe within the input — Postgres rejects two rows with the same
+    # ON CONFLICT target in a single statement. Merge non-null fields
+    # so we don't lose data when the same hostname appears twice.
+    by_hostname: dict[str, dict] = {}
+    for entry in hosts:
+        hostname = (entry.get("host") or entry.get("hostname") or "").strip().lower()
+        if not hostname:
+            continue
+        ip = entry.get("ip") or entry.get("a") or entry.get("address") or None
+        asn = entry.get("asn") or None
+        asn_org = entry.get("asn_org") or entry.get("org") or None
+        prev = by_hostname.get(hostname)
+        if prev:
+            ip = ip or prev["ip"]
+            asn = asn or prev["asn"]
+            asn_org = asn_org or prev["asn_org"]
+        by_hostname[hostname] = {"hostname": hostname, "ip": ip, "asn": asn, "asn_org": asn_org}
+
+    if not by_hostname:
+        return 0, []
+
+    # Canonical lock order across concurrent writers.
+    records = [by_hostname[h] for h in sorted(by_hostname)]
+
     new_ids: list[uuid.UUID] = []
     upserted = 0
 
-    for entry in hosts:
-        hostname = entry.get("host") or entry.get("hostname") or ""
-        hostname = hostname.strip().lower()
-        if not hostname:
-            continue
+    for chunk_start in range(0, len(records), _UPSERT_BATCH_SIZE):
+        chunk = records[chunk_start : chunk_start + _UPSERT_BATCH_SIZE]
+        values_parts: list[str] = []
+        params: dict = {"org_id": org_id, "source": source, "now": now}
+        for i, rec in enumerate(chunk):
+            values_parts.append(
+                f"(:id_{i}, :org_id, :h_{i}, CAST(:ip_{i} AS inet), "
+                f":asn_{i}, :asn_org_{i}, :source, :now, :now, '{{}}')"
+            )
+            params[f"id_{i}"] = uuid.uuid4()
+            params[f"h_{i}"] = rec["hostname"]
+            params[f"ip_{i}"] = rec["ip"]
+            params[f"asn_{i}"] = rec["asn"]
+            params[f"asn_org_{i}"] = rec["asn_org"]
 
-        ip = entry.get("ip") or entry.get("a") or entry.get("address")
-        asn = entry.get("asn")
-        asn_org = entry.get("asn_org") or entry.get("org")
-
-        result = await db.execute(
-            text("""
-                INSERT INTO assets (id, org_id, hostname, ip, asn, asn_org, source, first_seen, last_seen, tags)
-                VALUES (:id, :org_id, :hostname, :ip, :asn, :asn_org, :source, :now, :now, '{}')
-                ON CONFLICT (org_id, hostname) DO UPDATE SET
-                    ip = COALESCE(EXCLUDED.ip, assets.ip),
-                    asn = COALESCE(EXCLUDED.asn, assets.asn),
-                    asn_org = COALESCE(EXCLUDED.asn_org, assets.asn_org),
-                    last_seen = EXCLUDED.last_seen
-                RETURNING id, (xmax = 0) AS is_new
-            """),
-            {
-                "id": uuid.uuid4(),
-                "org_id": org_id,
-                "hostname": hostname,
-                "ip": ip,
-                "asn": asn,
-                "asn_org": asn_org,
-                "source": source,
-                "now": now,
-            },
+        sql = (
+            "INSERT INTO assets "
+            "(id, org_id, hostname, ip, asn, asn_org, source, first_seen, last_seen, tags) "
+            f"VALUES {', '.join(values_parts)} "
+            "ON CONFLICT (org_id, hostname) DO UPDATE SET "
+            "ip = COALESCE(EXCLUDED.ip, assets.ip), "
+            "asn = COALESCE(EXCLUDED.asn, assets.asn), "
+            "asn_org = COALESCE(EXCLUDED.asn_org, assets.asn_org), "
+            "last_seen = EXCLUDED.last_seen "
+            "RETURNING id, (xmax = 0) AS is_new"
         )
-        row = result.fetchone()
-        if row:
+        result = await db.execute(text(sql), params)
+        for row in result.fetchall():
             upserted += 1
             if row.is_new:
                 new_ids.append(row.id)

@@ -80,6 +80,11 @@ output "lab_vm_ip" {
   value       = try(google_compute_instance.lab[0].network_interface[0].network_ip, "")
 }
 
+output "lab_vm_public_ip" {
+  description = "Static public IP of the lab VM (when var.lab_public_ip = true). Point lab.hakunahq.com → this address. Empty when public IP is not enabled."
+  value       = try(google_compute_address.lab[0].address, "")
+}
+
 output "lab_vm_ssh" {
   description = "IAP SSH command for the lab VM."
   value       = "gcloud compute ssh hakuna-lab --zone=${var.zone} --tunnel-through-iap"

@@ -172,6 +172,23 @@ variable "lab_machine_type" {
   default     = "e2-standard-4"
 }
 
+variable "lab_public_ip" {
+  type        = bool
+  description = "Give the lab VM a static external IP. Required for DNS-public access (lab.hakunahq.com). Firewall still scopes ingress to lab_allowed_source_ranges + scanner/audit-worker SAs — DNS publication does NOT mean the lab is reachable by arbitrary internet hosts."
+  default     = false
+}
+
+variable "lab_allowed_source_ranges" {
+  type        = list(string)
+  description = "CIDRs allowed to reach the lab VM in addition to the scanner + audit-worker SAs. Use for your laptop / office IPs. Each entry should be a /32 if it's a single host. NEVER add 0.0.0.0/0 here — the lab is intentionally vulnerable."
+  default     = []
+
+  validation {
+    condition     = !contains(var.lab_allowed_source_ranges, "0.0.0.0/0")
+    error_message = "Refusing to allow 0.0.0.0/0 — the lab VM hosts intentionally-vulnerable services and would be compromised within minutes if exposed to the open internet."
+  }
+}
+
 # ── Stripe billing ────────────────────────────────────────────────────────────
 
 variable "stripe_secret_key" {
