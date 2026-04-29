@@ -286,7 +286,7 @@ resource "google_compute_instance" "lab" {
 
     # ── Compose env: satisfy interpolation for profiled services ───────────
     # The `relay` service (under `profiles: [relay]`) references
-    # ${HAKUNA_AGENT_TOKEN:?...}. Compose evaluates env interpolation for
+    # $${HAKUNA_AGENT_TOKEN:?...}. Compose evaluates env interpolation for
     # ALL services at parse time, even profiled ones, so the var must be set
     # even though we never start that service in the cloud. The other relay
     # vars use `:-` defaults and don't need to be set.
