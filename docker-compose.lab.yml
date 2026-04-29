@@ -5,7 +5,8 @@
 #
 # Every service joins the `hakuna-lab` Docker network. Scanner workers join
 # the same network as an external network (see hakuna-vm-scanner/docker-compose.yml)
-# so they resolve targets by hostname: dvwa, smb, ldap, ssh, snmp.
+# so they resolve targets by hostname: dvwa, smb, ldap, ssh, snmp, tomcat,
+# webapp, mongo, mysql, redis, nginx.
 #
 # Host-exposed ports are for manual poking only; the audits reach services
 # by hostname over the shared network and do not need the host mappings.
@@ -25,7 +26,8 @@
 #            app / app123 (least-priv app user)
 #   Mongo  — no auth                            (anonymous reads)
 #   Redis  — no auth                            (protected-mode off)
-#   Tomcat — tomcat / tomcat , admin / admin    (manager-gui, profile: heavy)
+#   Tomcat — tomcat / tomcat , admin / admin    (manager-gui exposed)
+#   JWT    — HS256 secret = Summer2024!         (lab-webapp; matches mongo)
 #
 # Attack chains the audit agents should detect end-to-end:
 #
@@ -48,8 +50,9 @@
 #     4. Lambda corp-backup-runner exposes creds + DB_PASSWORD in env vars
 #
 #   Chain D — Redis → SSH authorized_keys
-#     1. unauth Redis on default port (CONFIG SET allowed)
-#     2. attacker writes RDB to /root/.ssh/authorized_keys-style path
+#     1. unauth Redis on default port (CONFIG SET / REPLICAOF allowed)
+#     2. attacker writes RDB to /root/.ssh/authorized_keys-style path,
+#        OR uses REPLICAOF to make a rogue master push a malicious module
 #     3. result: SSH access to whatever shares Redis's filesystem
 #     (lab demonstrates the misconfig — shared volume not auto-wired)
 #
@@ -57,6 +60,42 @@
 #     1. webapp /ping?host= passes input to shell=True
 #     2. RCE pivots to snmpwalk against snmp:161 (community public)
 #     3. enumerates internal hostnames + interfaces for further targeting
+#
+#   Chain F — Mongo → Tomcat manager → WAR RCE → internal pivot
+#     1. anonymous Mongo read pulls corp.deploy_notes (manager URL + creds)
+#     2. /manager/html on tomcat:8080 accepts a malicious WAR upload
+#        (RemoteAddrValve stripped; tomcat:tomcat / admin:admin)
+#     3. WAR runs in the tomcat container → reaches mysql/redis/snmp on
+#        the lab network
+#
+#   Chain G — Webapp SQLi → cred reuse → SSH
+#     1. /items?id= on lab-webapp concatenates input into "SELECT … WHERE id="
+#     2. UNION extracts mysql.appdb.users + mysql.appdb.secrets
+#     3. ssh-jumpbox row gives lab/labpass for ssh:2222
+#     (DVWA's /vulnerabilities/sqli/ is the same chain through a different
+#      surface for training scenarios)
+#
+#   Chain H — DVWA file upload → webshell → SNMP recon
+#     1. DVWA /vulnerabilities/upload/ accepts PHP at security=low
+#     2. webshell on the dvwa container snmpwalks snmp:161 (public)
+#     3. enumerates internal inventory for further pivots
+#
+# Advanced surfaces (genuinely hard to find with traditional scanners):
+#
+#   1. Log4Shell-style JNDI       — webapp /log expands ${jndi:ldap://ldap/x}
+#                                    out-of-band callback against lab-ldap
+#   2. Tomcat Ghostcat (CVE-2020-1938) — AJP on :8009, secretRequired=false,
+#                                    allowedRequestAttributesPattern=".*"
+#   3. NoSQL injection            — POST /login_v2 with {"$gt":""} bypass
+#   4. JWT weak secret + alg=none — /auth/token + /admin (signature off)
+#   5. Jinja2 SSTI                — /preview?msg={{7*7}} → render_template_string
+#   6. Mass-assignment escalation — POST /signup with is_admin:true
+#   7. DNS-rebinding SSRF         — /fetch_v2 resolves twice (TOCTOU)
+#   8. Java deserialization       — tomcat /vuln/index.jsp readObject sink
+#   9. HTTP cache poisoning       — POST /reset trusts X-Forwarded-Host;
+#                                    nginx front caches across clients
+#  10. Smuggling-prone proxy      — nginx HTTP/1.0 upstream + keepalive,
+#                                    cached POST responses
 
 name: hakuna-lab
 
@@ -71,6 +110,8 @@ networks:
 
 services:
   dvwa:
+    # Damn Vulnerable Web App. Built-in surfaces for Chains G (SQLi) and H
+    # (file upload → webshell → SNMP). Default creds admin / password.
     image: vulnerables/web-dvwa:latest
     container_name: lab-dvwa
     hostname: dvwa
@@ -131,7 +172,6 @@ services:
     restart: unless-stopped
 
   snmp:
-    # Default config exposes community "public" (v1/v2c, read-only).
     image: polinux/snmpd:alpine
     container_name: lab-snmp
     hostname: snmp
@@ -140,12 +180,6 @@ services:
     restart: unless-stopped
 
   localstack:
-    # AWS emulator for cloud-audit e2e. One endpoint serves IAM, S3, EC2,
-    # Lambda, STS — matching the connectors the cloud audit agent uses. Pair
-    # with an AWS credential in the vault that carries
-    #   endpoint_url=http://localstack:4566
-    # (hostname, from the backend/audit-worker containers on `hakuna_default`)
-    # or http://localhost:4566 for a host-running backend.
     image: localstack/localstack:3.8
     container_name: lab-localstack
     hostname: localstack
@@ -154,8 +188,6 @@ services:
       DEBUG: "0"
       PERSISTENCE: "0"
     volumes:
-      # Init hook — seeds Chain B (S3 with leaked SSH key) + Chain C
-      # (over-privileged IAM user + Lambda with creds in env).
       - ./lab-seed/localstack/seed.sh:/etc/localstack/init/ready.d/seed.sh:ro
     ports:
       - "127.0.0.1:4566:4566"
@@ -170,20 +202,41 @@ services:
     restart: unless-stopped
 
   webapp:
-    # Tiny Flask app with intentional SSRF + command injection.
-    # Anchors Chain C (SSRF → LocalStack IAM) and Chain E (RCE → SNMP).
+    # Flask app with a deliberately wide attack surface. See lab-webapp/app.py
+    # for endpoint docs. Anchors Chains C, E, G plus advanced surfaces 1, 3-7,
+    # 9. Talks to mongo:27017, ldap:389, mysql:3306 over the lab network.
     build: ./lab-webapp
     image: hakuna/lab-webapp:latest
     container_name: lab-webapp
     hostname: webapp
+    depends_on:
+      - mongo
+      - mysql
+      - ldap
     ports:
       - "127.0.0.1:5005:5000"
     restart: unless-stopped
 
+  nginx:
+    # Front-proxy for lab-webapp. Configured to be smuggling-prone (HTTP/1.0
+    # upstream with keepalive) and to forward the Host header as
+    # X-Forwarded-Host without sanitisation — primes the cache-poisoning
+    # chain against /reset on the origin (advanced surfaces 9 + 10).
+    build: ./lab-nginx
+    image: hakuna/lab-nginx:latest
+    container_name: lab-nginx
+    hostname: nginx
+    depends_on:
+      - webapp
+    ports:
+      - "127.0.0.1:8085:80"
+    restart: unless-stopped
+
   redis:
-    # Unauthenticated Redis with protected-mode disabled. Demonstrates the
-    # CONFIG SET → write authorized_keys chain (Chain D). Shared-volume
-    # exploitation isn't auto-wired; the audit detects the misconfig itself.
+    # Unauthenticated Redis with protected-mode disabled. Demonstrates
+    # CONFIG SET → write authorized_keys (Chain D) and the REPLICAOF rogue-
+    # master vector. Shared-volume exploitation isn't auto-wired; the audit
+    # detects the misconfig itself.
     image: redis:7-alpine
     container_name: lab-redis
     hostname: redis
@@ -194,7 +247,8 @@ services:
 
   mysql:
     # Root password = AD svc_backup password. Init script seeds a `secrets`
-    # table containing SSH/AWS/SNMP creds — the pivot rung for Chain A.
+    # table containing SSH/AWS/SNMP creds (Chain A pivot rung) and an `app`
+    # user used by lab-webapp's SQLi sink (Chain G).
     image: mysql:8.0
     container_name: lab-mysql
     hostname: mysql
@@ -209,7 +263,8 @@ services:
 
   mongo:
     # No auth — anonymous reads from the network. corp.secrets has cleartext
-    # creds for tomcat, gitea, redis, aws, mysql.
+    # creds for tomcat, gitea, redis, aws, mysql; corp.deploy_notes points at
+    # the tomcat manager URL (Chain F entrypoint).
     image: mongo:6
     container_name: lab-mongo
     hostname: mongo
@@ -221,16 +276,18 @@ services:
     restart: unless-stopped
 
   tomcat:
-    # Tomcat 9 with the manager app exposed (RemoteAddrValve stripped) and
-    # tomcat:tomcat / admin:admin creds. Heavy image (~500MB) — opt-in:
-    #   docker compose -f docker-compose.lab.yml --profile heavy up -d
-    profiles: [heavy]
+    # Tomcat 9 with manager-gui exposed (RemoteAddrValve stripped),
+    # tomcat:tomcat / admin:admin, AJP on :8009 with secretRequired=false
+    # and allowedRequestAttributesPattern=".*" (CVE-2020-1938 Ghostcat),
+    # and a /vuln/ webapp with a Java deserialization sink. Anchors Chain F
+    # plus advanced surfaces 2 + 8.
     build: ./lab-tomcat
     image: hakuna/lab-tomcat:latest
     container_name: lab-tomcat
     hostname: tomcat
     ports:
       - "127.0.0.1:8088:8080"
+      - "127.0.0.1:8009:8009"
     restart: unless-stopped
 
   relay:
