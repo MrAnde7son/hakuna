@@ -86,6 +86,17 @@ resource "google_storage_bucket_object" "lab_bundle" {
   source = data.archive_file.lab_bundle.output_path
 }
 
+# ── Static external IP (for DNS publication) ────────────────────────────────
+
+resource "google_compute_address" "lab" {
+  count = var.lab_public_ip ? 1 : 0
+
+  name         = "hakuna-lab-public-ip"
+  region       = var.region
+  address_type = "EXTERNAL"
+  description  = "Static external IP for the lab VM. Survives stop/start so DNS records remain stable."
+}
+
 # ── Service account ──────────────────────────────────────────────────────────
 
 resource "google_service_account" "lab" {
@@ -161,6 +172,32 @@ resource "google_compute_firewall" "lab_allow_scanners" {
   target_service_accounts = [google_service_account.lab.email]
 }
 
+# Allow ingress from explicit source CIDRs (laptop / office IPs). Validated
+# in variables.tf to refuse 0.0.0.0/0 — this lab is intentionally vulnerable.
+resource "google_compute_firewall" "lab_allow_source_ranges" {
+  count = length(var.lab_allowed_source_ranges) > 0 ? 1 : 0
+
+  name        = "hakuna-lab-allow-source-ranges"
+  network     = google_compute_network.main.name
+  description = "Allow specified external CIDRs (laptop / office) to reach the lab VM."
+
+  direction = "INGRESS"
+  priority  = 800
+
+  allow {
+    protocol = "tcp"
+  }
+  allow {
+    protocol = "udp"
+  }
+  allow {
+    protocol = "icmp"
+  }
+
+  source_ranges           = var.lab_allowed_source_ranges
+  target_service_accounts = [google_service_account.lab.email]
+}
+
 # IAP-tunnelled SSH for manual debugging. Reuses the project IAP CIDR.
 resource "google_compute_firewall" "lab_allow_iap_ssh" {
   name        = "hakuna-lab-allow-iap-ssh"
@@ -224,7 +261,18 @@ resource "google_compute_instance" "lab" {
 
   network_interface {
     subnetwork = google_compute_subnetwork.main.id
-    # No access_config = no public IP. Outbound (Docker pulls) via Cloud NAT.
+
+    # Public IP is opt-in via var.lab_public_ip. Even when attached, ingress
+    # is gated by the firewall rules below — only scanner + audit-worker SAs
+    # and explicitly-listed source CIDRs (var.lab_allowed_source_ranges) can
+    # reach the lab. The public IP exists so a DNS record under hakunahq.com
+    # can resolve to it, simulating a customer's externally-facing asset.
+    dynamic "access_config" {
+      for_each = var.lab_public_ip ? [1] : []
+      content {
+        nat_ip = google_compute_address.lab[0].address
+      }
+    }
   }
 
   service_account {
@@ -334,5 +382,6 @@ resource "google_compute_instance" "lab" {
     google_compute_firewall.lab_deny_ingress,
     google_compute_firewall.lab_allow_scanners,
     google_compute_firewall.lab_deny_egress_datastores,
+    google_compute_address.lab,
   ]
 }

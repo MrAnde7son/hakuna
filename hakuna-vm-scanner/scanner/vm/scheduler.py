@@ -19,13 +19,17 @@ import os
 import shutil
 import socket
 import subprocess
+import time
 import urllib.error
 import urllib.request
 
+import redis
+from celery.exceptions import WorkerLostError
 from celery.schedules import crontab
 
 from scanner.vm.celery_app import celery_app
 from scanner.vm.config import (
+    CELERY_BROKER_URL,
     DAST_TEMPLATES_DIR,
     DAST_TEMPLATES_REPO,
     DATABASE_URL,
@@ -34,6 +38,12 @@ from scanner.vm.config import (
 from scanner.vm.db import _normalize_dsn
 
 logger = logging.getLogger(__name__)
+
+# Visibility timeout is 4h (see celery_app.py). Anything still in `unacked`
+# past that boundary plus a 1h grace was claimed by a worker that's no longer
+# acking — kombu only restores entries claimed by the *current* client_id, so
+# entries orphaned by a container restart never come back without help.
+ZOMBIE_TASK_THRESHOLD_SECONDS = 5 * 3600
 
 
 def _template_sync_disabled() -> bool:
@@ -235,6 +245,80 @@ def _dast_template_sync_impl(
     return {"status": "ok", "action": action, "template_count": template_count}
 
 
+@celery_app.task(queue="vm_queue", name="vm.reap_zombie_tasks")
+def reap_zombie_tasks() -> dict:
+    """Fail tasks orphaned in Celery's redis `unacked` set.
+
+    When a vm-worker container is killed mid-run, its `unacked` entries
+    are left behind: kombu's visibility_timeout-based restore only acts
+    on entries claimed by the *current* client_id, so entries from a
+    dead container never recover. Result-meta stays at STARTED forever
+    and the backend's poller keeps the scan in "running" until its 3h
+    reaper times it out — but only on the backend's view; the scanner
+    side stays dirty, which is what surfaced as a 10d-old "0/2 targets,
+    2 pending" scan in the UI on 2026-04-29.
+
+    This sweeper finds delivery tags older than ZOMBIE_TASK_THRESHOLD_SECONDS,
+    marks the result as FAILURE (so the backend poller sees a terminal
+    state and finalizes the scan), and removes them from the unacked
+    bookkeeping.
+    """
+    return _reap_zombie_tasks_impl()
+
+
+def _reap_zombie_tasks_impl(now: float | None = None) -> dict:
+    cutoff = (now if now is not None else time.time()) - ZOMBIE_TASK_THRESHOLD_SECONDS
+    client = redis.from_url(CELERY_BROKER_URL)
+
+    # `unacked_index` is a ZSET of delivery_tag -> claim timestamp.
+    stale_tags = client.zrangebyscore("unacked_index", "-inf", cutoff)
+    if not stale_tags:
+        return {"status": "ok", "reaped": 0}
+
+    reaped = []
+    for delivery_tag in stale_tags:
+        body = client.hget("unacked", delivery_tag)
+        if not body:
+            client.zrem("unacked_index", delivery_tag)
+            continue
+
+        try:
+            msg = json.loads(body)
+            headers = msg[0].get("headers", {})
+            task_id = headers.get("id")
+            task_name = headers.get("task")
+        except Exception:
+            logger.warning(
+                "zombie reaper: could not parse unacked body for %s; removing anyway",
+                delivery_tag,
+            )
+            client.hdel("unacked", delivery_tag)
+            client.zrem("unacked_index", delivery_tag)
+            continue
+
+        if task_id:
+            exc = WorkerLostError(
+                f"Task {task_name} ({task_id}) abandoned by dead worker; "
+                f"reaped after {ZOMBIE_TASK_THRESHOLD_SECONDS}s in unacked."
+            )
+            try:
+                celery_app.backend.mark_as_failure(task_id, exc)
+            except Exception:
+                logger.exception(
+                    "zombie reaper: failed to mark %s as failure", task_id
+                )
+
+        client.hdel("unacked", delivery_tag)
+        client.zrem("unacked_index", delivery_tag)
+        reaped.append({"task_id": task_id, "task_name": task_name})
+        logger.warning(
+            "zombie reaper: failed task %s (%s) abandoned in unacked",
+            task_id, task_name,
+        )
+
+    return {"status": "ok", "reaped": len(reaped), "tasks": reaped}
+
+
 # Beat schedule — only template sync runs here. Scan scheduling lives in the backend.
 celery_app.conf.beat_schedule.update({
     "template-sync-every-6h": {
@@ -244,6 +328,10 @@ celery_app.conf.beat_schedule.update({
     "dast-template-sync-daily": {
         "task": "vm.dast_template_sync",
         "schedule": crontab(hour=3, minute=0),  # 03:00 UTC
+    },
+    "reap-zombie-tasks-every-30m": {
+        "task": "vm.reap_zombie_tasks",
+        "schedule": crontab(minute="*/30"),
     },
 })
 

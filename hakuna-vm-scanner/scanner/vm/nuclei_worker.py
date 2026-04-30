@@ -15,6 +15,7 @@ place deduplication, tagging, SLA, threat intel, and risk scoring live.
 
 import asyncio
 import base64
+import contextlib
 import json
 import logging
 import os
@@ -643,7 +644,7 @@ async def _run_one_nuclei(cmd: list[str], timeout_seconds: int) -> dict:
 
     stderr_task = asyncio.create_task(drain_stderr())
 
-    try:
+    async def consume():
         assert proc.stdout is not None
         while True:
             raw_line = await proc.stdout.readline()
@@ -662,11 +663,17 @@ async def _run_one_nuclei(cmd: list[str], timeout_seconds: int) -> dict:
             templates_run.add(template_id)
             findings.append(_result_to_finding(result))
 
-        await asyncio.wait_for(proc.wait(), timeout=timeout_seconds)
+        await proc.wait()
         await stderr_task
+
+    try:
+        await asyncio.wait_for(consume(), timeout=timeout_seconds)
     except asyncio.TimeoutError:
         proc.kill()
-        await proc.wait()
+        with contextlib.suppress(Exception):
+            await proc.wait()
+        with contextlib.suppress(Exception):
+            await stderr_task
         raise
 
     return {
@@ -963,49 +970,52 @@ async def _run_nuclei_adhoc_async(
 
                 stderr_task = asyncio.create_task(drain_stderr(proc, cmd_stderr))
 
-                assert proc.stdout is not None
-                while True:
-                    raw_line = await proc.stdout.readline()
-                    if not raw_line:
-                        break
-                    line = raw_line.decode("utf-8", errors="replace").strip()
-                    if not line:
-                        continue
-                    try:
-                        result = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
+                async def consume():
+                    nonlocal findings_emitted, findings_persisted
+                    assert proc.stdout is not None
+                    while True:
+                        raw_line = await proc.stdout.readline()
+                        if not raw_line:
+                            break
+                        line = raw_line.decode("utf-8", errors="replace").strip()
+                        if not line:
+                            continue
+                        try:
+                            result = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
 
-                    template_id = result.get("template-id", result.get("templateID", ""))
-                    templates_run.add(template_id)
-                    findings_emitted += 1
+                        template_id = result.get("template-id", result.get("templateID", ""))
+                        templates_run.add(template_id)
+                        findings_emitted += 1
 
-                    info = result.get("info", {})
-                    findings.append({
-                        "template_id": template_id,
-                        "severity": (info.get("severity") or "info").lower(),
-                        "name": info.get("name", template_id),
-                        "description": info.get("description", ""),
-                        "matched_at": result.get("matched-at", ""),
-                        "host": result.get("host", ""),
-                        "port": result.get("port", ""),
-                        "type": result.get("type", ""),
-                        "tags": info.get("tags", []),
-                        "reference": info.get("reference", []),
-                        "classification": info.get("classification", {}),
-                        "curl_command": result.get("curl-command", ""),
-                        "matcher_name": result.get("matcher-name", ""),
-                        "extracted_results": result.get("extracted-results", []),
-                    })
+                        info = result.get("info", {})
+                        findings.append({
+                            "template_id": template_id,
+                            "severity": (info.get("severity") or "info").lower(),
+                            "name": info.get("name", template_id),
+                            "description": info.get("description", ""),
+                            "matched_at": result.get("matched-at", ""),
+                            "host": result.get("host", ""),
+                            "port": result.get("port", ""),
+                            "type": result.get("type", ""),
+                            "tags": info.get("tags", []),
+                            "reference": info.get("reference", []),
+                            "classification": info.get("classification", {}),
+                            "curl_command": result.get("curl-command", ""),
+                            "matcher_name": result.get("matcher-name", ""),
+                            "extracted_results": result.get("extracted-results", []),
+                        })
 
-                    # Persist to findings table when we have a resolved asset
-                    if conn and asset_id and resolved_org_id:
-                        persisted = await _emit_finding(conn, resolved_org_id, asset_id, result)
-                        if persisted:
-                            findings_persisted += 1
+                        if conn and asset_id and resolved_org_id:
+                            persisted = await _emit_finding(conn, resolved_org_id, asset_id, result)
+                            if persisted:
+                                findings_persisted += 1
 
-                await asyncio.wait_for(proc.wait(), timeout=int(remaining))
-                await stderr_task
+                    await proc.wait()
+                    await stderr_task
+
+                await asyncio.wait_for(consume(), timeout=int(remaining))
                 stages_run.append(label)
 
                 exit_code = proc.returncode or 0
@@ -1033,7 +1043,10 @@ async def _run_nuclei_adhoc_async(
             except asyncio.TimeoutError:
                 if proc is not None:
                     proc.kill()
-                    await proc.wait()
+                    with contextlib.suppress(Exception):
+                        await proc.wait()
+                with contextlib.suppress(Exception):
+                    await stderr_task
                 logger.error("nuclei adhoc %s timed out for target %s", label, target)
                 cmd_stats = _parse_nuclei_stats(cmd_stderr)
                 nuclei_stats = cmd_stats or nuclei_stats
