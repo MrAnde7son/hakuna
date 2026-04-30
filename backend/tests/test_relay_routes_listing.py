@@ -4,6 +4,8 @@ Covers the auto-provisioning of the managed cloud_scanner row and the guards
 that prevent customers from mutating it.
 """
 
+from datetime import datetime, timedelta
+
 from models.models import RelayAgent
 
 

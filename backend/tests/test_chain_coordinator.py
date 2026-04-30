@@ -698,6 +698,161 @@ class TestPatternVmKevToAudit:
         assert kev_hyps[0].protocol == "ssh"
 
 
+# ── Pattern: service_fingerprint_audit ─────────────────────────────
+
+
+class TestPatternServiceFingerprintAudit:
+    """Service-driven autonomous dispatch: naabu -sV (or banner_grab)
+    fingerprints SSH on port 2222, and the coordinator dispatches the SSH
+    audit against host:2222 — the legacy port-driven AUTO_TRIGGER_RULES
+    can't reach this because 2222 isn't in any rule's port tuple.
+    """
+
+    def test_emits_hypothesis_with_port_for_fingerprinted_ssh(
+        self, db_session, test_org, test_assets,
+    ):
+        host = test_assets[0]
+        host.easm_data = {
+            "open_ports": [2222],
+            "services": {"2222": {"name": "ssh", "product": "OpenSSH"}},
+        }
+        db_session.flush()
+
+        hyps = chain_coordinator.enumerate_hypotheses(
+            db_session, test_org.id, affected_set=set(),
+        )
+        svc_hyps = [h for h in hyps if h.pattern == "service_fingerprint_audit"]
+        assert len(svc_hyps) == 1
+        assert svc_hyps[0].asset_id == host.id
+        assert svc_hyps[0].protocol == "ssh"
+        assert svc_hyps[0].mission == "exposure_audit"
+        assert svc_hyps[0].port == 2222
+
+    def test_emits_for_well_known_port_without_fingerprint(
+        self, db_session, test_org, test_assets,
+    ):
+        # Open port 22 with no -sV data — fallback table still routes SSH.
+        host = test_assets[0]
+        host.easm_data = {"open_ports": [22]}
+        db_session.flush()
+
+        hyps = chain_coordinator.enumerate_hypotheses(
+            db_session, test_org.id, affected_set=set(),
+        )
+        svc_hyps = [h for h in hyps if h.pattern == "service_fingerprint_audit"]
+        assert any(h.protocol == "ssh" and h.port == 22 for h in svc_hyps)
+
+    def test_skips_when_per_port_cooldown_active(
+        self, db_session, test_org, test_assets,
+    ):
+        host = test_assets[0]
+        # SSH already audited on 2222 ten minutes ago — within 24h cooldown.
+        recent = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+        host.easm_data = {
+            "open_ports": [2222],
+            "services": {"2222": {"name": "ssh"}},
+            "_auto_audit_last": {"ssh:2222": recent},
+        }
+        db_session.flush()
+
+        hyps = chain_coordinator.enumerate_hypotheses(
+            db_session, test_org.id, affected_set=set(),
+        )
+        svc_hyps = [h for h in hyps if h.pattern == "service_fingerprint_audit"]
+        assert svc_hyps == []
+
+    def test_per_port_cooldown_does_not_block_other_ports(
+        self, db_session, test_org, test_assets,
+    ):
+        # SSH-22 was audited recently; SSH-2222 should still emit.
+        host = test_assets[0]
+        recent = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+        host.easm_data = {
+            "open_ports": [22, 2222],
+            "services": {
+                "22": {"name": "ssh"},
+                "2222": {"name": "ssh"},
+            },
+            "_auto_audit_last": {"ssh:22": recent},
+        }
+        db_session.flush()
+
+        hyps = chain_coordinator.enumerate_hypotheses(
+            db_session, test_org.id, affected_set=set(),
+        )
+        ssh_hyps = [
+            h for h in hyps
+            if h.pattern == "service_fingerprint_audit" and h.protocol == "ssh"
+        ]
+        ports_emitted = {h.port for h in ssh_hyps}
+        assert 2222 in ports_emitted
+        assert 22 not in ports_emitted
+
+    def test_ot_service_emits_with_requires_approval(
+        self, db_session, test_org, test_assets,
+    ):
+        host = test_assets[0]
+        host.easm_data = {"services": {"502": {"name": "modbus"}}}
+        db_session.flush()
+
+        hyps = chain_coordinator.enumerate_hypotheses(
+            db_session, test_org.id, affected_set=set(),
+        )
+        ot_hyps = [
+            h for h in hyps
+            if h.pattern == "service_fingerprint_audit" and h.protocol == "ot_protocol"
+        ]
+        assert len(ot_hyps) == 1
+        assert ot_hyps[0].requires_approval is True
+
+    def test_dispatches_with_audit_target_port_stamped(
+        self, db_session, test_org, test_assets,
+    ):
+        from models.models import RelayAgent
+        relay = RelayAgent(
+            id="relay-1", org_id=test_org.id, name="test-relay",
+            token_hash="x", status="connected",
+            relay_type="agent", last_seen_at=datetime.utcnow(),
+        )
+        db_session.add(relay)
+        db_session.flush()
+
+        host = test_assets[0]
+        host.easm_data = {
+            "services": {"2222": {"name": "ssh"}},
+        }
+        # Service router routes ssh→auto_audit_credentialed which defaults
+        # OFF org-wide. Flip it on for this test.
+        org_settings = dict(test_org.settings or {})
+        org_settings["auto_audit_credentialed"] = True
+        test_org.settings = org_settings
+        db_session.flush()
+
+        hyp = chain_coordinator.Hypothesis(
+            pattern="service_fingerprint_audit",
+            asset_id=host.id,
+            protocol="ssh",
+            mission="exposure_audit",
+            port=2222,
+        )
+        with patch("services.audit_runner.dispatch_audit_run") as mock_dispatch:
+            mock_dispatch.return_value = {
+                "scan_id": 42, "protocol": "ssh", "mission": "exposure_audit",
+                "status": "running", "runs": [],
+            }
+            outcome = chain_coordinator._dispatch_hypothesis(db_session, test_org, hyp)
+
+        assert outcome["dispatched"] is True
+        # The discovered port was stamped onto easm_data so the audit
+        # tools target host:2222 instead of host:22.
+        assert (host.easm_data or {}).get("audit_target_port") == 2222
+        # Cooldown stamped under the port-scoped key — NOT under the
+        # bare "ssh" key, so SSH-on-22 stays free to dispatch.
+        last_map = (host.easm_data or {}).get("_auto_audit_last") or {}
+        assert "ssh:2222" in last_map
+        assert "ssh" not in last_map
+
+
 # ── Pattern: lead_followup (Phase 4) ───────────────────────────────
 
 

@@ -678,17 +678,17 @@ export default function Settings() {
       {activeTab === 'dedup' && <>
 
       {/* Dedup Header */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', marginBottom: 24 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
           <SettingsIcon size={16} color="var(--accent)" />
-          <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)' }}>Deduplication</span>
+          <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)', whiteSpace: 'nowrap' }}>Deduplication</span>
           {cfg.is_org_override ? (
             <span
               title="This organization has customized the dedup rules. Global defaults still apply for any fields left unchanged."
               style={{
                 fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 10,
                 background: 'rgba(99,102,241,0.14)', color: 'var(--accent)',
-                border: '1px solid rgba(99,102,241,0.3)',
+                border: '1px solid rgba(99,102,241,0.3)', whiteSpace: 'nowrap',
               }}
             >
               Org override
@@ -699,14 +699,14 @@ export default function Settings() {
               style={{
                 fontSize: 11, fontWeight: 500, padding: '2px 8px', borderRadius: 10,
                 background: 'transparent', color: 'var(--text-muted)',
-                border: '1px solid var(--border)',
+                border: '1px solid var(--border)', whiteSpace: 'nowrap',
               }}
             >
               Inherited from global
             </span>
           )}
         </div>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
           <ExportImportButtons
             configType="dedup_config"
             exportFn={() => exportConfig('dedup_config')}
@@ -720,9 +720,10 @@ export default function Settings() {
               disabled={saving}
               title="Remove this org's override and use the platform-wide global defaults"
               style={{
-                display: 'flex', alignItems: 'center', gap: 6, padding: '7px 14px',
+                display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 14px',
                 borderRadius: 6, fontSize: 13, cursor: saving ? 'not-allowed' : 'pointer',
                 border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-muted)',
+                whiteSpace: 'nowrap',
               }}
             >
               <RotateCcw size={13} /> Revert to global
@@ -731,9 +732,10 @@ export default function Settings() {
           <button
             onClick={handleReset}
             style={{
-              display: 'flex', alignItems: 'center', gap: 6, padding: '7px 14px',
+              display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 14px',
               borderRadius: 6, fontSize: 13, cursor: 'pointer',
               border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-muted)',
+              whiteSpace: 'nowrap',
             }}
           >
             <RotateCcw size={13} /> Discard changes
@@ -742,10 +744,10 @@ export default function Settings() {
             onClick={handleSave}
             disabled={saving}
             style={{
-              display: 'flex', alignItems: 'center', gap: 6, padding: '7px 16px',
+              display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 16px',
               borderRadius: 6, fontSize: 13, cursor: saving ? 'not-allowed' : 'pointer',
               border: '1px solid var(--accent)', background: 'var(--accent)', color: '#fff',
-              opacity: saving ? 0.7 : 1,
+              opacity: saving ? 0.7 : 1, whiteSpace: 'nowrap',
             }}
           >
             <Save size={13} />

@@ -260,30 +260,49 @@ async def _do_tlsx(sf, org_id: str, target_scope: str | None = None) -> dict:
 async def _do_httpx(sf, org_id: str, target_scope: str | None = None) -> dict:
     """Extension 3: Run httpx with full flags + screenshots on confirmed_alive assets.
 
-    For large scans, hostnames are batched into HTTPX_BATCH_SIZE chunks; each batch
+    Targets are built per discovered open port (mirrors the tlsx fan-out
+    pattern), so HTTP services on non-canonical ports (e.g. an admin UI on
+    8088) get fingerprinted and the per-port fingerprint is persisted to
+    asset_ports for downstream scanners. Hosts with no open_ports fall back
+    to bare hostname (httpx defaults to 80/443).
+
+    For large scans, targets are batched into HTTPX_BATCH_SIZE chunks; each batch
     runs in its own subprocess with a scaled timeout, and multiple batches run in
     parallel bounded by settings.enrichment_batch_concurrency.
 
     Screenshots (headless Chromium) are ~1s/host — disabled on scans above
     settings.screenshot_max_hosts to keep wall time reasonable.
     """
-    hostnames = await _get_confirmed_alive_hostnames(
+    assets = await _get_confirmed_alive_assets(
         sf, org_id, target_scope=target_scope, apply_stale=True,
     )
-    if not hostnames:
+    if not assets:
         logger.info("org=%s httpx: no fresh assets to probe", org_id)
         return {"probed": 0, "skipped_fresh": True}
 
+    # Build host:port list across all open ports. httpx auto-detects http vs
+    # https per target and fail-fasts on non-HTTP services, so we don't filter
+    # the port set here — same approach as tlsx (_do_tlsx).
+    httpx_targets: list[str] = []
+    for asset in assets:
+        hostname = asset["hostname"]
+        ports = asset.get("open_ports") or []
+        if ports:
+            for port in ports:
+                httpx_targets.append(f"{hostname}:{port}")
+        else:
+            httpx_targets.append(hostname)
+
     ss_dir = os.path.join(settings.screenshot_dir, str(org_id))
-    batches = batch_hosts(hostnames, HTTPX_BATCH_SIZE)
+    batches = batch_hosts(httpx_targets, HTTPX_BATCH_SIZE)
     # 2.5s/host per batch accounts for slow CDN redirect chains and the
     # -follow-redirects flag — worker logs showed wordpress.org 500-host
     # batches hitting the previous 600s ceiling mid-chain.
     per_batch_timeout = BaseRunner.timeout_for_host_count(HTTPX_BATCH_SIZE, per_host_seconds=2.5)
-    screenshots_enabled = len(hostnames) <= settings.screenshot_max_hosts
+    screenshots_enabled = len(httpx_targets) <= settings.screenshot_max_hosts
     logger.info(
-        "org=%s httpx hosts=%d batches=%d concurrency=%d screenshots=%s per_batch_timeout=%ds",
-        org_id, len(hostnames), len(batches),
+        "org=%s httpx targets=%d batches=%d concurrency=%d screenshots=%s per_batch_timeout=%ds",
+        org_id, len(httpx_targets), len(batches),
         settings.enrichment_batch_concurrency, screenshots_enabled, per_batch_timeout,
     )
 
@@ -331,6 +350,12 @@ async def _do_httpx(sf, org_id: str, target_scope: str | None = None) -> dict:
             host = (entry.get("input") or entry.get("host") or "").strip().lower()
             if not host:
                 continue
+            # `input` may be "hostname:port" since we now fan out across all
+            # discovered ports — strip to the bare hostname for the asset
+            # lookup. The actual probed port lives in entry["port"] (or is
+            # derived from the URL scheme below).
+            if ":" in host:
+                host = host.rsplit(":", 1)[0]
             row = await db.execute(
                 text("SELECT id FROM assets WHERE org_id = :org_id AND hostname = :host"),
                 {"org_id": org_id, "host": host},

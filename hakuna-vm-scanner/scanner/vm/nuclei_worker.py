@@ -426,6 +426,16 @@ async def _run_nuclei_scan_async(
             }
 
         target = _resolve_target(asset)
+        # Per-port HTTP target list. When httpx fingerprinted multiple web
+        # services on the host (e.g. 80 + 8080 + 8443), each gets its own
+        # `-target` so Nuclei runs the selected templates against every
+        # endpoint. Falls back to ``[target]`` for assets enriched before
+        # migration 016. The legacy single-string ``target`` is kept for
+        # preflight, logging, and the ad-hoc/raw-target call sites that
+        # don't have an asset_ports row.
+        targets = await _resolve_http_targets(conn, asset)
+        if not targets:
+            targets = [target] if target else []
         org_id = asset["org_id"]
         open_ports = asset["open_ports"] or []
 
@@ -517,7 +527,7 @@ async def _run_nuclei_scan_async(
                 if port_only_tags:
                     port_cmd = [
                         NUCLEI_BIN,
-                        "-target", target,
+                        *_target_args(targets),
                         "-tags", ",".join(port_only_tags),
                         *cred_args,
                         "-jsonl",
@@ -549,7 +559,7 @@ async def _run_nuclei_scan_async(
         dast_args = ["-dast"] if _has_dast_template(template_args) else []
         legacy_cmd = [
             NUCLEI_BIN,
-            "-target", target,
+            *_target_args(targets),
             *template_args,
             *dast_args,
             *cred_args,
@@ -721,6 +731,20 @@ def _router_table() -> dict:
     return _load_routing_table()
 
 
+def _target_args(targets: list[str]) -> list[str]:
+    """Expand a list of URLs into repeated ``-target X`` flag pairs.
+
+    Nuclei accepts ``-target`` as a stringSlice, so passing it once per
+    URL fans the same template set across every endpoint without
+    spawning N subprocesses or maintaining a temp file.
+    """
+    out: list[str] = []
+    for t in targets:
+        if t:
+            out.extend(["-target", t])
+    return out
+
+
 def _resolve_target(asset) -> str:
     """Build the scan target — prefer hostname with http_url, fall back to IP."""
     http_url = asset.get("http_url")
@@ -731,6 +755,45 @@ def _resolve_target(asset) -> str:
         return hostname
     ip = asset.get("ip")
     return str(ip) if ip else ""
+
+
+async def _resolve_http_targets(conn, asset) -> list[str]:
+    """Return every fingerprinted HTTP URL for the asset.
+
+    Reads asset_ports rows where httpx left an http_url so the VM scanner
+    can target every web service on a host (e.g. an admin UI on 8088),
+    not just the canonical 80/443 endpoint stored on assets.http_url.
+
+    Falls back to ``[_resolve_target(asset)]`` when the per-port HTTP
+    fingerprint table is empty — keeps behaviour identical for hosts that
+    were enriched before migration 016.
+    """
+    asset_id = asset.get("id")
+    if asset_id is not None:
+        rows = await conn.fetch(
+            """
+            SELECT http_url
+            FROM asset_ports
+            WHERE asset_id = $1
+              AND http_url IS NOT NULL
+              AND http_status IS NOT NULL
+            ORDER BY port
+            """,
+            asset_id,
+        )
+        urls = [r["http_url"] for r in rows if r["http_url"]]
+        if urls:
+            # Dedupe while preserving order — different ports occasionally
+            # redirect to the same canonical URL.
+            seen: set[str] = set()
+            out: list[str] = []
+            for u in urls:
+                if u not in seen:
+                    seen.add(u)
+                    out.append(u)
+            return out
+    fallback = _resolve_target(asset)
+    return [fallback] if fallback else []
 
 
 def _nuclei_preflight(target: str, open_ports: list):

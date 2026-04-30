@@ -92,6 +92,15 @@ class AssetPort(Base):
     # produced by app.ingest.tls_deep_audit. See migration 013.
     tls_deep_audit: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     nmap_scripts: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # Per-port HTTP fingerprint from httpx (migration 016). Lets downstream
+    # scanners target every web service on a host (e.g. admin UI on 8088)
+    # instead of just the canonical 80/443 URL on assets.http_url.
+    http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    http_title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    http_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    http_webserver: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    http_tech_stack: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    last_http_probed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     asset: Mapped["Asset"] = relationship(back_populates="ports")

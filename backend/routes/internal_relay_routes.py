@@ -18,6 +18,7 @@ Scoped to process-to-process dispatch. Not exposed to the browser — the
 
 from __future__ import annotations
 
+import asyncio
 import hmac
 import logging
 import os
@@ -29,7 +30,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from core.auth import require_internal_token
-from core.database import get_db
+from core.database import SessionLocal, get_db
 from models.models import Organization, RelayAgent
 from services.relay_broker import get_relay_broker
 
@@ -181,6 +182,44 @@ def _internal_secret() -> str:
     return os.environ.get("INTERNAL_SHARED_SECRET", "")
 
 
+# Cloud Run kills the /ws/relay/cloud request at its 300s timeout, and the
+# cloud-scanner reconnects within ~1s. Writing status='disconnected' immediately
+# in the WS handler's finally block makes the UI flap to "Not deployed" during
+# that gap. Defer the write — if last_seen_at advances past disconnect_at within
+# the grace window, a reconnect happened (possibly on a different Cloud Run
+# instance) and we skip the write.
+_DISCONNECT_GRACE_SECONDS = 15
+
+
+def _mark_disconnected_if_stale(agent_id: str, disconnect_at: datetime) -> None:
+    db = SessionLocal()
+    try:
+        a = db.query(RelayAgent).filter(RelayAgent.id == agent_id).first()
+        if a is None:
+            return
+        # last_seen_at is bumped on every message and on reconnect. If it has
+        # advanced past our disconnect timestamp, the relay reconnected (here
+        # or on another instance) — leave status alone.
+        if a.last_seen_at and a.last_seen_at > disconnect_at:
+            return
+        a.status = "disconnected"
+        a.last_seen_at = disconnect_at
+        db.commit()
+    except Exception:
+        logger.exception("Failed to mark cloud_scanner %s disconnected", agent_id)
+        db.rollback()
+    finally:
+        db.close()
+
+
+async def _delayed_disconnect_status(agent_id: str, disconnect_at: datetime) -> None:
+    try:
+        await asyncio.sleep(_DISCONNECT_GRACE_SECONDS)
+    except asyncio.CancelledError:
+        return
+    await asyncio.to_thread(_mark_disconnected_if_stale, agent_id, disconnect_at)
+
+
 @cloud_ws_router.websocket("/ws/relay/cloud")
 async def cloud_relay_websocket(ws: WebSocket, db: Session = Depends(get_db)):
     """WebSocket endpoint for the Hakuna-managed cloud scanner.
@@ -250,6 +289,5 @@ async def cloud_relay_websocket(ws: WebSocket, db: Session = Depends(get_db)):
         logger.exception("Cloud relay WebSocket error for agent %s", agent.id)
     finally:
         await broker.unregister(agent.id)
-        agent.status = "disconnected"
-        agent.last_seen_at = datetime.utcnow()
-        db.commit()
+        disconnect_at = datetime.utcnow()
+        asyncio.create_task(_delayed_disconnect_status(agent.id, disconnect_at))

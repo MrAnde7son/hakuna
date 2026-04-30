@@ -139,6 +139,14 @@ class Hypothesis:
     score_factors: dict = field(default_factory=dict)
     requires_approval: bool = False   # off by default; Phase 4 turns on cred_found etc.
     rationale: str = ""               # short string for logging / UI
+    # Optional non-standard port discovered by EASM service fingerprinting.
+    # When set, ``_dispatch_hypothesis`` stamps it onto
+    # ``Asset.easm_data['audit_target_port']`` before calling
+    # ``audit_runner.dispatch_audit_run`` so the audit tools target
+    # ``host:port`` instead of the protocol's hardcoded standard port.
+    # Cooldowns + debounce key on ``(protocol, port)`` when this is set so
+    # SSH on 22 and SSH on 2222 don't share gating state.
+    port: int | None = None
 
 
 def enumerate_hypotheses(
@@ -176,9 +184,10 @@ def rank_hypotheses(hypotheses: list[Hypothesis]) -> list[Hypothesis]:
                 score_factors=factors,
                 requires_approval=h.requires_approval,
                 rationale=h.rationale,
+                port=h.port,
             )
         )
-    scored.sort(key=lambda h: (-h.score, h.asset_id))
+    scored.sort(key=lambda h: (-h.score, h.asset_id, h.port or 0))
     return scored
 
 
@@ -744,6 +753,75 @@ def _assets_with_plaintext_credential(db: Session, org_id: int) -> set[int]:
     return out
 
 
+# ── Pattern: service_fingerprint_audit ──────────────────────────────
+
+
+def _pattern_service_fingerprint_audit(
+    db: Session, org_id: int, affected_set: set[int],
+) -> list[Hypothesis]:
+    """EASM fingerprinted a service on a port — dispatch the matching audit.
+
+    Predicate:
+      * Asset has at least one ``(port, service_name)`` entry in
+        ``easm_data['services']`` (or a well-known port that resolves to a
+        known service via ``service_router.WELL_KNOWN_PORTS``).
+      * The service name maps to a registered audit protocol.
+      * No ``_auto_audit_last[<protocol>:<port>]`` cooldown is active.
+
+    The Hypothesis carries the discovered ``port`` so dispatch can stamp
+    ``easm_data['audit_target_port']`` before calling
+    ``audit_runner.dispatch_audit_run``. The audit tools then target
+    ``host:<port>`` instead of the protocol's standard port — this is what
+    makes SSH on 2222 / SMB on 4445 / Postgres on 5433 actually scan.
+
+    OT services flagged ``requires_consent=True`` emit hypotheses with
+    ``requires_approval=True``; the existing approval gate in
+    ``_dispatch_hypothesis`` enforces the per-asset consent check.
+    """
+    from services.service_router import enumerate_service_audits
+
+    candidate_ids: set[int] = affected_set or set()
+    if candidate_ids:
+        assets = (
+            db.query(Asset)
+            .filter(Asset.id.in_(candidate_ids))
+            .join(Scan, Asset.scan_id == Scan.id)
+            .filter(Scan.org_id == org_id)
+            .all()
+        )
+    else:
+        # No affected subgraph — full sweep. Coordinator runs at most once
+        # per debounce window so this isn't hot-path. Asset.org_id is an
+        # ALTER-added column not in the ORM mapper, so scope via Scan.
+        assets = (
+            db.query(Asset)
+            .join(Scan, Asset.scan_id == Scan.id)
+            .filter(Scan.org_id == org_id)
+            .all()
+        )
+
+    now = datetime.now(timezone.utc)
+    out: list[Hypothesis] = []
+
+    for asset in assets:
+        for port, service_name, route in enumerate_service_audits(asset.easm_data):
+            if _within_protocol_cooldown(asset, route.protocol, now, port=port):
+                continue
+            out.append(Hypothesis(
+                pattern="service_fingerprint_audit",
+                asset_id=asset.id,
+                protocol=route.protocol,
+                mission=route.mission,
+                port=port,
+                requires_approval=route.requires_consent,
+                rationale=(
+                    f"asset {asset.id} has {service_name} fingerprinted on "
+                    f"port {port}; routing to {route.protocol}/{route.mission}"
+                ),
+            ))
+    return out
+
+
 # Closed pattern registry — adding a pattern is a new function plus a
 # row here. Phase 4 adds the rest of the v1 set described in the doc.
 _PATTERNS: tuple = (
@@ -753,6 +831,7 @@ _PATTERNS: tuple = (
     _pattern_lead_followup,
     _pattern_sbom_unpatched,
     _pattern_cred_found,
+    _pattern_service_fingerprint_audit,
 )
 
 
@@ -768,6 +847,11 @@ _PATTERN_PRIORS: dict[str, float] = {
     "lead_followup":    0.7,     # the agent already saw something; high signal
     "sbom_unpatched":   0.55,    # SBOM correlation is signal-rich but indirect
     "cred_found":       0.85,    # plaintext creds + reachable host = near-certain pivot
+    # Lower than easm_to_smb because the fingerprint-driven sweep fans out
+    # across every asset's ports — most hits are non-standard reposts of
+    # already-audited protocols. Still positive: the whole point is to
+    # cover ports the legacy port-driven rules miss.
+    "service_fingerprint_audit": 0.5,
 }
 
 # Static per-pattern scan cost — informs the score's denominator. 1 =
@@ -779,6 +863,7 @@ _PATTERN_COST: dict[str, float] = {
     "lead_followup":    1.2,
     "sbom_unpatched":   5.0,    # full VM scan
     "cred_found":       2.0,    # authenticated audit, more steps + creds management
+    "service_fingerprint_audit": 1.2,   # range from cheap (FTP) to medium (datastore triage)
 }
 
 
@@ -860,7 +945,7 @@ def _dispatch_hypothesis(
         return {"dispatched": False, "reason": "asset_missing", "asset_id": hyp.asset_id}
 
     now = datetime.now(timezone.utc)
-    if _within_protocol_cooldown(asset, hyp.protocol, now):
+    if _within_protocol_cooldown(asset, hyp.protocol, now, port=hyp.port):
         return {
             "dispatched": False, "reason": "cooldown",
             "asset_id": hyp.asset_id, "pattern": hyp.pattern,
@@ -880,6 +965,17 @@ def _dispatch_hypothesis(
     if hyp.protocol == "vm_scan":
         result = _mark_vm_rescan(asset, hyp, now)
     else:
+        # Stamp the discovered non-standard port (when the Hypothesis
+        # carries one) so the audit tools target ``host:<port>`` instead
+        # of the protocol's hardcoded standard port. Read by
+        # ``audit_runner._asset_audit_target_port`` and the protocol
+        # tools' target builders.
+        if hyp.port is not None:
+            easm = dict(asset.easm_data or {})
+            easm["audit_target_port"] = int(hyp.port)
+            asset.easm_data = easm
+            db.flush()
+
         # Reuse the auto-trigger's relay picker — same asset/relay-affinity
         # heuristic should drive any auto-dispatched audit, no matter who
         # asked.
@@ -920,8 +1016,19 @@ def _dispatch_hypothesis(
 
     # Honor the same cooldown the auto-trigger writes so the next tick
     # (and any concurrent port_change auto-trigger) sees this dispatch.
+    # When the hypothesis carries a non-standard port, stamp the
+    # port-scoped key (``f"{protocol}:{port}"``) so SSH-on-22 and
+    # SSH-on-2222 cool down independently — _within_protocol_cooldown
+    # reads the same key.
     from services.audit_auto_trigger import _stamp_cooldown
-    _stamp_cooldown(asset, hyp.protocol, now)
+    if hyp.port is not None:
+        easm = dict(asset.easm_data or {})
+        last_map = dict(easm.get("_auto_audit_last") or {})
+        last_map[f"{hyp.protocol}:{hyp.port}"] = now.isoformat()
+        easm["_auto_audit_last"] = last_map
+        asset.easm_data = easm
+    else:
+        _stamp_cooldown(asset, hyp.protocol, now)
 
     logger.info(
         "chain_coordinator: dispatched asset=%d pattern=%s scan=%s",
@@ -978,6 +1085,11 @@ _PROTOCOL_TO_SETTING: dict[str, str] = {
     # an org that doesn't want the Coordinator firing VM scans can opt
     # out without losing audit auto-dispatch.
     "vm_scan":               "auto_audit_vm_rescan",
+    # Service-router-dispatched OT protocol audit. Same setting as the
+    # legacy port-driven OT rule in ``audit_auto_trigger.AUTO_TRIGGER_RULES``;
+    # the per-asset consent record is enforced via ``requires_approval``
+    # on the Hypothesis (mapped from ``ServiceAudit.requires_consent``).
+    "ot_protocol":           "auto_audit_ot",
 }
 
 
@@ -991,15 +1103,21 @@ _DEFAULT_OFF_PROTOCOLS: frozenset[str] = frozenset({
 
 
 def _within_protocol_cooldown(
-    asset: Asset, protocol: str, now: datetime,
+    asset: Asset, protocol: str, now: datetime, *, port: int | None = None,
 ) -> bool:
     """Read the same `_auto_audit_last` map the auto-trigger writes.
 
     Default cooldown for Coordinator-initiated dispatch is 24h (matches
     the auto-trigger). Don't introduce a parallel table.
+
+    When ``port`` is provided (service-fingerprint dispatches), check
+    the per-port key ``f"{protocol}:{port}"`` so SSH-on-22 and
+    SSH-on-2222 cool down independently. Without a port we fall back to
+    the bare protocol key the legacy auto-trigger writes.
     """
     last_map = (asset.easm_data or {}).get("_auto_audit_last") or {}
-    raw = last_map.get(protocol)
+    key = f"{protocol}:{port}" if port is not None else protocol
+    raw = last_map.get(key)
     if not raw:
         return False
     try:

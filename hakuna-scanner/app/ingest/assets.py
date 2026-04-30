@@ -256,42 +256,114 @@ async def update_enrichment(
     org_id: uuid.UUID,
     httpx_results: list[dict],
 ) -> int:
-    """Update HTTP enrichment data on assets from httpx output."""
+    """Update HTTP enrichment data on assets from httpx output.
+
+    Persists per-port fingerprint to asset_ports (so the VM scanner can
+    target every web service on a host) and keeps assets.http_url /
+    http_status / tech_stack as a "primary" rollup for the asset list UI.
+    The primary is the first probed port we see for the asset, with 443
+    and 80 preferred over alternates.
+    """
     updated = 0
     now = datetime.now(timezone.utc)
 
     from app.ingest.http_header_audit import audit_response
 
+    # Group entries per asset so we can pick a sensible primary URL
+    # (443 > 80 > everything else) without overwriting it with the last-
+    # seen entry, which is order-dependent.
+    by_host: dict[str, list[dict]] = {}
     for entry in httpx_results:
-        host = (entry.get("input") or entry.get("host") or "").strip().lower()
-        if not host:
+        host_raw = (entry.get("input") or entry.get("host") or "").strip().lower()
+        if not host_raw:
             continue
+        # input is "hostname:port" when fan-out is enabled; strip to host.
+        host = host_raw.rsplit(":", 1)[0] if ":" in host_raw else host_raw
+        by_host.setdefault(host, []).append(entry)
 
-        tech = entry.get("tech") or entry.get("technologies")
-        cdn_name = entry.get("cdn_name") or entry.get("cdn")
-        waf = entry.get("waf_name") or entry.get("waf")
-
-        # Compute security-header / cookie audit. Never raise — enrichment
-        # must not fail because of a malformed header dict.
-        try:
-            security_audit = audit_response(entry)
-        except Exception:  # noqa: BLE001
-            security_audit = None
-
-        # Build services dict from httpx probe results
+    def _primary_rank(entry: dict) -> tuple[int, int]:
         url = entry.get("url") or ""
-        webserver = entry.get("webserver") or entry.get("web_server") or ""
+        scheme = url.split("://", 1)[0].lower() if "://" in url else ""
         port = entry.get("port")
-        scheme = url.split("://")[0].lower() if "://" in url else ""
         if not port:
-            port = 443 if scheme == "https" else 80 if scheme == "http" else None
-        services_dict = {}
-        if port and scheme:
+            port = 443 if scheme == "https" else 80 if scheme == "http" else 0
+        try:
+            port = int(port)
+        except (TypeError, ValueError):
+            port = 0
+        # Lower rank wins. Preferred order: 443, 80, then ascending port.
+        if port == 443:
+            return (0, port)
+        if port == 80:
+            return (1, port)
+        return (2, port)
+
+    from app.ingest.enrichment import upsert_asset_port_http
+
+    for host, entries in by_host.items():
+        entries_sorted = sorted(entries, key=_primary_rank)
+
+        # Resolve asset_id once per host instead of N times in the per-port
+        # write loop below.
+        asset_row = await db.execute(
+            text("SELECT id FROM assets WHERE org_id = :org_id AND hostname = :host"),
+            {"org_id": org_id, "host": host},
+        )
+        asset_id_row = asset_row.fetchone()
+        if asset_id_row is None:
+            # Asset got pruned between scope-build and now — skip.
+            continue
+        asset_id = asset_id_row.id
+
+        # Per-port writes to asset_ports for every probed entry.
+        services_dict: dict[str, dict] = {}
+        for entry in entries_sorted:
+            url = entry.get("url") or ""
+            scheme = url.split("://", 1)[0].lower() if "://" in url else ""
+            webserver = entry.get("webserver") or entry.get("web_server") or ""
+            port = entry.get("port")
+            if not port:
+                port = 443 if scheme == "https" else 80 if scheme == "http" else None
+            try:
+                port = int(port) if port is not None else None
+            except (TypeError, ValueError):
+                port = None
+            if not port:
+                continue
+
+            tech_entry = entry.get("tech") or entry.get("technologies")
+            status = entry.get("status_code") or entry.get("status-code")
+
             services_dict[str(port)] = {
-                "name": scheme,
+                "name": scheme or "http",
                 "product": webserver,
                 "version": "",
             }
+
+            await upsert_asset_port_http(
+                db,
+                asset_id,
+                port,
+                http_status=status,
+                http_title=entry.get("title"),
+                http_url=url or None,
+                http_webserver=webserver or None,
+                http_tech_stack=tech_entry,
+            )
+
+        # Asset-level rollup uses the first (highest-ranked) entry as the
+        # primary URL. Keeps the existing asset list / dashboards pointing
+        # at 443/80 when they exist, while the per-port detail lives on
+        # asset_ports.
+        primary = entries_sorted[0]
+        primary_url = primary.get("url") or ""
+        primary_tech = primary.get("tech") or primary.get("technologies")
+        cdn_name = primary.get("cdn_name") or primary.get("cdn")
+        waf = primary.get("waf_name") or primary.get("waf")
+        try:
+            security_audit = audit_response(primary)
+        except Exception:  # noqa: BLE001
+            security_audit = None
         services_json = json.dumps(services_dict) if services_dict else None
 
         await db.execute(
@@ -310,10 +382,10 @@ async def update_enrichment(
                 WHERE org_id = :org_id AND hostname = :host
             """),
             {
-                "status": entry.get("status_code") or entry.get("status-code"),
-                "title": entry.get("title"),
-                "url": url,
-                "tech": json.dumps(tech) if tech else None,
+                "status": primary.get("status_code") or primary.get("status-code"),
+                "title": primary.get("title"),
+                "url": primary_url,
+                "tech": json.dumps(primary_tech) if primary_tech else None,
                 "cdn": cdn_name if isinstance(cdn_name, str) else (cdn_name[0] if cdn_name else None),
                 "waf": waf if isinstance(waf, str) else (waf[0] if waf else None),
                 "services": services_json,
@@ -323,7 +395,7 @@ async def update_enrichment(
                 "now": now,
             },
         )
-        updated += 1
+        updated += len(entries_sorted)
 
     await db.commit()
     return updated

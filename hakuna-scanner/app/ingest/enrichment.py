@@ -82,6 +82,68 @@ async def upsert_asset_port(
     return row.id if row else port_id
 
 
+async def upsert_asset_port_http(
+    db: AsyncSession,
+    asset_id: uuid.UUID,
+    port: int,
+    *,
+    http_status: int | None = None,
+    http_title: str | None = None,
+    http_url: str | None = None,
+    http_webserver: str | None = None,
+    http_tech_stack: list | dict | None = None,
+    protocol: str = "tcp",
+) -> None:
+    """Write the per-port httpx fingerprint to asset_ports.
+
+    UPSERT (not UPDATE) because tlsx and httpx run in the same parallel
+    enrichment group — the port row may not yet exist when httpx finishes
+    on a non-TLS port (e.g. an admin UI on 8088). Uses COALESCE-on-conflict
+    so a follow-up tlsx write doesn't blow away the HTTP fingerprint and
+    vice versa.
+    """
+    now = datetime.now(timezone.utc)
+    tech_json = (
+        json.dumps(http_tech_stack)
+        if http_tech_stack not in (None, "", [], {})
+        else None
+    )
+    await db.execute(
+        text("""
+            INSERT INTO asset_ports (
+                id, asset_id, port, protocol,
+                http_status, http_title, http_url, http_webserver,
+                http_tech_stack, last_http_probed_at, updated_at
+            )
+            VALUES (
+                :id, :asset_id, :port, :proto,
+                :status, :title, :url, :webserver,
+                cast(:tech as jsonb), :now, :now
+            )
+            ON CONFLICT (asset_id, port, protocol) DO UPDATE SET
+                http_status = COALESCE(EXCLUDED.http_status, asset_ports.http_status),
+                http_title = COALESCE(EXCLUDED.http_title, asset_ports.http_title),
+                http_url = COALESCE(EXCLUDED.http_url, asset_ports.http_url),
+                http_webserver = COALESCE(EXCLUDED.http_webserver, asset_ports.http_webserver),
+                http_tech_stack = COALESCE(EXCLUDED.http_tech_stack, asset_ports.http_tech_stack),
+                last_http_probed_at = EXCLUDED.last_http_probed_at,
+                updated_at = EXCLUDED.updated_at
+        """),
+        {
+            "id": uuid.uuid4(),
+            "asset_id": asset_id,
+            "port": port,
+            "proto": protocol,
+            "status": http_status,
+            "title": http_title,
+            "url": http_url,
+            "webserver": http_webserver,
+            "tech": tech_json,
+            "now": now,
+        },
+    )
+
+
 async def upsert_asset_port_cpes(
     db: AsyncSession,
     asset_id: uuid.UUID,
