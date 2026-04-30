@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy.orm import Session
 
-from core.auth import require_auth
+from core.auth import get_accessible_org_ids, require_auth
 from core.database import get_db
 from core.time_utils import iso_utc
 from core.subscription import check_scan_limit
@@ -38,8 +38,23 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/audits", tags=["audits"])
 
 
-def _get_org(db: Session, user: User) -> Organization:
-    org = db.query(Organization).filter(Organization.id == user.org_id).first()
+async def get_active_org(
+    user: User = Depends(require_auth),
+    db: Session = Depends(get_db),
+    org_ids: list | None = Depends(get_accessible_org_ids),
+) -> Organization:
+    """Resolve the org targeted by the current request.
+
+    Honors the X-Org-Context sidebar selector (validated by
+    ``get_accessible_org_ids``) so superadmin / MSSP users acting against a
+    child org see and write that org's data. Falls back to the user's home
+    org otherwise.
+    """
+    if org_ids and len(org_ids) == 1:
+        target_id = org_ids[0]
+    else:
+        target_id = user.org_id
+    org = db.query(Organization).filter(Organization.id == target_id).first()
     if not org:
         raise HTTPException(404, "Organization not found")
     return org
@@ -100,6 +115,7 @@ def create_audit_run(
     body: AuditRunRequest,
     db: Session = Depends(get_db),
     user: User = Depends(require_auth),
+    org: Organization = Depends(get_active_org),
 ):
     """Kick off a Protocol Audit run.
 
@@ -107,7 +123,6 @@ def create_audit_run(
     immediately with the scan_id and agent_id list; poll `/api/audits/scans/{scan_id}`
     for progress.
     """
-    org = _get_org(db, user)
 
     # Pre-flight token quota check. Each audit run is N agent runs × ~15k tokens,
     # so if the org is already over limit we fail here with one 429 instead of
@@ -175,14 +190,13 @@ def create_audit_run(
 def get_audit_scan(
     scan_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(require_auth),
+    org: Organization = Depends(get_active_org),
 ):
     """Return the audit scan + per-asset agent run statuses.
 
     Frontend uses this to render progress on the scan page (one row per
     asset with its current step count + status).
     """
-    org = _get_org(db, user)
     scan = (
         db.query(Scan)
         .filter(Scan.id == scan_id, Scan.org_id == org.id)
@@ -254,8 +268,7 @@ class AuditRescanRequest(BaseModel):
     model: str | None = None
 
 
-def _load_audit_scan(db: Session, scan_id: int, user: User) -> Scan:
-    org = _get_org(db, user)
+def _load_audit_scan(db: Session, scan_id: int, org: Organization) -> Scan:
     scan = db.query(Scan).filter(Scan.id == scan_id, Scan.org_id == org.id).first()
     if not scan:
         raise HTTPException(404, "Audit scan not found")
@@ -270,6 +283,7 @@ def rescan_audit(
     body: AuditRescanRequest | None = None,
     db: Session = Depends(get_db),
     user: User = Depends(require_auth),
+    org: Organization = Depends(get_active_org),
 ):
     """Replay an audit scan in place. Pass overrides to edit-and-rerun; omit
     to replay as-is.
@@ -279,8 +293,7 @@ def rescan_audit(
     archived into ``raw_metadata["run_history"]`` so ``/history`` can still
     surface every past run's AgentRuns.
     """
-    scan = _load_audit_scan(db, scan_id, user)
-    org = _get_org(db, user)
+    scan = _load_audit_scan(db, scan_id, org)
     check_token_quota(org.id, db)
 
     body = body or AuditRescanRequest()
@@ -355,13 +368,14 @@ def update_audit_scan(
     body: AuditScanUpdateRequest,
     db: Session = Depends(get_db),
     user: User = Depends(require_auth),
+    org: Organization = Depends(get_active_org),
 ):
     """Update the stored parameters on an audit scan (for scheduled reruns).
 
     The scheduler reads from ``raw_metadata`` at fire time, so writing there
     is sufficient — no separate "edit" table. We validate mission against the
     registry so the UI can't save an unknown mission."""
-    scan = _load_audit_scan(db, scan_id, user)
+    scan = _load_audit_scan(db, scan_id, org)
     md = dict(scan.raw_metadata or {})
 
     protocol = md.get("protocol")
@@ -426,14 +440,14 @@ def update_audit_scan(
 def audit_scan_history(
     scan_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(require_auth),
+    org: Organization = Depends(get_active_org),
 ):
     """All AgentRuns tied to this scan — current run plus every archived
     run from ``raw_metadata.run_history``. One row per run, newest first.
 
     Analog of ``VmScanHistory`` on the frontend — the component already knows
     how to render a list of runs; we just need to provide them."""
-    scan = _load_audit_scan(db, scan_id, user)
+    scan = _load_audit_scan(db, scan_id, org)
     md = scan.raw_metadata or {}
 
     # Flatten all scratch_agent_ids: current run + every archived run.

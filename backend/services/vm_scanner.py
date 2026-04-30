@@ -4,6 +4,7 @@ and manages Scan records in the main database.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import uuid
@@ -18,6 +19,7 @@ from sqlalchemy import cast, or_, String
 from sqlalchemy.orm import Session
 
 from models.models import Asset, Finding, Scan, Organization
+from services import scan_planner
 from services.asset_observations import record_observation, record_finding_observation
 
 logger = logging.getLogger(__name__)
@@ -376,6 +378,55 @@ async def start_vm_scan(
             row.id: {"plan": row.scan_plan, "version": row.scan_plan_version or 0}
             for row in plan_rows if row.scan_plan
         }
+
+        # Lazily compute plans for targets whose asset has none — without
+        # a plan, nuclei runs the full ~10k-template store per target and
+        # blows past SCAN_TIMEOUT_SECONDS. Per-asset failures fall back to
+        # the legacy TemplateRouter path so a flaky planner can't block a
+        # whole dispatch. The whole batch is bounded so a slow LLM doesn't
+        # hang the scan request.
+        missing_plan_aids = [
+            aid for aid in set(target_asset_map.values()) if aid not in plans_by_aid
+        ]
+        if missing_plan_aids:
+            sem = asyncio.Semaphore(5)
+            async def _compute_one(aid: int):
+                async with sem:
+                    try:
+                        plan = await scan_planner.compute_and_persist_scan_plan(
+                            db, org.id, aid, force=False,
+                        )
+                        return aid, plan
+                    except Exception:
+                        logger.exception(
+                            "scan_plan compute failed for asset %s; using legacy path", aid,
+                        )
+                        return aid, None
+            try:
+                computed = await asyncio.wait_for(
+                    asyncio.gather(*[_compute_one(aid) for aid in missing_plan_aids]),
+                    timeout=120,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "scan_plan compute timed out for %d asset(s); dispatching with partial plans",
+                    len(missing_plan_aids),
+                )
+                computed = []
+            if computed:
+                fresh_versions = dict(
+                    db.query(Asset.id, Asset.scan_plan_version)
+                    .filter(Asset.id.in_([aid for aid, plan in computed if plan is not None]))
+                    .all()
+                )
+                for aid, plan in computed:
+                    if plan is None:
+                        continue
+                    plans_by_aid[aid] = {
+                        "plan": plan.to_dict(),
+                        "version": fresh_versions.get(aid) or 1,
+                    }
+
         for tgt, aid in target_asset_map.items():
             if aid in plans_by_aid:
                 scan_plans[tgt] = plans_by_aid[aid]

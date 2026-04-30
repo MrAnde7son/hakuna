@@ -22,7 +22,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from core.auth import require_auth
+from core.auth import get_accessible_org_ids, require_auth
 from core.database import get_db
 from core.time_utils import iso_utc
 from models.models import Asset, Finding, Organization, Scan, User
@@ -143,9 +143,12 @@ class ConsentRevokeRequest(BaseModel):
 def get_ot_posture_overview(
     db: Session = Depends(get_db),
     user: User = Depends(require_auth),
+    org_ids: list | None = Depends(get_accessible_org_ids),
 ):
     """Asset × OT-protocol consent matrix + IEC 62443 / METI v3 coverage."""
-    org_id = user.org_id
+    # Honor the X-Org-Context sidebar selector so superadmin/MSSP users see
+    # the selected child org's posture instead of their home org's.
+    org_id = org_ids[0] if org_ids and len(org_ids) == 1 else user.org_id
     org = db.query(Organization).filter(Organization.id == org_id).first()
     if not org:
         raise HTTPException(404, "Organization not found")

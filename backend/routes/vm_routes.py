@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from core.database import get_db
-from core.auth import require_auth
+from core.auth import get_accessible_org_ids, require_auth
 from core.subscription import check_scan_limit
 from models.models import Organization, User
 from models.models import Scan
@@ -44,8 +44,23 @@ class VmRescanRequest(BaseModel):
     agent_categories: List[str] | None = None
 
 
-def _get_org(db: Session, user: User) -> Organization:
-    org = db.query(Organization).filter(Organization.id == user.org_id).first()
+async def get_active_org(
+    user: User = Depends(require_auth),
+    db: Session = Depends(get_db),
+    org_ids: list | None = Depends(get_accessible_org_ids),
+) -> Organization:
+    """Resolve the org targeted by the current request.
+
+    Honors the X-Org-Context sidebar selector (validated by
+    ``get_accessible_org_ids``) so superadmin / MSSP users acting against a
+    child org dispatch the scan into that child org. Falls back to the user's
+    home org otherwise.
+    """
+    if org_ids and len(org_ids) == 1:
+        target_id = org_ids[0]
+    else:
+        target_id = user.org_id
+    org = db.query(Organization).filter(Organization.id == target_id).first()
     if not org:
         raise HTTPException(404, "Organization not found")
     return org
@@ -56,9 +71,9 @@ async def create_vm_scan(
     body: VmScanRequest,
     db: Session = Depends(get_db),
     user: User = Depends(require_auth),
+    org: Organization = Depends(get_active_org),
 ):
     """Create a VM scan — creates a Scan record and dispatches to VM scanner container."""
-    org = _get_org(db, user)
 
     targets = [t.strip() for t in body.targets if t.strip()]
     if not targets:
