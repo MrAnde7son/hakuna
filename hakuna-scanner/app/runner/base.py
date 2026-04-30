@@ -147,6 +147,11 @@ class BaseRunner:
     # Match short-circuits the retry loop — three identical 5-minute failures in a
     # row burn worker time without changing the outcome.
     non_retryable_stderr_patterns: tuple[str, ...] = ()
+    # Substrings that indicate a silent failure: tool exited 0 but stderr proves
+    # the run was meaningless (e.g. naabu losing the raw-socket open in Cloud Run
+    # produces exit 0 with zero results). Match flips exit_code to -1 so callers
+    # mark the batch failed instead of "scanned, nothing open".
+    silent_failure_stderr_patterns: tuple[str, ...] = ()
 
     def build_command(self) -> list[str]:
         raise NotImplementedError
@@ -179,6 +184,16 @@ class BaseRunner:
                 )
 
                 if result.exit_code == 0:
+                    if self.silent_failure_stderr_patterns and result.stderr and any(
+                        p in result.stderr for p in self.silent_failure_stderr_patterns
+                    ):
+                        logger.warning(
+                            "tool=%s exit=0 but stderr matches silent-failure pattern; treating as failure: %s",
+                            self.tool_name, result.stderr[:500],
+                        )
+                        result.exit_code = -1
+                        last_result = result
+                        break
                     return result
 
                 last_result = result

@@ -68,6 +68,15 @@ class NaabuRunner(BaseRunner):
     # minutes of attempted resolution. Retrying re-runs the same lookups with
     # the same outcome; skip the 2× retries and accept the empty result.
     non_retryable_stderr_patterns = ("no valid ipv4 or ipv6 targets were found",)
+    # Naabu defaults to SYN scan, which needs CAP_NET_RAW. In Cloud Run /
+    # restricted sandboxes the raw socket open fails and naabu exits 0 with
+    # zero results — indistinguishable from a closed host. Treat those stderr
+    # signatures as failures so callers can mark the batch failed instead of
+    # silently empty.
+    silent_failure_stderr_patterns = (
+        "could not create raw socket",
+        "operation not permitted",
+    )
 
     def __init__(self, hosts: list[str], ports: str | None = None,
                  timeout_seconds: int | None = None, timeout: int | None = None):
@@ -89,6 +98,7 @@ class NaabuRunner(BaseRunner):
     def build_command(self) -> list[str]:
         path = self._write_hosts()
         cmd = ["naabu", "-l", path, "-json", "-silent",
+               "-s", "c",
                "-rate", str(settings.naabu_rate)]
         ports = self.ports or _default_naabu_ports()
         cmd.extend(["-p", ports])
