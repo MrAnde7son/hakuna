@@ -326,6 +326,35 @@ jobs:
             --command="cd /opt/hakuna-cloud-scanner && sudo docker compose pull && sudo docker compose up -d" \
             --quiet
 
+  deploy-audit-worker:
+    name: Restart Audit Worker VM
+    needs: deploy-api
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'push' ||
+      contains(github.event.inputs.components, 'api')
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Pull and restart audit-worker VM
+        # Pull outside systemd so the long pull (Chromium-bundled API image)
+        # doesn't trip ExecStartPre's 90s timeout on the unit. `compose up -d`
+        # swaps containers in place once the new image is local.
+        run: |
+          gcloud compute ssh hakuna-audit-worker --zone="${{ env.ZONE }}" --tunnel-through-iap \
+            --command="cd /opt/hakuna-audit-worker && sudo docker compose pull && sudo docker compose up -d" \
+            --quiet
+
   migrate:
     name: Run Migrations
     needs: deploy-api
