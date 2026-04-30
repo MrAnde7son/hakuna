@@ -108,6 +108,52 @@ class TestNaabuRunnerCommand:
         port_set = {int(p) for p in cmd[p_idx + 1].split(",") if "-" not in p}
         assert 8081 in port_set
 
+    def test_uses_connect_scan(self):
+        # SYN scan needs CAP_NET_RAW; Cloud Run can't grant it and naabu then
+        # exits 0 with zero results. Connect scan works regardless of caps.
+        runner = NaabuRunner(["host1.example.com"], ports="80")
+        try:
+            cmd = runner.build_command()
+        finally:
+            import os
+            if runner._tmpfile and os.path.exists(runner._tmpfile):
+                os.unlink(runner._tmpfile)
+        s_idx = cmd.index("-s")
+        assert cmd[s_idx + 1] == "c"
+
+
+class TestNaabuSilentFailure:
+    """Naabu can exit 0 with no results when raw-socket open fails on Cloud Run.
+    The silent_failure_stderr_patterns mechanism flips that to a failure result
+    so callers route the batch into failed_hosts."""
+
+    @pytest.mark.asyncio
+    async def test_raw_socket_stderr_flips_exit_to_failure(self):
+        from app.runner.base import RunResult
+
+        runner = NaabuRunner(["host1.example.com"], ports="80")
+        fake_result = RunResult(
+            tool="naabu", exit_code=0, results=[],
+            stderr="FATAL could not create raw socket: operation not permitted",
+        )
+        with patch.object(runner, "_execute", AsyncMock(return_value=fake_result)):
+            result = await runner.run(org_id=None)
+
+        assert result.exit_code == -1, "raw-socket failure must not be reported as success"
+        assert result.results == []
+
+    @pytest.mark.asyncio
+    async def test_clean_empty_result_still_succeeds(self):
+        # Genuine "scanned, no open ports" must still pass through as success.
+        from app.runner.base import RunResult
+
+        runner = NaabuRunner(["host1.example.com"], ports="80")
+        fake_result = RunResult(tool="naabu", exit_code=0, results=[], stderr="")
+        with patch.object(runner, "_execute", AsyncMock(return_value=fake_result)):
+            result = await runner.run(org_id=None)
+
+        assert result.exit_code == 0
+
 
 class TestUpdatePortsState:
     """Verify port_scan_state classification for scanned/empty/failed hosts."""
