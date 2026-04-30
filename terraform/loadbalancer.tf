@@ -107,6 +107,20 @@ resource "google_compute_url_map" "main" {
       service = google_compute_backend_service.api.id
     }
 
+    # Internal endpoints (/internal/relay/*) and WebSockets (/ws/relay/cloud)
+    # also live on the API. The audit-worker and cloud-scanner VMs call these
+    # via app_domain; auth is enforced by INTERNAL_SHARED_SECRET.
+    route_rules {
+      priority = 4
+      match_rules { prefix_match = "/internal/" }
+      service = google_compute_backend_service.api.id
+    }
+    route_rules {
+      priority = 5
+      match_rules { prefix_match = "/ws/" }
+      service = google_compute_backend_service.api.id
+    }
+
     # Static asset directories → GCS directly (no rewrite)
     route_rules {
       priority = 10

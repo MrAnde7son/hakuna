@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       components:
-        description: "Components to deploy (comma-separated: api,frontend,scanners,migrate)"
+        description: "Components to deploy (comma-separated: api,frontend,scanners,relay-agent,migrate)"
         required: false
         default: "api,frontend,migrate"
 
@@ -19,6 +19,7 @@ env:
   REGION: me-west1
   ZONE: me-west1-a
   REGISTRY: me-west1-docker.pkg.dev/hakuna-prod-2026/hakuna
+  PUBLIC_REGISTRY: me-west1-docker.pkg.dev/hakuna-prod-2026/hakuna-public
   CLOUD_RUN_SERVICE: hakuna-api
 
 jobs:
@@ -218,6 +219,20 @@ jobs:
               - 'hakuna-scanner/**'
               - 'hakuna-vm-scanner/**'
 
+  relay-agent-changes:
+    name: Detect relay-agent changes
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.filter.outputs.relay_agent }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            relay_agent:
+              - 'hakuna-relay-agent/**'
+
   deploy-scanners:
     name: Deploy Scanner VM
     needs: [test, scanner-changes]
@@ -267,6 +282,48 @@ jobs:
         run: |
           gcloud compute ssh hakuna-scanners --zone="${{ env.ZONE }}" --tunnel-through-iap \
             --command="cd /opt/hakuna-scanners && sudo docker compose pull && sudo docker compose up -d" \
+            --quiet
+
+  deploy-relay-agent:
+    name: Deploy Relay Agent (Cloud Scanner)
+    needs: [test, relay-agent-changes]
+    runs-on: ubuntu-latest
+    if: >-
+      (github.event_name == 'push' && needs.relay-agent-changes.outputs.changed == 'true') ||
+      contains(github.event.inputs.components, 'relay-agent')
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker "${{ env.REGION }}-docker.pkg.dev" --quiet
+
+      - name: Build and push relay-agent image
+        run: |
+          docker build \
+            --platform linux/amd64 \
+            -f hakuna-relay-agent/Dockerfile \
+            -t "${{ env.PUBLIC_REGISTRY }}/relay-agent:${{ github.sha }}" \
+            -t "${{ env.PUBLIC_REGISTRY }}/relay-agent:latest" \
+            hakuna-relay-agent/
+          docker push "${{ env.PUBLIC_REGISTRY }}/relay-agent:${{ github.sha }}"
+          docker push "${{ env.PUBLIC_REGISTRY }}/relay-agent:latest"
+
+      - name: Pull and restart on cloud-scanner VM
+        run: |
+          gcloud compute ssh hakuna-cloud-scanner --zone="${{ env.ZONE }}" --tunnel-through-iap \
+            --command="cd /opt/hakuna-cloud-scanner && sudo docker compose pull && sudo docker compose up -d" \
             --quiet
 
   migrate:
