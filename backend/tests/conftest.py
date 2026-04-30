@@ -129,6 +129,22 @@ def engine():
                         conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_type}"))
                     except Exception:
                         pass
+        # background_jobs is created by migration 058 in prod; replicate
+        # the schema here so services.job_manager can be exercised live in
+        # tests without going through the migration runner.
+        conn.execute(text(
+            "CREATE TABLE IF NOT EXISTS background_jobs ("
+            "  id VARCHAR(64) PRIMARY KEY,"
+            "  name VARCHAR(255) NOT NULL,"
+            "  status VARCHAR(32) NOT NULL DEFAULT 'pending',"
+            "  progress INTEGER,"
+            "  result JSON,"
+            "  error TEXT,"
+            "  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+            "  started_at TIMESTAMP,"
+            "  completed_at TIMESTAMP"
+            ")"
+        ))
         conn.commit()
 
     return eng

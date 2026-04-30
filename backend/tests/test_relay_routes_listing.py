@@ -99,6 +99,82 @@ def test_setup_instructions_rejected_for_cloud_scanner(authed_client, db_session
     assert resp.status_code == 400
 
 
+def _stale_disconnect_helpers(monkeypatch, db_session):
+    """Make _mark_disconnected_if_stale use the test session instead of the
+    process-wide SessionLocal (which would point at a different connection
+    and miss the rollback-isolated test data)."""
+    from routes import internal_relay_routes
+
+    class _Factory:
+        def __call__(self):
+            return _Wrapper(db_session)
+
+    class _Wrapper:
+        def __init__(self, sess):
+            self._sess = sess
+        def query(self, *a, **kw):
+            return self._sess.query(*a, **kw)
+        def commit(self):
+            self._sess.flush()  # flush within the test transaction
+        def rollback(self):
+            pass
+        def close(self):
+            pass
+
+    monkeypatch.setattr(internal_relay_routes, "SessionLocal", _Factory())
+    return internal_relay_routes
+
+
+def test_grace_skips_disconnect_write_if_reconnected(monkeypatch, db_session, test_org):
+    """If the relay reconnects within the grace window, last_seen_at advances
+    past disconnect_at and the deferred write must be a no-op. This is the
+    core fix for the Cloud Run 5-min WS-timeout flap."""
+    mod = _stale_disconnect_helpers(monkeypatch, db_session)
+    agent = RelayAgent(
+        org_id=test_org.id, name="Hakuna Cloud Scanner",
+        relay_type="cloud_scanner", token_hash="cloud-managed",
+        credentials_mode="cloud_managed", status="connected",
+        last_seen_at=datetime.utcnow(),
+    )
+    db_session.add(agent)
+    db_session.flush()
+
+    disconnect_at = datetime.utcnow()
+    # Reconnect: a later last_seen_at write lands (possibly from a different
+    # Cloud Run instance writing to the shared DB).
+    agent.last_seen_at = disconnect_at + timedelta(seconds=2)
+    agent.status = "connected"
+    db_session.flush()
+
+    mod._mark_disconnected_if_stale(agent.id, disconnect_at)
+    db_session.expire_all()
+
+    refreshed = db_session.query(RelayAgent).filter(RelayAgent.id == agent.id).first()
+    assert refreshed.status == "connected"
+
+
+def test_grace_writes_disconnect_when_no_reconnect(monkeypatch, db_session, test_org):
+    """If no reconnect arrives, the deferred write flips status to disconnected.
+    Otherwise the row would be stuck on 'connected' indefinitely."""
+    mod = _stale_disconnect_helpers(monkeypatch, db_session)
+    last_seen = datetime.utcnow() - timedelta(seconds=10)
+    agent = RelayAgent(
+        org_id=test_org.id, name="Hakuna Cloud Scanner",
+        relay_type="cloud_scanner", token_hash="cloud-managed",
+        credentials_mode="cloud_managed", status="connected",
+        last_seen_at=last_seen,
+    )
+    db_session.add(agent)
+    db_session.flush()
+
+    disconnect_at = datetime.utcnow()
+    mod._mark_disconnected_if_stale(agent.id, disconnect_at)
+    db_session.expire_all()
+
+    refreshed = db_session.query(RelayAgent).filter(RelayAgent.id == agent.id).first()
+    assert refreshed.status == "disconnected"
+
+
 def test_regular_agent_unaffected(authed_client, db_session, test_org):
     """Sanity check — provisioning the cloud_scanner row doesn't break the
     create flow for regular on-prem agents."""
