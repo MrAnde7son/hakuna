@@ -53,6 +53,7 @@ from scanner.vm.config import (
     NUCLEI_EXCLUDE_TAGS,
     NUCLEI_RATE_LIMIT,
     NUCLEI_RETRIES,
+    NUCLEI_SKIP_CDN_TARGETS,
     NUCLEI_TIMEOUT,
     SCAN_TIMEOUT_SECONDS,
     TEMPLATES_DIR,
@@ -453,6 +454,24 @@ async def _run_nuclei_scan_async(
                 "error": f"target unreachable ({pre.reason}): {pre.detail}",
                 "preflight": pre.to_dict(),
             }
+        if pre is not None and pre.cdn and NUCLEI_SKIP_CDN_TARGETS:
+            logger.info(
+                "nuclei_worker skipping CDN-fronted asset=%s target=%s cdn=%s",
+                asset_id, target, pre.cdn,
+            )
+            return {
+                "asset_id": asset_id,
+                "org_id": str(org_id) if org_id is not None else None,
+                "target": target,
+                "findings": [],
+                "templates_matched": 0,
+                "templates_loaded": 0,
+                "requests_sent": 0,
+                "duration_seconds": round(time.monotonic() - start, 2),
+                "status": "cdn_blocked",
+                "error": f"target fronted by {pre.cdn} — CDN edge rate-limits scanner traffic",
+                "preflight": pre.to_dict(),
+            }
 
         cpe_list = _extract_cpe_list(asset.get("cpe_list"))
         tech_stack = asset.get("tech_stack")
@@ -849,6 +868,26 @@ async def _run_nuclei_adhoc_async(
                 "duration_seconds": round(time.monotonic() - start, 2),
                 "status": "unreachable",
                 "error": f"target unreachable ({pre.reason}): {pre.detail}",
+                "preflight": pre.to_dict(),
+            }
+        if pre.cdn and NUCLEI_SKIP_CDN_TARGETS:
+            # Edge throttling drops effective rps to ~5/s; 10k templates
+            # can't complete inside SCAN_TIMEOUT_SECONDS. Skip the run
+            # rather than producing a misleading "timeout" row.
+            logger.info(
+                "nuclei_worker adhoc skipping CDN-fronted target=%s cdn=%s",
+                target, pre.cdn,
+            )
+            return {
+                "target": target,
+                "org_id": org_id,
+                "findings": [],
+                "templates_matched": 0,
+                "templates_loaded": 0,
+                "requests_sent": 0,
+                "duration_seconds": round(time.monotonic() - start, 2),
+                "status": "cdn_blocked",
+                "error": f"target fronted by {pre.cdn} — CDN edge rate-limits scanner traffic",
                 "preflight": pre.to_dict(),
             }
 

@@ -39,6 +39,12 @@ class PreflightResult:
     probed_at: str       # ISO-8601 UTC
     elapsed_ms: int
     status_code: Optional[int] = None
+    # CDN vendor name (lowercase) when the target is fronted by a CDN that
+    # aggressively rate-limits scanner traffic. Set from response headers
+    # in probe_http; consumed by the nuclei worker to short-circuit scans
+    # that would otherwise burn the full 600s budget against an edge
+    # returning ~5 rps. None for non-CDN targets and for unreachable probes.
+    cdn: Optional[str] = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -46,6 +52,49 @@ class PreflightResult:
 
 def _now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+# CDN signatures keyed off response headers. Header lookups are
+# case-insensitive (httpx normalizes). Values use ``in`` substring match
+# against the header value (lowercased) so we tolerate minor format drift
+# (e.g. ``cloudflare-nginx`` and ``cloudflare`` both match). A ``None``
+# value means "header presence alone is enough" — useful for vendor-
+# specific request-id headers that nothing else emits.
+_CDN_SIGNATURES: tuple[tuple[str, str, Optional[str]], ...] = (
+    # vendor      header                 value substring (None = presence)
+    ("cloudflare", "cf-ray",              None),
+    ("cloudflare", "server",              "cloudflare"),
+    ("vercel",     "x-vercel-id",         None),
+    ("vercel",     "server",              "vercel"),
+    ("fastly",     "x-fastly-request-id", None),
+    ("fastly",     "x-served-by",         "cache-"),
+    ("akamai",     "x-akamai-transformed", None),
+    ("akamai",     "server",              "akamaighost"),
+    ("cloudfront", "x-amz-cf-id",         None),
+    ("cloudfront", "via",                 "cloudfront"),
+    ("netlify",    "x-nf-request-id",     None),
+    ("netlify",    "server",              "netlify"),
+)
+
+
+def _detect_cdn_from_headers(headers) -> Optional[str]:
+    """Return a lowercase CDN vendor name when any signature matches.
+
+    Returns the first match; signature order roughly tracks how
+    aggressively the vendor throttles unauthenticated scan traffic
+    (Cloudflare and Vercel are the worst offenders we see in prod).
+    """
+    if not headers:
+        return None
+    for vendor, header_name, needle in _CDN_SIGNATURES:
+        value = headers.get(header_name)
+        if value is None:
+            continue
+        if needle is None:
+            return vendor
+        if needle in str(value).lower():
+            return vendor
+    return None
 
 
 def probe_http(
@@ -120,6 +169,7 @@ def probe_http(
     return PreflightResult(
         reachable=True, reason="ok", detail=f"HTTP {resp.status_code}",
         status_code=resp.status_code,
+        cdn=_detect_cdn_from_headers(getattr(resp, "headers", None)),
         probed_at=probed_at,
         elapsed_ms=int((time.monotonic() - start) * 1000),
     )

@@ -2254,7 +2254,7 @@ function ScanProgressBar({ metadata }) {
 
 // ── Scan run history (EASM) ──────────────────────────────────────────
 
-function ScanRunHistory({ expanded, domain }) {
+function ScanRunHistory({ expanded, domain, scanId }) {
   const [runs, setRuns] = useState(null)
   const [loading, setLoading] = useState(false)
 
@@ -2263,7 +2263,7 @@ function ScanRunHistory({ expanded, domain }) {
     let cancelled = false
     const load = () => {
       if (!runs) setLoading(true)
-      getEasmScanRuns(20, domain)
+      getEasmScanRuns(20, domain, scanId)
         .then(data => { if (!cancelled) setRuns(data) })
         .catch(() => { if (!cancelled) setRuns([]) })
         .finally(() => { if (!cancelled) setLoading(false) })
@@ -2276,7 +2276,7 @@ function ScanRunHistory({ expanded, domain }) {
       return () => { cancelled = true; clearInterval(interval) }
     }
     return () => { cancelled = true }
-  }, [expanded, domain, runs?.some?.(r => r.status === 'running' || r.status === 'queued')])
+  }, [expanded, domain, scanId, runs?.some?.(r => r.status === 'running' || r.status === 'queued')])
 
   if (!expanded) return null
 
@@ -3729,7 +3729,7 @@ function ScanCard({ scan, onDelete, deleting, onSelect, onRescan, onRefresh, onC
       </div>
       {isEasm && isRunning && <ScanProgressBar metadata={scan.raw_metadata} />}
       {isVm && isRunning && <VmScanProgress metadata={scan.raw_metadata} />}
-      {isEasm && <ScanRunHistory expanded={showHistory} domain={domain} />}
+      {isEasm && <ScanRunHistory expanded={showHistory} domain={domain} scanId={scan.id} />}
       {isVm && <VmScanHistory expanded={showHistory} metadata={scan.raw_metadata} />}
       {isAudit && <AuditScanHistory expanded={showHistory} scanId={scan.id} />}
     </div>

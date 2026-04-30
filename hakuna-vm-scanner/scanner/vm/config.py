@@ -40,6 +40,18 @@ DAST_TEMPLATES_DIR = os.path.join(TEMPLATES_DIR, "custom", "dast")
 
 SCAN_TIMEOUT_SECONDS = int(os.environ.get("SCAN_TIMEOUT_SECONDS", "600"))
 
+# When the preflight detects a CDN edge in front of the target (Vercel,
+# Cloudflare, Fastly, Akamai, CloudFront, Netlify), short-circuit the
+# nuclei run instead of burning the full SCAN_TIMEOUT_SECONDS budget.
+# These edges throttle scanner traffic so aggressively that effective
+# rps drops to ~5/sec — 10k+ templates can't complete inside the
+# per-target deadline, producing misleading "timeout" UI rows with
+# zero findings. Set false to force the scan anyway (e.g. when targeting
+# a misconfigured CDN that is known to permit probing).
+NUCLEI_SKIP_CDN_TARGETS = os.environ.get(
+    "NUCLEI_SKIP_CDN_TARGETS", "true"
+).lower() in {"1", "true", "yes"}
+
 # ── Content discovery (ffuf) ────────────────────────────────────
 # On by default. Ops can disable globally by setting
 # CONTENT_DISCOVERY_ENABLED=false — useful for deployments where

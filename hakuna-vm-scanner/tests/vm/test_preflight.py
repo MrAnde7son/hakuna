@@ -9,6 +9,7 @@ stays stable as httpx versions roll.
 
 from __future__ import annotations
 
+from typing import Optional
 from unittest.mock import MagicMock, patch
 
 import httpx
@@ -16,6 +17,7 @@ import pytest
 
 from scanner.vm.preflight import (
     PreflightResult,
+    _detect_cdn_from_headers,
     probe_http,
     probe_tcp,
     should_preflight,
@@ -49,12 +51,13 @@ def _mock_client_raising(exc: Exception):
     return client
 
 
-def _mock_client_returning(status_code: int):
+def _mock_client_returning(status_code: int, headers: Optional[dict] = None):
     client = MagicMock()
     client.__enter__.return_value = client
     client.__exit__.return_value = False
     resp = MagicMock()
     resp.status_code = status_code
+    resp.headers = headers or {}
     client.request.return_value = resp
     return client
 
@@ -169,6 +172,68 @@ class TestPreflightResultShape:
         with patch("scanner.vm.preflight.httpx.Client", return_value=_mock_client_returning(200)):
             r = probe_http("http://dvwa")
         d = r.to_dict()
-        assert {"reachable", "reason", "detail", "probed_at", "elapsed_ms", "status_code"} <= set(d.keys())
+        assert {"reachable", "reason", "detail", "probed_at", "elapsed_ms", "status_code", "cdn"} <= set(d.keys())
         assert isinstance(d["elapsed_ms"], int)
         assert d["probed_at"].endswith("Z")
+
+
+class TestCdnDetection:
+    def test_no_headers_returns_none(self):
+        assert _detect_cdn_from_headers({}) is None
+        assert _detect_cdn_from_headers(None) is None
+
+    def test_plain_server_returns_none(self):
+        assert _detect_cdn_from_headers({"server": "nginx"}) is None
+
+    def test_vercel_x_vercel_id(self):
+        assert _detect_cdn_from_headers({"x-vercel-id": "iad1::abc"}) == "vercel"
+
+    def test_vercel_server_header(self):
+        assert _detect_cdn_from_headers({"server": "Vercel"}) == "vercel"
+
+    def test_cloudflare_cf_ray(self):
+        assert _detect_cdn_from_headers({"cf-ray": "abc123-LAX"}) == "cloudflare"
+
+    def test_cloudflare_server_variant(self):
+        # Some Cloudflare deployments report ``cloudflare-nginx``.
+        assert _detect_cdn_from_headers({"server": "cloudflare-nginx"}) == "cloudflare"
+
+    def test_fastly_request_id(self):
+        assert _detect_cdn_from_headers({"x-fastly-request-id": "xyz"}) == "fastly"
+
+    def test_fastly_x_served_by(self):
+        assert _detect_cdn_from_headers({"x-served-by": "cache-iad-1234"}) == "fastly"
+
+    def test_akamai(self):
+        assert _detect_cdn_from_headers({"server": "AkamaiGHost"}) == "akamai"
+
+    def test_cloudfront_amz_id(self):
+        assert _detect_cdn_from_headers({"x-amz-cf-id": "abc"}) == "cloudfront"
+
+    def test_cloudfront_via(self):
+        assert _detect_cdn_from_headers({"via": "1.1 d111.cloudfront.net (CloudFront)"}) == "cloudfront"
+
+    def test_netlify(self):
+        assert _detect_cdn_from_headers({"x-nf-request-id": "abc"}) == "netlify"
+
+
+class TestProbeHttpCdnTagging:
+    def test_cdn_tagged_on_reachable_response(self):
+        client = _mock_client_returning(200, headers={"x-vercel-id": "iad1::abc"})
+        with patch("scanner.vm.preflight.httpx.Client", return_value=client):
+            r = probe_http("https://arrive.com")
+        assert r.reachable is True
+        assert r.cdn == "vercel"
+
+    def test_no_cdn_when_headers_clean(self):
+        client = _mock_client_returning(200, headers={"server": "nginx"})
+        with patch("scanner.vm.preflight.httpx.Client", return_value=client):
+            r = probe_http("http://dvwa")
+        assert r.cdn is None
+
+    def test_cdn_field_absent_on_unreachable(self):
+        exc = httpx.ConnectError("Connection refused")
+        with patch("scanner.vm.preflight.httpx.Client", return_value=_mock_client_raising(exc)):
+            r = probe_http("http://dvwa")
+        assert r.reachable is False
+        assert r.cdn is None
