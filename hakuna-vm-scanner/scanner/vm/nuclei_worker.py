@@ -24,6 +24,7 @@ import time
 import uuid
 
 import asyncpg
+from celery.exceptions import Retry
 
 # Nuclei inspects a handful of provider env vars at startup and aborts with
 # exit=2 if it sees a partial config (e.g. GOOGLE_API_KEY without
@@ -378,6 +379,12 @@ def run_nuclei_scan(
     """
     try:
         return _run_async(_run_nuclei_scan_async(self, asset_id, credentials, scan_plan))
+    except Retry:
+        # Celery's retry signal — must propagate to the worker plumbing so
+        # the task is actually rescheduled. Catching it here would convert
+        # a retry into a silent success payload (the bug that was masking
+        # 600s nuclei timeouts as `status=error` / `duration=0`).
+        raise
     except Exception as exc:
         logger.exception("run_nuclei_scan failed for asset %s", asset_id)
         return {
@@ -554,14 +561,7 @@ async def _run_nuclei_scan_async(
                 break
             cmd = entry["cmd"]
             logger.info("nuclei cmd: %s", _redacted_cmd_for_log(cmd))
-            try:
-                run_result = await _run_one_nuclei(cmd, timeout_seconds=int(remaining))
-            except asyncio.TimeoutError:
-                logger.error("nuclei timed out for asset %s", asset_id)
-                status = "timeout"
-                if task.request.retries < task.max_retries:
-                    task.retry(countdown=60)
-                break
+            run_result = await _run_one_nuclei(cmd, timeout_seconds=int(remaining))
 
             findings.extend(run_result["findings"])
             templates_run.update(run_result["templates_run"])
@@ -571,6 +571,14 @@ async def _run_nuclei_scan_async(
             # been logged and accumulating them across commands would be
             # misleading (templates_loaded is per-invocation).
             nuclei_stats = run_result["nuclei_stats"] or nuclei_stats
+            if run_result.get("timed_out"):
+                # Don't retry — the same template set hits the same wall on
+                # the next attempt. Surface the partial stats we just
+                # collected so the UI can show duration/templates/stderr
+                # instead of a misleading "[error] 0/0 0s".
+                logger.error("nuclei timed out for asset %s", asset_id)
+                status = "timeout"
+                break
             if run_result["exit_code"] != 0 and status == "complete":
                 status = "partial"
             logger.info(
@@ -666,15 +674,16 @@ async def _run_one_nuclei(cmd: list[str], timeout_seconds: int) -> dict:
         await proc.wait()
         await stderr_task
 
+    timed_out = False
     try:
         await asyncio.wait_for(consume(), timeout=timeout_seconds)
     except asyncio.TimeoutError:
+        timed_out = True
         proc.kill()
         with contextlib.suppress(Exception):
             await proc.wait()
         with contextlib.suppress(Exception):
             await stderr_task
-        raise
 
     return {
         "findings": findings,
@@ -683,6 +692,7 @@ async def _run_one_nuclei(cmd: list[str], timeout_seconds: int) -> dict:
         "stderr_text": "\n".join(stderr_chunks),
         "nuclei_stats": _parse_nuclei_stats(stderr_chunks),
         "exit_code": proc.returncode if proc.returncode is not None else -1,
+        "timed_out": timed_out,
     }
 
 
@@ -789,6 +799,8 @@ def run_nuclei_adhoc(
     """
     try:
         return _run_async(_run_nuclei_adhoc_async(self, target, org_id, credentials, scan_plan))
+    except Retry:
+        raise
     except Exception as exc:
         logger.exception("run_nuclei_adhoc failed for target %s", target)
         return {
@@ -1052,8 +1064,12 @@ async def _run_nuclei_adhoc_async(
                 nuclei_stats = cmd_stats or nuclei_stats
                 stderr_chunks.extend(cmd_stderr)
                 status = "timeout"
-                if task.request.retries < task.max_retries:
-                    task.retry(countdown=60)
+                # Don't call task.retry() — same template set against the
+                # same target with the same budget produces the same
+                # timeout. Returning the partial result lets the UI show
+                # real duration/templates/stderr instead of "[error]
+                # 0/0 0s" (which is what the swallowed Retry exception
+                # used to produce).
                 break
 
         logger.info(
