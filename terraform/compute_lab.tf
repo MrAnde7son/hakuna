@@ -172,14 +172,15 @@ resource "google_compute_firewall" "lab_allow_scanners" {
   target_service_accounts = [google_service_account.lab.email]
 }
 
-# Allow ingress from explicit source CIDRs (laptop / office IPs). Validated
-# in variables.tf to refuse 0.0.0.0/0 — this lab is intentionally vulnerable.
+# Allow ingress from explicit source CIDRs (laptop / office IPs) plus the
+# reserved Cloud NAT egress IP — the latter lets in-VPC scanners reach the lab
+# via its public DNS, since SA-scoped allow rules don't match traffic that
+# leaves the VPC and re-enters via the public NIC. Validated in variables.tf
+# to refuse 0.0.0.0/0 — this lab is intentionally vulnerable.
 resource "google_compute_firewall" "lab_allow_source_ranges" {
-  count = length(var.lab_allowed_source_ranges) > 0 ? 1 : 0
-
   name        = "hakuna-lab-allow-source-ranges"
   network     = google_compute_network.main.name
-  description = "Allow specified external CIDRs (laptop / office) to reach the lab VM."
+  description = "Allow specified external CIDRs (laptop / office) and the VPC's NAT egress IP to reach the lab VM."
 
   direction = "INGRESS"
   priority  = 800
@@ -194,7 +195,10 @@ resource "google_compute_firewall" "lab_allow_source_ranges" {
     protocol = "icmp"
   }
 
-  source_ranges           = var.lab_allowed_source_ranges
+  source_ranges = concat(
+    var.lab_allowed_source_ranges,
+    ["${google_compute_address.nat.address}/32"],
+  )
   target_service_accounts = [google_service_account.lab.email]
 }
 
