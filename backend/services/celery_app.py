@@ -12,6 +12,16 @@ so the two schedulers never fight for the same worker slots.
 """
 
 import os
+import sys
+
+# Audit tasks import `hakuna.utils.token_tracker` (top-level package copied to
+# /hakuna/ by Dockerfile.prod, sibling to /app/). The API gets this via app.py's
+# sys.path shim — but the worker boots straight into this module, so we repeat
+# it here. Without this, every audit task dies with ModuleNotFoundError on
+# first import and the scan stays "Scanning..." forever.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
 from celery import Celery
 
