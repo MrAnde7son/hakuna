@@ -63,6 +63,11 @@ class DnsxRunner(BaseRunner):
 
 class NaabuRunner(BaseRunner):
     tool_name = "naabu"
+    # When every host in the batch fails DNS resolution, naabu emits this
+    # fatal and exits 1 within seconds — but it can also fire after several
+    # minutes of attempted resolution. Retrying re-runs the same lookups with
+    # the same outcome; skip the 2× retries and accept the empty result.
+    non_retryable_stderr_patterns = ("no valid ipv4 or ipv6 targets were found",)
 
     def __init__(self, hosts: list[str], ports: str | None = None,
                  timeout_seconds: int | None = None, timeout: int | None = None):

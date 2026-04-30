@@ -84,6 +84,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Also requires the -system-chrome flag at runtime — see HttpxRunner.
 ENV CHROMIUM_PATH=/usr/bin/chromium
 
+# Wordlists live OUTSIDE /app on purpose: docker-compose bind-mounts the
+# host repo at /app for live reload, which would otherwise hide anything
+# the build put under /app/wordlists/.
+COPY --from=builder /opt/hakuna/wordlists /opt/hakuna/wordlists
+
+# Python deps — installed BEFORE Go binaries are copied. The Python `httpx`
+# package registers a `httpx` console_script at /usr/local/bin/httpx, which
+# would otherwise overwrite ProjectDiscovery's Go httpx binary. Copying the
+# Go binaries after pip install ensures they win.
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
 # Compiled Go binaries from the builder stage
 COPY --from=builder /root/go/bin/subfinder /usr/local/bin/subfinder
 COPY --from=builder /root/go/bin/dnsx      /usr/local/bin/dnsx
@@ -97,16 +110,6 @@ COPY --from=builder /root/go/bin/naabu     /usr/local/bin/naabu
 COPY --from=builder /root/go/bin/puredns   /usr/local/bin/puredns
 COPY --from=builder /root/go/bin/kr        /usr/local/bin/kr
 COPY --from=builder /usr/local/bin/massdns /usr/local/bin/massdns
-
-# Wordlists live OUTSIDE /app on purpose: docker-compose bind-mounts the
-# host repo at /app for live reload, which would otherwise hide anything
-# the build put under /app/wordlists/.
-COPY --from=builder /opt/hakuna/wordlists /opt/hakuna/wordlists
-
-# Python deps
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
 
 # Playwright uses the system chromium already installed above.
 ENV PLAYWRIGHT_BROWSERS_PATH=0

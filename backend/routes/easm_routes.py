@@ -567,12 +567,34 @@ async def list_domains(
 async def list_scan_runs(
     limit: int = Query(10, le=50),
     domain: str = Query(None),
+    scan_id: Optional[int] = Query(None),
     db: Session = Depends(get_db),
     org: Organization = Depends(get_active_org),
+    org_ids: Optional[list] = Depends(get_accessible_org_ids),
 ):
-    """List recent EASM scan runs with status, optionally filtered by domain."""
+    """List recent EASM scan runs with status, optionally filtered by domain.
+
+    When ``scan_id`` is provided, resolve the scan's owning org instead of the
+    active org. The unified scans list is rendered cross-org via
+    ``get_accessible_org_ids`` (an MSSP/superadmin sees scans from all child
+    orgs), but ``get_active_org`` falls back to the user's home org when the
+    request isn't pinned by ``X-Org-Context``. Without scan_id, expanding the
+    history under a child-org scan would call the upstream scanner with the
+    home org's ``easm_org_id`` and return an empty list.
+    """
+    target_org = org
+    if scan_id is not None:
+        scan = db.query(Scan).filter(Scan.id == scan_id).first()
+        if not scan:
+            raise HTTPException(404, "Scan not found")
+        if org_ids and scan.org_id not in org_ids:
+            raise HTTPException(403, "Not allowed to view this scan")
+        scan_org = db.query(Organization).filter(Organization.id == scan.org_id).first()
+        if scan_org:
+            target_org = scan_org
+
     try:
-        easm_org_id = _require_easm_org_id(db, org)
+        easm_org_id = _require_easm_org_id(db, target_org)
     except HTTPException:
         return []
 

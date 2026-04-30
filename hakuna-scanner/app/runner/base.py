@@ -142,6 +142,11 @@ class BaseRunner:
     # If set (bytes), piped to subprocess stdin. Default behavior remains
     # DEVNULL so existing runners are unaffected.
     stdin_input: bytes | None = None
+    # Substrings in stderr that indicate the failure will recur deterministically
+    # (e.g. naabu's "no valid ipv4 or ipv6 targets" when DNS resolves to nothing).
+    # Match short-circuits the retry loop — three identical 5-minute failures in a
+    # row burn worker time without changing the outcome.
+    non_retryable_stderr_patterns: tuple[str, ...] = ()
 
     def build_command(self) -> list[str]:
         raise NotImplementedError
@@ -179,6 +184,15 @@ class BaseRunner:
                 last_result = result
                 if result.stderr:
                     logger.warning("tool=%s stderr: %s", self.tool_name, result.stderr[:500])
+
+                if self.non_retryable_stderr_patterns and result.stderr and any(
+                    p in result.stderr for p in self.non_retryable_stderr_patterns
+                ):
+                    logger.info(
+                        "tool=%s skipping retries — stderr matches non-retryable pattern",
+                        self.tool_name,
+                    )
+                    break
 
             except asyncio.TimeoutError:
                 last_result = RunResult(
