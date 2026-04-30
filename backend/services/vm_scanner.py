@@ -1358,6 +1358,130 @@ def _build_nuclei_plugin_output(f: dict) -> str:
     return "\n".join(lines)
 
 
+_DEFAULT_SCHEME_PORTS = {"http": 80, "https": 443}
+
+
+def _extract_port_from_url(url: str) -> Optional[int]:
+    """Pull a port out of a URL string, defaulting by scheme when absent.
+
+    Returns None for malformed inputs so callers can short-circuit. Used to
+    catch services Nuclei probes on non-default ports (e.g. ``https://x:8443``)
+    that EASM port discovery may not have surfaced.
+    """
+    if not url or not isinstance(url, str):
+        return None
+    try:
+        parsed = urlparse(url.strip())
+    except (ValueError, AttributeError):
+        return None
+    if not parsed.scheme or not parsed.hostname:
+        return None
+    if parsed.port:
+        return parsed.port
+    return _DEFAULT_SCHEME_PORTS.get(parsed.scheme.lower())
+
+
+def _collect_finding_ports(target: str, findings_data: list) -> set[int]:
+    """Collect every TCP port observed in this Nuclei job batch.
+
+    Pulls from three sources in priority order:
+      * each finding's ``port`` field (template-supplied)
+      * each finding's ``matched_at`` URL (host:port from the actual hit)
+      * the job's ``target`` URL (for adhoc URL-targeted scans)
+
+    Garbage values are discarded. Caller diffs the result against the
+    asset's previously-known ports; new ports drive a synthetic
+    ``port_change`` event into the auto-audit trigger.
+    """
+    ports: set[int] = set()
+    for f in findings_data or []:
+        raw_port = f.get("port")
+        if raw_port is not None:
+            try:
+                ports.add(int(raw_port))
+            except (TypeError, ValueError):
+                pass
+        url_port = _extract_port_from_url(f.get("matched_at") or "")
+        if url_port:
+            ports.add(url_port)
+    target_port = _extract_port_from_url(target or "")
+    if target_port:
+        ports.add(target_port)
+    return ports
+
+
+def _sync_vm_ports_and_trigger_audits(
+    db: Session,
+    scan: Scan,
+    asset: Asset,
+    target: str,
+    findings_data: list,
+) -> int:
+    """Sync VM-discovered TCP ports into ``asset.easm_data["open_ports"]``
+    and dispatch matching anonymous audits for any newly-seen ports.
+
+    EASM is the primary source of port data and feeds the audit auto-trigger
+    via scanner_event_bridge. But Nuclei occasionally probes services on
+    ports EASM missed (non-standard HTTP, web apps on high ports, etc.). We
+    surface those by:
+
+      1. Diffing the batch's observed ports against ``easm_data["open_ports"]``
+      2. Persisting new entries into ``open_ports`` (data-correctness benefit
+         independent of audits — downstream rules read this field)
+      3. Constructing a synthetic TCP ``port_change`` event and calling the
+         shared ``maybe_auto_trigger_anon_audits`` so the existing
+         org/cooldown/predicate gating still applies.
+
+    Returns the number of audits dispatched (0 when no new ports, no matching
+    rule, or any gate trips). Failures are logged and swallowed — finding
+    import must not be blocked by audit dispatch problems.
+    """
+    observed = _collect_finding_ports(target, findings_data)
+    if not observed:
+        return 0
+
+    easm = dict(asset.easm_data or {})
+    known_raw = easm.get("open_ports") or []
+    known: set[int] = set()
+    for p in known_raw:
+        try:
+            known.add(int(p))
+        except (TypeError, ValueError):
+            continue
+    new_ports = observed - known
+    if not new_ports:
+        return 0
+
+    easm["open_ports"] = sorted(known | new_ports)
+    asset.easm_data = easm
+
+    org = db.query(Organization).filter(Organization.id == scan.org_id).first()
+    if not org:
+        return 0
+
+    event = {
+        "event_type": "port_change",
+        "asset_id": easm.get("easm_asset_id"),
+        "created_at": datetime.utcnow().isoformat() + "Z",
+        "payload": {
+            "new_ports": sorted(new_ports),
+            "transport": "tcp",
+            "hostname": asset.hostname or asset.fqdn or None,
+            "source": "vm_scanner",
+        },
+    }
+
+    try:
+        from services.audit_auto_trigger import maybe_auto_trigger_anon_audits
+        return maybe_auto_trigger_anon_audits(db, org, event, asset=asset)
+    except Exception as e:
+        logger.warning(
+            "vm_scanner: org=%d asset=%d auto-audit trigger failed: %s",
+            scan.org_id, asset.id, e,
+        )
+        return 0
+
+
 def _import_nuclei_job_findings(db: Session, scan: Scan, job_result: dict) -> dict:
     """Import findings from a completed nuclei Celery job into the scan.
 
@@ -1581,6 +1705,12 @@ def _import_nuclei_job_findings(db: Session, scan: Scan, job_result: dict) -> di
             raw_fields=f, scan_id=scan.id, org_id=scan.org_id,
         )
         created += 1
+
+    # Sync VM-observed ports back into easm_data and fire anon audits for any
+    # ports EASM hadn't already surfaced. Wrapped in try/except inside the
+    # helper — never let audit dispatch fail the finding import.
+    if asset is not None:
+        _sync_vm_ports_and_trigger_audits(db, scan, asset, target, findings_data)
 
     return {
         "count": created,

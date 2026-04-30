@@ -58,6 +58,14 @@ class Asset(Base):
     nmap_last_run: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     os_fingerprint: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # Port-scan outcome tracking (migration 015). Distinguishes "scan ran
+    # successfully with zero open ports found" from "never scanned" or
+    # "scan failed/timed out". Empty-but-scanned hosts have
+    # port_scan_state='scanned' and open_ports='{}' (zero-length array).
+    # Values: pending | scanned | failed.
+    port_scan_state: Mapped[str] = mapped_column(String(32), default="pending")
+    port_scan_last_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     org: Mapped["Org"] = relationship(back_populates="assets")  # noqa: F821
     events: Mapped[list["AssetEvent"]] = relationship(back_populates="asset", cascade="all, delete-orphan")
     ports: Mapped[list["AssetPort"]] = relationship(back_populates="asset", cascade="all, delete-orphan")

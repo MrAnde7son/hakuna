@@ -157,8 +157,23 @@ async def update_ports(
     db: AsyncSession,
     org_id: uuid.UUID,
     port_results: list[dict],
+    *,
+    scanned_hosts: list[str] | None = None,
+    failed_hosts: list[str] | None = None,
 ) -> int:
-    """Update open_ports and services on assets from naabu -sV output."""
+    """Update open_ports + services + port_scan_state from naabu output.
+
+    ``scanned_hosts`` are the hostnames that were submitted to a
+    successful naabu batch — those without entries in ``port_results``
+    are marked as scanned-with-zero-ports (open_ports='{}'). ``failed_hosts``
+    are hostnames in batches that errored or timed out — they get
+    port_scan_state='failed' but their existing open_ports is preserved
+    (stale data beats no data while debugging).
+
+    When both lists are None the legacy behavior is preserved (only hosts
+    with results are touched). Existing callers that haven't migrated
+    keep working.
+    """
     host_ports: dict[str, list[int]] = {}
     host_services: dict[str, dict[int, dict]] = {}
 
@@ -185,7 +200,6 @@ async def update_ports(
     for host, ports in host_ports.items():
         ports = sorted(set(ports))
         services = host_services.get(host, {})
-        # Build services as {port: {name, product, version}}
         services_json = json.dumps({str(p): services[p] for p in sorted(services)}) if services else None
 
         await db.execute(
@@ -193,12 +207,45 @@ async def update_ports(
                 UPDATE assets SET
                     open_ports = :ports,
                     services = COALESCE(cast(:services as json), services),
-                    last_seen = :now
+                    last_seen = :now,
+                    port_scan_state = 'scanned',
+                    port_scan_last_at = :now
                 WHERE org_id = :org_id AND (hostname = :host OR host(ip) = :host)
             """),
             {"ports": ports, "services": services_json, "org_id": org_id, "host": host, "now": now},
         )
         updated += 1
+
+    # Hosts that were scanned successfully but produced zero results: mark
+    # as scanned with an empty port array so callers can distinguish them
+    # from never-scanned (NULL) and failed assets.
+    if scanned_hosts:
+        result_hosts = {h.lower() for h in host_ports.keys()}
+        empty_hosts = [h.lower() for h in scanned_hosts if h.lower() not in result_hosts]
+        if empty_hosts:
+            await db.execute(
+                text("""
+                    UPDATE assets SET
+                        open_ports = ARRAY[]::int[],
+                        port_scan_state = 'scanned',
+                        port_scan_last_at = :now
+                    WHERE org_id = :org_id
+                      AND (hostname = ANY(:hosts) OR host(ip) = ANY(:hosts))
+                """),
+                {"hosts": empty_hosts, "org_id": org_id, "now": now},
+            )
+
+    if failed_hosts:
+        await db.execute(
+            text("""
+                UPDATE assets SET
+                    port_scan_state = 'failed',
+                    port_scan_last_at = :now
+                WHERE org_id = :org_id
+                  AND (hostname = ANY(:hosts) OR host(ip) = ANY(:hosts))
+            """),
+            {"hosts": [h.lower() for h in failed_hosts], "org_id": org_id, "now": now},
+        )
 
     await db.commit()
     return updated

@@ -477,12 +477,18 @@ def _match_rules(new_ports: set[int], transport: str = "tcp") -> dict[str, AutoT
 
 def maybe_auto_trigger_anon_audits(
     db: Session, org: Organization, event: dict,
+    *, asset: Optional[Asset] = None,
 ) -> int:
     """Inspect a scanner ``port_change`` event and dispatch matching audits.
 
     Returns the number of audits actually dispatched. Per-rule short-circuits
     return 0 individually: org switch off, no consent (for OT-class rules),
     cooldown active, predicate rejects, no relay, or asset unresolved.
+
+    Callers that already hold a backend ``Asset`` (e.g. the VM scanner ingest
+    path, where the asset row was just upserted) can pass it via ``asset=``
+    to skip the scanner-id resolution step. The event still drives port and
+    transport extraction.
     """
     if event.get("event_type") != "port_change":
         return 0
@@ -509,11 +515,12 @@ def maybe_auto_trigger_anon_audits(
     if not matched:
         return 0
 
-    asset = _resolve_backend_asset(
-        db, org.id,
-        scanner_asset_id=event.get("asset_id"),
-        hostname=payload.get("hostname"),
-    )
+    if asset is None:
+        asset = _resolve_backend_asset(
+            db, org.id,
+            scanner_asset_id=event.get("asset_id"),
+            hostname=payload.get("hostname"),
+        )
     if not asset:
         logger.info(
             "auto-audit: org=%d skipped — scanner asset %s not yet linked to backend",

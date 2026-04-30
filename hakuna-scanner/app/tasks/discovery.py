@@ -33,7 +33,7 @@ from app.ingest.liveness import (
 from app.ingest.wildcard import detect_wildcard, filter_wildcard_results
 from app.ingest.crtsh import query_crtsh
 from app.ingest.shodan_discovery import query_shodan
-from app.runner.base import BaseRunner, batch_hosts, run_batches_parallel
+from app.runner.base import BaseRunner, batch_hosts, run_batches_parallel, run_batches_parallel_with_outcomes
 from app.tasks.scoping import (
     build_stale_clause,
     build_target_scope,
@@ -410,12 +410,18 @@ async def _do_naabu(sf, org_id: str, target_scope: str | None = None) -> dict:
         return {"scanned": 0, "skipped_fresh": True}
 
     batches = batch_hosts(hostnames, 1000)
-    per_batch_timeout = BaseRunner.timeout_for_host_count(1000, per_host_seconds=0.5)
-    logger.info("org=%s naabu hosts=%d batches=%d concurrency=%d per_batch_timeout=%ds",
+    per_host_seconds = (
+        settings.naabu_per_host_seconds_top1000
+        if settings.naabu_use_top1000
+        else 0.5
+    )
+    per_batch_timeout = BaseRunner.timeout_for_host_count(1000, per_host_seconds=per_host_seconds)
+    logger.info("org=%s naabu hosts=%d batches=%d concurrency=%d per_batch_timeout=%ds top1000=%s",
                 org_id, len(hostnames), len(batches),
-                settings.discovery_batch_concurrency, per_batch_timeout)
+                settings.discovery_batch_concurrency, per_batch_timeout,
+                settings.naabu_use_top1000)
 
-    all_results = await run_batches_parallel(
+    outcomes = await run_batches_parallel_with_outcomes(
         build_runner=lambda batch: NaabuRunner(batch, timeout=per_batch_timeout),
         batches=batches,
         org_id=org_id,
@@ -423,10 +429,33 @@ async def _do_naabu(sf, org_id: str, target_scope: str | None = None) -> dict:
         stage_name="naabu",
     )
 
-    async with sf() as db:
-        updated = await update_ports(db, uuid.UUID(org_id), all_results)
+    all_results: list[dict] = []
+    scanned_hosts: list[str] = []
+    failed_hosts: list[str] = []
+    for o in outcomes:
+        if o.success:
+            all_results.extend(o.results)
+            scanned_hosts.extend(o.batch_input)
+        else:
+            failed_hosts.extend(o.batch_input)
 
-    return {"ports_found": len(all_results), "hosts_updated": updated, "batches": len(batches)}
+    if failed_hosts:
+        logger.warning("org=%s naabu: %d hosts in failed/timed-out batches",
+                       org_id, len(failed_hosts))
+
+    async with sf() as db:
+        updated = await update_ports(
+            db, uuid.UUID(org_id), all_results,
+            scanned_hosts=scanned_hosts, failed_hosts=failed_hosts,
+        )
+
+    return {
+        "ports_found": len(all_results),
+        "hosts_updated": updated,
+        "hosts_scanned": len(scanned_hosts),
+        "hosts_failed": len(failed_hosts),
+        "batches": len(batches),
+    }
 
 
 async def _do_liveness_gate(sf, org_id: str, target_scope: str | None = None) -> dict:

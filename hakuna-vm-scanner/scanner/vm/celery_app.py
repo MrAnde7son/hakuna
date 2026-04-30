@@ -23,6 +23,13 @@ celery_app.conf.update(
     task_acks_late=True,
     worker_prefetch_multiplier=1,
     worker_concurrency=4,
+    # Celery default is 1 day. The backend learns "task succeeded" only by
+    # polling AsyncResult.status; once the result key TTLs out it returns
+    # PENDING again, and the orphan-reaper marks the scan failed with
+    # "scanner broker lost the job queue" — even though the work actually
+    # finished. Keep results for 7 days so a scan that nobody opens for a
+    # weekend still resolves correctly.
+    result_expires=7 * 24 * 3600,
     # Must exceed the longest nuclei run; observed ~1.5h in prod and the
     # backend reaps at 3h, so 4h leaves headroom without letting truly-stuck
     # tasks linger. Kombu's redis default is 1h, which caused acks_late tasks

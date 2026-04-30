@@ -3,6 +3,21 @@ import os
 
 from app.config import settings
 from app.runner.base import BaseRunner
+from app.runner.port_lists import NMAP_TOP_1000_TCP, merge_port_strings
+
+
+def _default_naabu_ports() -> str:
+    """Build naabu's effective port list from current settings.
+
+    Cached per process (settings are immutable after import). When
+    `naabu_use_top1000` is on, returns the union of nmap top-1000 TCP and
+    the specialty `naabu_ports` list. When off, returns just the specialty
+    list — the legacy fast-scan behavior.
+    """
+    if settings.naabu_use_top1000:
+        top1000 = ",".join(str(p) for p in NMAP_TOP_1000_TCP)
+        return merge_port_strings(top1000, settings.naabu_ports)
+    return settings.naabu_ports
 
 
 class SubfinderRunner(BaseRunner):
@@ -70,7 +85,7 @@ class NaabuRunner(BaseRunner):
         path = self._write_hosts()
         cmd = ["naabu", "-l", path, "-json", "-silent",
                "-rate", str(settings.naabu_rate)]
-        ports = self.ports or settings.naabu_ports
+        ports = self.ports or _default_naabu_ports()
         cmd.extend(["-p", ports])
         if self.custom_timeout:
             cmd.extend(["--timeout", str(self.custom_timeout)])
