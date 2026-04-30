@@ -1682,12 +1682,42 @@ def send_email_alert(db: Session, params: dict):
 @agent_tool(
     "create_campaign",
     "Create a remediation campaign to track a group of findings. Write operation. "
-    "WHEN TO CALL: After scoping the campaign, identifying findings to include, and confirming with the user.",
+    "WHEN TO CALL: After scoping the campaign and confirming with the user. "
+    "STRONGLY PREFER passing `query` (rule-engine conditions) over `finding_ids`: the campaign "
+    "re-evaluates its query on every Run, so finding_ids attached without a matching query are "
+    "wiped on the first run. Conditions use the format {field, op, value} — see services.rule_engine "
+    "CONDITION_CATALOG. Common fields: 'environment_tag', 'criticality', 'finding.severity', "
+    "'finding.exploit', 'finding.cve', 'finding.plugin_family', 'finding.sla_status'. "
+    "Common ops: 'eq', 'neq', 'gte', 'lte', 'contains', 'is_true', 'is_false', 'cidr'.",
     {
         "name": {"type": "string", "description": "Campaign name"},
         "description": {"type": "string", "description": "Campaign description/goal"},
-        "scan_id": {"type": "integer", "description": "Scope to specific scan (optional)"},
-        "finding_ids": {"type": "array", "description": "List of finding IDs to include"},
+        "scan_id": {"type": "integer", "description": "Scope to specific scan (optional). Omit for cross-scan campaigns."},
+        "query": {
+            "type": "array",
+            "description": (
+                "Rule-engine conditions defining campaign scope. Each condition: "
+                "{field: str, op: str, value: any}. Examples — "
+                "internet-facing exploitable: "
+                "[{\"field\":\"environment_tag\",\"op\":\"eq\",\"value\":\"internet\"},"
+                "{\"field\":\"finding.exploit\",\"op\":\"is_true\"}]; "
+                "Windows criticals: "
+                "[{\"field\":\"finding.plugin_family\",\"op\":\"eq\",\"value\":\"Windows\"},"
+                "{\"field\":\"finding.severity\",\"op\":\"gte\",\"value\":4}]; "
+                "specific CVE: [{\"field\":\"finding.cve\",\"op\":\"contains\",\"value\":\"CVE-2021-44228\"}]."
+            ),
+        },
+        "query_logic": {
+            "type": "string",
+            "description": "How to combine conditions: 'AND' (all must match) or 'OR' (any). Default 'AND'.",
+        },
+        "finding_ids": {
+            "type": "array",
+            "description": (
+                "Optional: list of finding IDs for an initial CampaignFinding seed. "
+                "AVOID unless query is also set — these get wiped on the first Run Campaign click."
+            ),
+        },
         "confirmed": {"type": "boolean", "description": "REQUIRED: Set to true only after user has approved this action"},
     },
 )
@@ -1696,12 +1726,19 @@ def create_campaign(db: Session, params: dict):
     if not name:
         return {"error": "Campaign name is required"}
 
+    query = params.get("query") or []
+    query_logic = (params.get("query_logic") or "AND").upper()
+    if query_logic not in ("AND", "OR"):
+        return {"error": "query_logic must be 'AND' or 'OR'"}
+
     campaign = Campaign(
         org_id=params.get("_org_id"),
         name=name,
         description=params.get("description", ""),
         scan_id=params.get("scan_id"),
         status="active",
+        query=query,
+        query_logic=query_logic,
     )
     db.add(campaign)
     db.flush()
@@ -1712,7 +1749,20 @@ def create_campaign(db: Session, params: dict):
         db.add(cf)
         added += 1
     db.commit()
-    return {"campaign_id": campaign.id, "name": campaign.name, "findings_added": added}
+    return {
+        "campaign_id": campaign.id,
+        "name": campaign.name,
+        "query": query,
+        "query_logic": query_logic,
+        "findings_added": added,
+        "note": (
+            "Campaign created with rule-engine query. Click 'Run Campaign' in the UI "
+            "(or POST /api/campaigns/{id}/run) to evaluate the query and populate findings."
+            if query else
+            "Campaign created without a query — running it will produce zero findings. "
+            "Update the campaign to add conditions before running."
+        ),
+    }
 
 
 @agent_tool(

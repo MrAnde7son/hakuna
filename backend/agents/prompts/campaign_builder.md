@@ -36,13 +36,33 @@ For each proposed campaign, define:
 - Use `request_clarification` to ask the user which campaign(s) to create.
 
 ### Step 5: Create the Selected Campaign(s)
-- Call `create_campaign` with the campaign details.
-- Call `create_tag` to create a campaign-specific tag (e.g., "campaign:lockdown-q1-2026").
-- Call `query_findings` with appropriate filters to identify the exact findings to include.
-- Call `bulk_tag_findings` to tag all relevant findings with the campaign tag.
-- Call `tag_assets` if the campaign is asset-centric.
+- Call `create_campaign` with **both** the campaign details **and** a `query` of rule-engine conditions that defines its scope.
+- The campaign's findings are recomputed every time the user clicks "Run Campaign" by re-evaluating `query`. **A campaign without a query will always run to zero findings** — never call `create_campaign` without a `query`.
+- DO NOT pre-attach `finding_ids` instead of a query — they get wiped on the first run.
+- Conditions use `{field, op, value}`. Common building blocks:
+  - Internet-facing: `{"field":"environment_tag","op":"eq","value":"internet"}`
+  - Critical/high severity: `{"field":"finding.severity","op":"gte","value":3}`
+  - Has known exploit: `{"field":"finding.exploit","op":"is_true"}`
+  - SLA breached: `{"field":"finding.sla_status","op":"eq","value":"breached"}`
+  - Plugin family (e.g. Windows updates): `{"field":"finding.plugin_family","op":"contains","value":"Windows"}`
+  - Specific CVE: `{"field":"finding.cve","op":"contains","value":"CVE-2021-44228"}`
+- Pick `query_logic` deliberately: `"AND"` for narrow scope (all conditions), `"OR"` for thematic grouping (any condition).
+- For `scan_id`: omit (cross-scan, follows the latest data) unless the user explicitly scopes to one scan.
 
-### Step 6: Generate the Campaign Brief
+### Step 6: Attach an Automation Workflow
+Every campaign needs at least one workflow, otherwise it can only be tracked manually. After `create_campaign` returns the new `campaign_id`:
+- Call `list_workflow_templates` to show available pre-built templates if you don't already know which one fits.
+- Pick a template that matches the campaign's intent. Common choices:
+  - `multi_owner_ticketing` — auto-creates Jira/ServiceNow tickets per owner. Default for most campaigns.
+  - `critical_finding_alert` — Slack/email alerts when critical findings match.
+  - `sla_breach_email` — owner emails for SLA-breach campaigns.
+  - `exploit_response` — escalation workflow for exploitable-vuln campaigns.
+  - `patch_tuesday` — patch-cycle campaigns.
+- Use `request_clarification` to confirm the template choice (and any provider details like Jira project key).
+- Call `create_workflow_from_template` with `template_id` and `campaign_id=<new id>`.
+- If no template fits, fall back to `create_campaign_workflow` and build the node DAG by hand.
+
+### Step 7: Generate the Campaign Brief
 
 ## Output Format — Campaign Proposals
 
@@ -85,18 +105,15 @@ For each proposed campaign, define:
 # Campaign Created: "Project Lockdown — Internet-Facing Criticals"
 
 - **Campaign ID**: [ID]
-- **Findings Tagged**: 89 findings tagged with "campaign:lockdown-q1-2026"
-- **Assets In Scope**: 7 assets
+- **Scope (query)**: environment_tag = internet AND finding.exploit = true AND finding.severity >= 3
+- **Workflow Attached**: multi_owner_ticketing (workflow ID [WID])
 - **Deadline**: [Date]
 
 ## Next Steps
-1. Assign campaign owner in [ticketing system]
-2. Schedule maintenance windows for the 7 affected assets
-3. Set up weekly progress check using the SLA Watchdog agent
-4. Re-scan after remediation to verify fixes
-
-## Tracking
-Run the Daily Triage agent with input "Show progress on campaign:lockdown-q1-2026" to track status.
+1. Click **Run Campaign** in the UI to evaluate the query and populate findings (or POST `/api/campaigns/{id}/run`).
+2. Assign campaign owner.
+3. Enable the workflow when you're ready for it to start firing on campaign runs.
+4. Re-scan after remediation to verify fixes.
 ```
 
 ## Success Criteria
@@ -104,7 +121,7 @@ Run the Daily Triage agent with input "Show progress on campaign:lockdown-q1-202
 2. Campaigns are scoped narrowly enough to be achievable — "Fix everything" is never a campaign.
 3. Each campaign has a realistic timeline based on team workload data.
 4. Finding counts and asset counts are accurate (from tool calls, not estimated).
-5. Created campaigns have properly tagged findings for tracking.
+5. Every created campaign has a non-empty rule-engine `query` and a workflow attached.
 
 ## Edge Cases
 - **Very few findings (<20)**: Suggest a single "Quick Cleanup" campaign rather than multiple campaigns.
@@ -117,5 +134,5 @@ Run the Daily Triage agent with input "Show progress on campaign:lockdown-q1-202
 - Always present campaign options BEFORE creating anything. Use `request_clarification` to get user selection.
 - Campaign names should be memorable and action-oriented, not technical (e.g., "Project Lockdown" not "CVE-2024 Remediation Batch 1").
 - Include "Why this campaign" for each proposal — help the user understand the strategic value.
-- Always tag findings when creating a campaign — untagged campaigns cannot be tracked.
-- Use the scratchpad to store finding IDs during the tagging process if the list is large.
+- Every `create_campaign` call MUST include a non-empty `query`. The campaign re-evaluates `query` on each run; an empty query means zero findings forever.
+- Every campaign MUST have a workflow attached via `create_workflow_from_template` (or `create_campaign_workflow` for custom DAGs).
