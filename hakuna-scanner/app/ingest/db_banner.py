@@ -205,9 +205,13 @@ async def _probe_mysql(host: str, port: int = 3306) -> dict | None:
 
 # ── Dispatch ───────────────────────────────────────────────────────────────
 
+# PR #2: each probe row carries ``service_types`` (preferred) +
+# ``legacy_ports`` (fallback). Kept as a tuple-list so the legacy
+# ``ports == {5432, 3306}`` test in test_banner_grab.py keeps working
+# (it iterates ``[(p, fn) for p, fn, *_ in _DISPATCH]``).
 _DISPATCH = [
-    (5432, _probe_postgres),
-    (3306, _probe_mysql),
+    (5432, _probe_postgres, {"postgres"}, {5432}),
+    (3306, _probe_mysql, {"mysql"}, {3306}),
 ]
 
 
@@ -215,22 +219,40 @@ async def probe_batch(
     assets: list[dict],
     concurrency: int = 10,
 ) -> dict[str, list[dict]]:
+    """Banner-probe Postgres / MySQL on every typed port.
+
+    PR #2: each dispatch row gates on ``service_type IN
+    {postgres,mysql}`` (preferred) OR the legacy port (fallback).
+    Catches DBs on alt ports (e.g. MySQL on 33060) once PR #1 has
+    stamped them.
+    """
     semaphore = asyncio.Semaphore(concurrency)
     results: dict[str, list[dict]] = {}
 
     async def _run_one(asset: dict):
-        ports = set(asset.get("open_ports") or [])
         target = asset.get("ip") or asset.get("hostname")
         if not target:
             return
+        open_ports = asset.get("open_ports") or []
+        st_map = asset.get("port_service_types") or {}
         hits: list[dict] = []
-        for port, fn in _DISPATCH:
-            if port not in ports:
-                continue
-            async with semaphore:
-                hit = await fn(target, port)
-            if hit:
-                hits.append(hit)
+        for _legacy_port, fn, service_types, legacy_ports in _DISPATCH:
+            for port in open_ports:
+                try:
+                    p = int(port)
+                except (TypeError, ValueError):
+                    continue
+                svc = st_map.get(p)
+                if svc is not None:
+                    if svc not in service_types:
+                        continue
+                else:
+                    if p not in legacy_ports:
+                        continue
+                async with semaphore:
+                    hit = await fn(target, p)
+                if hit:
+                    hits.append(hit)
         if hits:
             results[asset["hostname"]] = hits
 

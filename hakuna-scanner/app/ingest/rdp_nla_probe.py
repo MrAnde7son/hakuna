@@ -121,23 +121,46 @@ async def _probe_single(host: str, port: int = 3389) -> dict | None:
     return result
 
 
+_LEGACY_PORTS: set[int] = {3389}
+_SERVICE_TYPES: set[str] = {"rdp"}
+
+
 async def probe_batch(
     assets: list[dict],
     concurrency: int = 10,
 ) -> dict[str, list[dict]]:
+    """Probe NLA enforcement on every RDP-typed port.
+
+    PR #2: gate on ``asset_ports.service_type == 'rdp'`` (preferred)
+    OR ``port == 3389`` (fallback). Catches RDP on alt ports (some
+    orgs run it on 3390/13389 to dodge automated scanners — the X.224
+    handshake still fingerprints correctly, so PR #1 stamps "rdp"
+    there and PR #2 picks it up).
+    """
+    from app.ingest.service_lookup import matching_ports_for_asset
+
     semaphore = asyncio.Semaphore(concurrency)
     results: dict[str, list[dict]] = {}
 
     async def _run_one(asset: dict):
-        if 3389 not in (asset.get("open_ports") or []):
+        ports = matching_ports_for_asset(
+            asset,
+            service_types=_SERVICE_TYPES,
+            legacy_ports=_LEGACY_PORTS,
+        )
+        if not ports:
             return
         target = asset.get("ip") or asset.get("hostname")
         if not target:
             return
-        async with semaphore:
-            hit = await _probe_single(target, 3389)
-        if hit:
-            results[asset["hostname"]] = [hit]
+        hits: list[dict] = []
+        for port in ports:
+            async with semaphore:
+                hit = await _probe_single(target, port)
+            if hit:
+                hits.append(hit)
+        if hits:
+            results[asset["hostname"]] = hits
 
     await asyncio.gather(
         *(_run_one(a) for a in assets),

@@ -85,6 +85,16 @@ class AssetPort(Base):
     protocol: Mapped[str] = mapped_column(String(16), default="tcp")
     service_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
     service_version: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    # Normalized service identity (migration 017). PR #1 of the service-type
+    # gating refactor — all per-port writers populate these. PR #2 will flip
+    # downstream gates from port-number checks to service_type checks so a
+    # non-canonical port (SSH on 2222, HTTP on 8088) is still scanned by the
+    # right module. ``service_confidence`` lets a later high-confidence
+    # writer (banner probe = 90) overwrite an earlier low-confidence guess
+    # (httpx scheme = 70) on the same (asset, port, protocol) row.
+    service_type: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    service_product: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    service_confidence: Mapped[int | None] = mapped_column(Integer, nullable=True)
     banner: Mapped[str | None] = mapped_column(Text, nullable=True)
     cpe_list: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     tls_cert: Mapped[dict | None] = mapped_column(JSONB, nullable=True)

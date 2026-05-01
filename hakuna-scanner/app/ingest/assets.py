@@ -340,6 +340,13 @@ async def update_enrichment(
                 "version": "",
             }
 
+            # Stamp normalized service identity (migration 017) from the
+            # URL scheme so PR #2 gates can target every fingerprinted HTTP
+            # service, not just 80/443. Confidence 70 — strong enough to
+            # win over a stale row but a banner-grab probe (90) wins on
+            # the next enrichment pass if there's a richer signal.
+            http_svc_type = "https" if scheme == "https" else "http" if scheme == "http" else None
+
             await upsert_asset_port_http(
                 db,
                 asset_id,
@@ -349,6 +356,9 @@ async def update_enrichment(
                 http_url=url or None,
                 http_webserver=webserver or None,
                 http_tech_stack=tech_entry,
+                service_type=http_svc_type,
+                service_product=webserver or None,
+                service_confidence=70 if http_svc_type else None,
             )
 
         # Asset-level rollup uses the first (highest-ranked) entry as the
