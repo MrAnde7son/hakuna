@@ -3758,7 +3758,7 @@ function getDisplayScanName(scan) {
   const backendName = scan.scan_name || ''
   const parts = backendName.split('—').map(p => p.trim()).filter(Boolean)
   const missionLabel = parts.length >= 2 ? parts[1] : null
-  const hostCount = scan.asset_count ?? (md.asset_ids?.length || 0)
+  const hostCount = md.asset_ids?.length || scan.asset_count || 0
   return missionLabel
     ? `${friendly} — ${missionLabel} — ${hostCount} host${hostCount === 1 ? '' : 's'}`
     : `${friendly} — ${hostCount} host${hostCount === 1 ? '' : 's'}`
