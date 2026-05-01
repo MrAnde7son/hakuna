@@ -296,14 +296,20 @@ class TestPurednsRunner:
             mock_proc.stdout = AsyncMock()
             mock_proc.stderr = AsyncMock()
 
-            # Simulate async line iteration
-            async def mock_stdout_iter():
+            # Simulate async line iteration. Mock invokes __aiter__ as a
+            # bound method, so the function must accept the mock instance
+            # as `self`.
+            async def mock_stdout_iter(_self):
                 for line in mock_stdout.split(b"\n"):
                     if line:
                         yield line + b"\n"
 
+            async def mock_stderr_iter(_self):
+                if False:
+                    yield b""
+
             mock_proc.stdout.__aiter__ = mock_stdout_iter
-            mock_proc.stderr.__aiter__ = AsyncMock(return_value=AsyncMock(__anext__=AsyncMock(side_effect=StopAsyncIteration)))
+            mock_proc.stderr.__aiter__ = mock_stderr_iter
 
             async def mock_wait():
                 return 0
@@ -333,7 +339,7 @@ class TestKatanaRunner:
         assert "-silent" in cmd
         assert "-depth" in cmd
         idx = cmd.index("-depth")
-        assert cmd[idx + 1] == "2"
+        assert cmd[idx + 1] == "3"
         assert "-js-crawl" in cmd
         assert "-rate-limit" in cmd
 
@@ -369,13 +375,18 @@ class TestTlsxRunnerUpgraded:
     """Test tlsx runner has SAN and expired flags."""
 
     def test_tlsx_command_flags(self):
-        """Verify tlsx command includes -san and -expired flags."""
+        """Verify tlsx command includes -so and -expired flags.
+
+        Note: -san was removed in commit ac8e279 because it broke tlsx
+        when combined with TLS probes. SAN entries still come through
+        via -json output.
+        """
         from app.runner.tools import TlsxRunner
 
         runner = TlsxRunner(["example.com:443", "example.com:8443"])
         cmd = runner.build_command()
 
-        assert "-san" in cmd
+        assert "-so" in cmd
         assert "-expired" in cmd
 
         import os
