@@ -376,6 +376,28 @@ COVERAGE_FIXTURES = [
     ("docker", "docker",           {"tech": ["Docker"]},                None),
     ("hashicorp", "consul",        {"tech": ["Consul"]},                None),
     ("hashicorp", "vault",         {"tech": ["Vault"]},                 None),
+    # AI / LLM / ML / vector DB products
+    ("ollama", "ollama",                       {"tech": ["Ollama"]},          None),
+    ("gradio", "gradio",                       {"tech": ["Gradio"]},          None),
+    ("langchain", "langserve",                 {"tech": ["LangServe"]},       None),
+    ("mlflow", "mlflow",                       {"tech": ["MLflow"]},          None),
+    ("qdrant", "qdrant",                       {"tech": ["Qdrant"]},          None),
+    ("weaviate", "weaviate",                   {"tech": ["Weaviate"]},        None),
+    ("chroma", "chroma",                       {"tech": ["Chroma"]},          None),
+    ("milvus", "milvus",                       {"tech": ["Milvus"]},          None),
+    # IoT / NAS appliances
+    ("hikvision", "ip_camera",                 {"tech": ["Hikvision"]},       None),
+    ("hikvision", "nvr",                       {"tech": ["Hikvision NVR"]},   None),
+    ("qnap", "qts",                            {"tech": ["QNAP"]},            None),
+    ("synology", "dsm",                        {"tech": ["Synology"]},        None),
+    # OT / ICS / PLC products
+    ("schneider-electric", "modicon",          {"tech": ["Modicon"]},         None),
+    ("rockwellautomation", "controllogix",     {"tech": ["ControlLogix"]},    None),
+    ("rockwellautomation", "compactlogix",     {"tech": ["CompactLogix"]},    None),
+    ("siemens", "simatic_s7-1200_cpu_firmware", {"tech": ["SIMATIC S7-1200"]}, None),
+    ("siemens", "simatic_s7-1500_cpu_firmware", {"tech": ["SIMATIC S7-1500"]}, None),
+    ("siemens", "simatic_s7-300",              {"tech": ["SIMATIC S7-300"]},  None),
+    ("siemens", "simatic_s7-400",              {"tech": ["SIMATIC S7-400"]},  None),
 ]
 
 
