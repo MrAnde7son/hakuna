@@ -78,27 +78,50 @@ async def _probe_single(host: str, port: int = 22) -> dict | None:
             pass
 
 
+_LEGACY_PORTS: set[int] = {22}
+_SERVICE_TYPES: set[str] = {"ssh"}
+
+
 async def probe_batch(
     assets: list[dict],
     concurrency: int = 10,
 ) -> dict[str, list[dict]]:
-    """Banner-grab SSH on every asset with port 22 open.
+    """Banner-grab SSH on every asset with an SSH-typed port open.
 
-    ``assets`` items: ``{hostname, ip, open_ports}``.
+    PR #2: gate on ``asset_ports.service_type == 'ssh'`` (preferred)
+    OR ``port == 22`` (fallback). The fallback covers ports not yet
+    re-fingerprinted since PR #1; without it, every existing port-22
+    record drops out of coverage on the first scan after the migration.
+
+    ``assets`` items: ``{hostname, ip, open_ports, port_service_types?}``.
+    ``port_service_types`` is a ``dict[int, str]`` of stamped service
+    types per port (populated by ``service_lookup.attach_port_service_types``
+    when the orchestrator pre-loads the asset list).
     """
+    from app.ingest.service_lookup import matching_ports_for_asset
+
     semaphore = asyncio.Semaphore(concurrency)
     results: dict[str, list[dict]] = {}
 
     async def _run_one(asset: dict):
-        if 22 not in (asset.get("open_ports") or []):
+        ports = matching_ports_for_asset(
+            asset,
+            service_types=_SERVICE_TYPES,
+            legacy_ports=_LEGACY_PORTS,
+        )
+        if not ports:
             return
         target = asset.get("ip") or asset.get("hostname")
         if not target:
             return
-        async with semaphore:
-            hit = await _probe_single(target, 22)
-        if hit:
-            results[asset["hostname"]] = [hit]
+        hits: list[dict] = []
+        for port in ports:
+            async with semaphore:
+                hit = await _probe_single(target, port)
+            if hit:
+                hits.append(hit)
+        if hits:
+            results[asset["hostname"]] = hits
 
     await asyncio.gather(
         *(_run_one(a) for a in assets),

@@ -32,6 +32,12 @@ from app.ingest.enrichment import (
     store_js_fingerprints,
     store_katana_endpoints,
     store_tlsx_per_port,
+    upsert_asset_port,
+)
+from app.ingest.service_lookup import (
+    asset_has_matching_port,
+    matching_ports_for_asset,
+    port_matches_service,
 )
 from app.ingest.asset_classifier import classify_asset
 from app.ingest.endpoint_probe import probe_assets
@@ -44,6 +50,7 @@ from app.ingest.mail_banner import probe_batch as mail_banner_batch
 from app.ingest.printer_banner import probe_batch as printer_banner_batch
 from app.ingest.tr069_upnp_probe import probe_batch as tr069_upnp_batch
 from app.ingest.db_banner import probe_batch as db_banner_batch
+from app.ingest.ajp_probe import probe_batch as ajp_probe_batch
 from app.runner.base import BaseRunner, batch_hosts, run_batches_parallel
 from app.runner.tools import CdncheckRunner, HttpxRunner, KatanaRunner, KiterunnerRunner, TlsxRunner, TrufflehogRunner
 from app.tasks.scoping import (
@@ -62,6 +69,27 @@ HTTPX_BATCH_SIZE = 500
 KATANA_BATCH_SIZE = 200
 CDNCHECK_BATCH_SIZE = 2000
 KITERUNNER_BATCH_SIZE = 50  # heavier per-host than katana
+
+# Service-type gating sets (PR #2 of the service-type refactor).
+# Each pair is ``(service_types, legacy_ports)``. The legacy port set is
+# the OR-fallback used when a port hasn't been re-fingerprinted since
+# PR #1 — without it, every port that predates the migration drops out
+# of coverage. PR #4 will retire the fallback after a burn-in window.
+HTTP_SERVICE_TYPES: set[str] = {"http", "https"}
+HTTP_LEGACY_PORTS: set[int] = {80, 443, 8080, 8443}
+
+# Banner-grab superset — six probe modules' ports unioned into one gate
+# so the orchestrator only fans out for assets that could plausibly
+# match. Service types correspond to the protocols each module covers.
+BANNER_SERVICE_TYPES: set[str] = {
+    "http", "https", "ssh", "mysql", "postgres", "mssql",
+    "redis", "mongodb", "rdp", "ipp", "smtp", "imap", "pop3",
+    "ftp", "telnet", "vnc", "ajp",
+}
+BANNER_LEGACY_PORTS: set[int] = {
+    22, 25, 110, 143, 465, 587, 631, 993, 995,
+    1900, 3306, 3389, 5432, 7547, 8009,
+}
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +141,17 @@ async def _get_confirmed_alive_assets(
     stale_hours: int = 24,
     stale_column: str = "last_enriched",
 ) -> list[dict]:
-    """Get confirmed_alive (or HTTP-responsive unconfirmed) assets with ports for enrichment routing."""
+    """Get confirmed_alive (or HTTP-responsive unconfirmed) assets with ports for enrichment routing.
+
+    Each asset dict carries ``port_service_types: dict[int, str]`` —
+    the per-port ``asset_ports.service_type`` stamps from PR #1, used by
+    downstream gates to prefer service identity over hard-coded port
+    numbers. Ports without a stamp are simply absent from the dict;
+    callers fall back to the legacy port set per
+    ``service_lookup.port_matches_service``.
+    """
+    from app.ingest.service_lookup import attach_port_service_types
+
     scope_sql, scope_params = build_target_scope(target_scope)
     stale_sql = build_stale_clause(enabled=apply_stale, stale_hours=stale_hours, column=stale_column)
     extra = compose_where(scope_sql, stale_sql)
@@ -130,7 +168,7 @@ async def _get_confirmed_alive_assets(
             """),
             params,
         )
-        return [
+        assets = [
             {
                 "id": row.id,
                 "hostname": row.hostname,
@@ -141,6 +179,8 @@ async def _get_confirmed_alive_assets(
             }
             for row in result.fetchall()
         ]
+        await attach_port_service_types(db, assets)
+        return assets
 
 
 async def _get_asset_snapshot(
@@ -504,12 +544,18 @@ async def _do_js_fingerprint(sf, org_id: str, target_scope: str | None = None) -
 
     # Filter to assets with HTTP ports (CDN assets are fine — we fetch the
     # actual page content, so Cloudflare etc. don't interfere).
-    HTTP_PORTS = {80, 443, 8080, 8443}
-    http_assets = []
-    for asset in assets:
-        ports = set(asset.get("open_ports") or [])
-        if ports & HTTP_PORTS:
-            http_assets.append(asset)
+    # PR #2: service_type-driven gate with legacy port fallback so an
+    # admin UI on 8081/8088 (or any port newly fingerprinted as http/https)
+    # gets fingerprinted even when it isn't in the canonical {80, 443,
+    # 8080, 8443} set.
+    http_assets = [
+        a for a in assets
+        if asset_has_matching_port(
+            a,
+            service_types=HTTP_SERVICE_TYPES,
+            legacy_ports=HTTP_LEGACY_PORTS,
+        )
+    ]
 
     if not http_assets:
         return {"fingerprinted": 0}
@@ -562,8 +608,15 @@ async def _do_favicon_fingerprint(sf, org_id: str, target_scope: str | None = No
         logger.info("org=%s favicon_fingerprint: no assets to fingerprint", org_id)
         return {"fingerprinted": 0}
 
-    HTTP_PORTS = {80, 443, 8080, 8443}
-    http_assets = [a for a in assets if set(a.get("open_ports") or []) & HTTP_PORTS]
+    # PR #2: service_type-driven gate with legacy port fallback.
+    http_assets = [
+        a for a in assets
+        if asset_has_matching_port(
+            a,
+            service_types=HTTP_SERVICE_TYPES,
+            legacy_ports=HTTP_LEGACY_PORTS,
+        )
+    ]
 
     if not http_assets:
         return {"fingerprinted": 0}
@@ -605,11 +658,15 @@ async def _do_endpoint_probe(sf, org_id: str, target_scope: str | None = None) -
         logger.info("org=%s endpoint_probe: no assets to probe", org_id)
         return {"probed": 0}
 
-    HTTP_PORTS = {80, 443, 8080, 8443}
+    # PR #2: service_type-driven gate with legacy port fallback.
     # Skip CDN assets — endpoint probes against CDN origins are noisy and slow.
     http_assets = [
         a for a in assets
-        if set(a.get("open_ports") or []) & HTTP_PORTS
+        if asset_has_matching_port(
+            a,
+            service_types=HTTP_SERVICE_TYPES,
+            legacy_ports=HTTP_LEGACY_PORTS,
+        )
         and not a.get("cdn_provider")
         and "cdn" not in (a.get("tags") or [])
     ]
@@ -656,12 +713,24 @@ async def _do_protocol_probe(sf, org_id: str, target_scope: str | None = None) -
     if not assets:
         return {"probed": 0}
 
-    # Only probe assets that have non-HTTP ports open
+    # PR #2: service_type-driven gate. Union the legacy ports + service
+    # types across every PROTOCOL_PROBES row so a host with Modbus on
+    # an alt port (service_type="modbus" via PR #1 stamping) still
+    # makes it past the orchestrator-level gate, even when 502 isn't
+    # in its open_ports.
     from app.ingest.protocol_probe import PROTOCOL_PROBES
-    probe_ports = {p["port"] for p in PROTOCOL_PROBES}
+    probe_ports: set[int] = set()
+    probe_service_types: set[str] = set()
+    for p in PROTOCOL_PROBES:
+        probe_ports.update(p.get("ports") or {p["port"]})
+        probe_service_types.update(p.get("service_types") or set())
     candidates = [
         a for a in assets
-        if set(a.get("open_ports") or []) & probe_ports
+        if asset_has_matching_port(
+            a,
+            service_types=probe_service_types,
+            legacy_ports=probe_ports,
+        )
     ]
     if not candidates:
         return {"probed": 0, "no_protocol_ports": True}
@@ -687,6 +756,11 @@ async def _do_protocol_probe(sf, org_id: str, target_scope: str | None = None) -
 
         update_params: list[dict] = []
         insert_params: list[dict] = []
+        # Per-port service_type stamps for asset_ports (migration 017).
+        # The detection's ``protocol`` field is already normalized
+        # (modbus, s7comm, ethernet_ip, etc.) so we use it as-is. The
+        # legacy protocol_detections JSON write below is preserved.
+        port_service_stamps: list[tuple[uuid.UUID, int, str, str | None]] = []
         now = datetime.now(timezone.utc)
         for hostname, detections in probe_results.items():
             total_detections += len(detections)
@@ -698,6 +772,12 @@ async def _do_protocol_probe(sf, org_id: str, target_scope: str | None = None) -
                 "id": aid,
             })
             for det in detections:
+                proto = det.get("protocol")
+                port = det.get("port")
+                if proto and isinstance(port, int):
+                    port_service_stamps.append((
+                        aid, port, str(proto), det.get("name"),
+                    ))
                 insert_params.append({
                     "id": uuid.uuid4(),
                     "org_id": org_id,
@@ -730,6 +810,26 @@ async def _do_protocol_probe(sf, org_id: str, target_scope: str | None = None) -
             )
             findings_created = len(insert_params)
 
+        # Per-port service_type stamps for asset_ports (migration 017).
+        # Confidence 90 — protocol_probe sends a real protocol-specific
+        # payload and parses the response, so it's as authoritative as the
+        # banner-grab probes.
+        for aid, port, svc_type, product in port_service_stamps:
+            try:
+                await upsert_asset_port(
+                    db,
+                    aid,
+                    port,
+                    service_type=svc_type,
+                    service_product=product,
+                    service_confidence=90,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "org=%s protocol_probe service_type stamp failed asset=%s port=%s: %s",
+                    org_id, aid, port, exc,
+                )
+
         await db.commit()
 
     return {
@@ -737,11 +837,67 @@ async def _do_protocol_probe(sf, org_id: str, target_scope: str | None = None) -
         "assets_with_detections": len(probe_results),
         "total_detections": total_detections,
         "findings_created": findings_created,
+        "service_type_stamps": len(port_service_stamps),
     }
 
 
+# Map from banner-probe ``protocol`` field to the normalized service_type
+# stamped on asset_ports.service_type by the banner_grab merge loop. These
+# probes are hand-rolled parsers — confidence 90 (db, ssh) or 85 (rdp,
+# printer) so they win over an httpx scheme guess (70) or nmap detection
+# (80) on the same port. Kept alongside the loop instead of in the probe
+# modules to keep them transport-only.
+_BANNER_SERVICE_TYPE: dict[str, tuple[str, int]] = {
+    "ssh": ("ssh", 90),
+    "mysql": ("mysql", 90),
+    "postgresql": ("postgres", 90),
+    "rdp": ("rdp", 85),
+    "ipp": ("ipp", 85),
+    "ajp": ("ajp", 90),
+}
+
+
+def _banner_service_product(banner: dict) -> str | None:
+    """Best-effort product/version string extracted from a banner_finding.
+
+    Mirrors the per-probe ``version`` dict shapes:
+
+    * ssh → ``{"software": "OpenSSH_8.4p1", ...}`` → ``"OpenSSH 8.4p1"``
+    * mysql → ``{"server_version": "8.0.32", ...}`` → ``"MySQL 8.0.32"``
+    * postgresql → ``{"server_version": "14.5", ...}`` → ``"PostgreSQL 14.5"``
+    * ipp → ``{"make_and_model": "HP LaserJet", ...}`` → ``"HP LaserJet"``
+    * rdp → ``{"selected_protocol": "ssl"}`` → ``"RDP (ssl)"``
+    """
+    proto = banner.get("protocol")
+    version = banner.get("version") or {}
+    if proto == "ssh":
+        software = version.get("software") or ""
+        if software:
+            # Convert "OpenSSH_8.4p1" → "OpenSSH 8.4p1" for readability.
+            return software.replace("_", " ", 1) or "OpenSSH"
+        return "OpenSSH"
+    if proto == "mysql":
+        sv = version.get("server_version")
+        return f"MySQL {sv}" if sv else "MySQL"
+    if proto == "postgresql":
+        sv = version.get("server_version")
+        return f"PostgreSQL {sv}" if sv else "PostgreSQL"
+    if proto == "ipp":
+        return version.get("make_and_model") or version.get("firmware")
+    if proto == "rdp":
+        sp = version.get("selected_protocol")
+        return f"RDP ({sp})" if sp else "RDP"
+    if proto == "ajp":
+        # CPing/CPong has no version info in-band — Tomcat is the
+        # dominant AJP server but the protocol is also implemented by
+        # mod_jk standalone, Jetty's AJP connector, etc. Default to a
+        # generic product label.
+        return version.get("product") or "Tomcat-AJP"
+    return None
+
+
 async def _do_banner_grab(sf, org_id: str, target_scope: str | None = None) -> dict:
-    """Phase-2 EASM fingerprinter — banner-depth probes for SSH/RDP/mail/IPP/TR-069/UPnP/DB.
+    """Phase-2 EASM fingerprinter — banner-depth probes for SSH/RDP/mail/IPP/TR-069/UPnP/DB/AJP.
 
     Each protocol module returns ``{hostname: [banner_finding, ...]}``. We
     merge them and write the union to ``assets.easm_data.banner_findings``
@@ -762,24 +918,30 @@ async def _do_banner_grab(sf, org_id: str, target_scope: str | None = None) -> d
     if not assets:
         return {"probed": 0}
 
-    # Union of every port any banner module cares about. Pre-filter so
-    # modules don't iterate the full asset list looking for matches.
-    _BANNER_PORTS = {22, 25, 110, 143, 465, 587, 631, 993, 995,
-                     1900, 3306, 3389, 5432, 7547}
+    # PR #2: service_type-driven gate. The legacy port set
+    # (BANNER_LEGACY_PORTS) is the OR-fallback so ports not yet
+    # re-fingerprinted since PR #1 still fan out to the right module.
+    # Modules themselves (ssh_banner, db_banner, …) re-apply the same
+    # gate per-port via ``port_service_types`` so they don't blast
+    # SSH probes at every banner-relevant port on a host.
     candidates = [
         a for a in assets
-        if set(a.get("open_ports") or []) & _BANNER_PORTS
+        if asset_has_matching_port(
+            a,
+            service_types=BANNER_SERVICE_TYPES,
+            legacy_ports=BANNER_LEGACY_PORTS,
+        )
     ]
     if not candidates:
         return {"probed": 0, "no_banner_ports": True}
 
     logger.info(
-        "org=%s banner_grab: probing %d assets across 6 protocol families",
+        "org=%s banner_grab: probing %d assets across 7 protocol families",
         org_id, len(candidates),
     )
 
-    # Run all six modules in parallel — they target disjoint port sets so
-    # there's no contention on a single asset.
+    # Run all seven modules in parallel — they target disjoint port
+    # sets so there's no contention on a single asset.
     module_results = await asyncio.gather(
         ssh_banner_batch(candidates),
         rdp_nla_batch(candidates),
@@ -787,6 +949,7 @@ async def _do_banner_grab(sf, org_id: str, target_scope: str | None = None) -> d
         printer_banner_batch(candidates),
         tr069_upnp_batch(candidates),
         db_banner_batch(candidates),
+        ajp_probe_batch(candidates),
         return_exceptions=True,
     )
 
@@ -818,6 +981,11 @@ async def _do_banner_grab(sf, org_id: str, target_scope: str | None = None) -> d
 
         update_params: list[dict] = []
         insert_params: list[dict] = []
+        # Per-port service_type stamps for asset_ports (migration 017).
+        # Done alongside the easm_data write — the banner_findings legacy
+        # path stays untouched. PR #2 will start reading from
+        # asset_ports.service_type for downstream gates.
+        port_service_stamps: list[tuple[uuid.UUID, dict]] = []
         now = datetime.now(timezone.utc)
         for hostname, banners in per_host.items():
             # Count banners regardless of whether the asset row still
@@ -832,6 +1000,10 @@ async def _do_banner_grab(sf, org_id: str, target_scope: str | None = None) -> d
                 "id": aid,
             })
             for banner in banners:
+                proto = banner.get("protocol")
+                port = banner.get("port")
+                if proto in _BANNER_SERVICE_TYPE and isinstance(port, int):
+                    port_service_stamps.append((aid, banner))
                 if "severity" not in banner or "finding_title" not in banner:
                     continue
                 insert_params.append({
@@ -884,6 +1056,28 @@ async def _do_banner_grab(sf, org_id: str, target_scope: str | None = None) -> d
             )
             findings_created = len(insert_params)
 
+        # Per-port service_type stamps for asset_ports (migration 017).
+        # Done after the easm_data + findings writes so a banner-grab
+        # failure on a single port doesn't roll back the whole batch.
+        # ``upsert_asset_port`` enforces higher-confidence-wins semantics
+        # so this is safe to retry on a re-run.
+        for aid, banner in port_service_stamps:
+            svc_type, conf = _BANNER_SERVICE_TYPE[banner["protocol"]]
+            try:
+                await upsert_asset_port(
+                    db,
+                    aid,
+                    int(banner["port"]),
+                    service_type=svc_type,
+                    service_product=_banner_service_product(banner),
+                    service_confidence=conf,
+                )
+            except Exception as exc:  # noqa: BLE001 — never block banner_grab on a single stamp
+                logger.warning(
+                    "org=%s banner_grab service_type stamp failed asset=%s port=%s: %s",
+                    org_id, aid, banner.get("port"), exc,
+                )
+
         await db.commit()
 
     return {
@@ -891,6 +1085,7 @@ async def _do_banner_grab(sf, org_id: str, target_scope: str | None = None) -> d
         "assets_with_banners": len(per_host),
         "total_banners": total_banners,
         "findings_created": findings_created,
+        "service_type_stamps": len(port_service_stamps),
     }
 
 
@@ -1059,7 +1254,6 @@ async def _do_katana(sf, org_id: str, target_scope: str | None = None) -> dict:
         logger.info("org=%s katana: no fresh assets to crawl", org_id)
         return {"crawled": 0, "skipped_fresh": True}
 
-    HTTP_PORTS = {80, 443, 8080, 8443}
     targets: list[str] = []
     target_asset_map: dict[str, uuid.UUID] = {}
 
@@ -1068,16 +1262,25 @@ async def _do_katana(sf, org_id: str, target_scope: str | None = None) -> dict:
         if asset.get("cdn_provider") or "cdn" in (asset.get("tags") or []):
             continue
 
+        # PR #2: service_type-driven gate with legacy port fallback.
+        # ``443 in ports`` HTTPS-preference check is preserved as-is —
+        # the canonical TLS port is still a reliable signal even when
+        # service_type stamping eventually expands to alt ports.
+        if not asset_has_matching_port(
+            asset,
+            service_types=HTTP_SERVICE_TYPES,
+            legacy_ports=HTTP_LEGACY_PORTS,
+        ):
+            continue
         ports = set(asset.get("open_ports") or [])
-        if ports & HTTP_PORTS:
-            hostname = asset["hostname"]
-            # Prefer HTTPS if 443 is open
-            if 443 in ports:
-                url = f"https://{hostname}"
-            else:
-                url = f"http://{hostname}"
-            targets.append(url)
-            target_asset_map[hostname] = asset["id"]
+        hostname = asset["hostname"]
+        # Prefer HTTPS if 443 is open
+        if 443 in ports:
+            url = f"https://{hostname}"
+        else:
+            url = f"http://{hostname}"
+        targets.append(url)
+        target_asset_map[hostname] = asset["id"]
 
     if not targets:
         return {"crawled": 0}
@@ -1171,19 +1374,24 @@ async def _do_kiterunner(sf, org_id: str, target_scope: str | None = None) -> di
         logger.info("org=%s kiterunner: no fresh assets", org_id)
         return {"bruted": 0, "skipped_fresh": True}
 
-    HTTP_PORTS = {80, 443, 8080, 8443}
     targets: list[str] = []
     target_asset_map: dict[str, uuid.UUID] = {}
 
     for asset in assets:
         if asset.get("cdn_provider") or "cdn" in (asset.get("tags") or []):
             continue
+        # PR #2: service_type-driven gate with legacy port fallback.
+        if not asset_has_matching_port(
+            asset,
+            service_types=HTTP_SERVICE_TYPES,
+            legacy_ports=HTTP_LEGACY_PORTS,
+        ):
+            continue
         ports = set(asset.get("open_ports") or [])
-        if ports & HTTP_PORTS:
-            hostname = asset["hostname"]
-            url = f"https://{hostname}" if 443 in ports else f"http://{hostname}"
-            targets.append(url)
-            target_asset_map[hostname] = asset["id"]
+        hostname = asset["hostname"]
+        url = f"https://{hostname}" if 443 in ports else f"http://{hostname}"
+        targets.append(url)
+        target_asset_map[hostname] = asset["id"]
 
     if not targets:
         return {"bruted": 0}
@@ -1499,11 +1707,14 @@ async def _do_openapi_discovery(sf, org_id: str, target_scope: str | None = None
     if not assets:
         return {"specs_found": 0, "skipped_fresh": True}
 
-    HTTP_PORTS = {80, 443, 8080, 8443}
     targets: list[dict] = []
     for asset in assets:
-        ports = set(asset.get("open_ports") or [])
-        if not (ports & HTTP_PORTS):
+        # PR #2: service_type-driven gate with legacy port fallback.
+        if not asset_has_matching_port(
+            asset,
+            service_types=HTTP_SERVICE_TYPES,
+            legacy_ports=HTTP_LEGACY_PORTS,
+        ):
             continue
         if asset.get("cdn_provider"):
             # Probing a CDN's well-known paths returns the CDN's responses,
@@ -1512,6 +1723,7 @@ async def _do_openapi_discovery(sf, org_id: str, target_scope: str | None = None
         hostname = asset.get("hostname")
         if not hostname:
             continue
+        ports = set(asset.get("open_ports") or [])
         scheme = "https" if 443 in ports or 8443 in ports else "http"
         targets.append({
             "asset_id": asset["id"],
@@ -1550,17 +1762,21 @@ async def _do_graphql_introspection(sf, org_id: str, target_scope: str | None = 
     if not assets:
         return {"introspection_hits": 0, "skipped_fresh": True}
 
-    HTTP_PORTS = {80, 443, 8080, 8443}
     targets: list[dict] = []
     for asset in assets:
-        ports = set(asset.get("open_ports") or [])
-        if not (ports & HTTP_PORTS):
+        # PR #2: service_type-driven gate with legacy port fallback.
+        if not asset_has_matching_port(
+            asset,
+            service_types=HTTP_SERVICE_TYPES,
+            legacy_ports=HTTP_LEGACY_PORTS,
+        ):
             continue
         if asset.get("cdn_provider"):
             continue
         hostname = asset.get("hostname")
         if not hostname:
             continue
+        ports = set(asset.get("open_ports") or [])
         scheme = "https" if 443 in ports or 8443 in ports else "http"
         targets.append({
             "asset_id": asset["id"],

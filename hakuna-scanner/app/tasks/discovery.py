@@ -155,7 +155,14 @@ async def _get_assets_with_ports(
     apply_stale: bool = False,
     stale_hours: int = 24,
 ) -> list[dict]:
-    """Assets that have open ports (for liveness HTTP check)."""
+    """Assets that have open ports (for liveness HTTP check).
+
+    PR #2: each asset dict carries ``port_service_types`` so the
+    liveness HTTP gate can prefer service identity over the canonical
+    {80, 443, 8080, 8443} port set.
+    """
+    from app.ingest.service_lookup import attach_port_service_types
+
     scope_sql, scope_params = build_target_scope(target_scope)
     stale_sql = build_stale_clause(enabled=apply_stale, stale_hours=stale_hours)
     extra = compose_where(scope_sql, stale_sql)
@@ -168,10 +175,12 @@ async def _get_assets_with_ports(
             """),
             params,
         )
-        return [
+        assets = [
             {"id": row.id, "hostname": row.hostname, "ip": row.ip, "open_ports": row.open_ports}
             for row in result.fetchall()
         ]
+        await attach_port_service_types(db, assets)
+        return assets
 
 
 # --- Step functions ---
@@ -518,12 +527,20 @@ async def _do_liveness_gate(sf, org_id: str, target_scope: str | None = None) ->
                 port_check_results[host] = True
 
     # Check 3: HTTP probe on web ports
+    # PR #2: service_type-driven gate with legacy port fallback.
+    # An asset newly stamped as "http"/"https" on 8081 (post PR #1)
+    # gets liveness-probed even though 8081 isn't in the canonical set.
+    from app.ingest.service_lookup import asset_has_matching_port
     http_check_results: dict[str, bool] = {}
-    HTTP_PORTS = {80, 443, 8080, 8443}
+    _HTTP_SERVICE_TYPES = {"http", "https"}
+    _HTTP_LEGACY_PORTS = {80, 443, 8080, 8443}
     http_hosts = []
     for a in assets_data:
-        ports = set(a.get("open_ports") or [])
-        if ports & HTTP_PORTS:
+        if asset_has_matching_port(
+            a,
+            service_types=_HTTP_SERVICE_TYPES,
+            legacy_ports=_HTTP_LEGACY_PORTS,
+        ):
             http_hosts.append(a["hostname"])
 
     if http_hosts:

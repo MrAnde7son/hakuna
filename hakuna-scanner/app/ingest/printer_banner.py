@@ -130,9 +130,14 @@ async def _probe_single(
     session,  # aiohttp.ClientSession — typed loosely so module imports without aiohttp
     host: str,
     port: int = 631,
+    *,
+    use_tls: bool = False,
 ) -> dict | None:
     import aiohttp  # lazy: keeps parser code testable without the transport dep
-    scheme = "https" if port == 443 else "http"
+    # PR #2: scheme selection driven by the caller (which knows the
+    # service_type — "https" for IPP-over-TLS, "ipp"/None for plain).
+    # The previous ``port == 443`` shortcut hard-coded that mapping.
+    scheme = "https" if use_tls else "http"
     url = f"{scheme}://{host}:{port}/ipp"
     body = _build_get_printer_attributes(f"ipp://{host}:{port}/")
 
@@ -170,16 +175,41 @@ async def _probe_single(
     }
 
 
+_LEGACY_PORTS: set[int] = {631}
+_SERVICE_TYPES: set[str] = {"ipp"}
+# Service types that imply HTTP transport — when an IPP-typed port
+# happens to be ``https``-stamped (e.g. AirPrint over TLS) we POST the
+# Get-Printer-Attributes request through TLS instead of plain HTTP.
+_TLS_SERVICE_TYPES: set[str] = {"https"}
+
+
 async def probe_batch(
     assets: list[dict],
     concurrency: int = 10,
 ) -> dict[str, list[dict]]:
+    """IPP printer fingerprint on every IPP-typed port.
+
+    PR #2: gate on ``asset_ports.service_type == 'ipp'`` (preferred)
+    OR ``port == 631`` (fallback). Whether to use TLS is driven by
+    the per-port stamped service_type — ``'https'`` flags the port as
+    IPP-over-TLS (replaces the old ``port == 443`` hard-code).
+    """
+    from app.ingest.service_lookup import matching_ports_for_asset
+
     semaphore = asyncio.Semaphore(concurrency)
     results: dict[str, list[dict]] = {}
 
+    # Candidate filter: any port matching the IPP service-type / 631
+    # fallback. The IPP-over-TLS case is handled per-port inside the
+    # probe loop below by inspecting port_service_types.
     candidates = [
         a for a in assets
-        if 631 in (a.get("open_ports") or []) and (a.get("hostname") or a.get("ip"))
+        if matching_ports_for_asset(
+            a,
+            service_types=_SERVICE_TYPES,
+            legacy_ports=_LEGACY_PORTS,
+        )
+        and (a.get("hostname") or a.get("ip"))
     ]
     if not candidates:
         return results
@@ -189,10 +219,24 @@ async def probe_batch(
     async with aiohttp.ClientSession(connector=connector) as session:
         async def _run_one(asset: dict):
             target = asset.get("ip") or asset.get("hostname")
-            async with semaphore:
-                hit = await _probe_single(session, target, 631)
-            if hit:
-                results[asset["hostname"]] = [hit]
+            ports = matching_ports_for_asset(
+                asset,
+                service_types=_SERVICE_TYPES,
+                legacy_ports=_LEGACY_PORTS,
+            )
+            st_map = asset.get("port_service_types") or {}
+            hits: list[dict] = []
+            for port in ports:
+                # Per-port TLS detection: if the port also happens to
+                # be stamped as https (rare — most print servers expose
+                # IPP and IPPS on different ports), use TLS transport.
+                use_tls = st_map.get(port) in _TLS_SERVICE_TYPES
+                async with semaphore:
+                    hit = await _probe_single(session, target, port, use_tls=use_tls)
+                if hit:
+                    hits.append(hit)
+            if hits:
+                results[asset["hostname"]] = hits
 
         await asyncio.gather(
             *(_run_one(a) for a in candidates),

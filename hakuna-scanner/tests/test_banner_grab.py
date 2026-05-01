@@ -344,5 +344,10 @@ class TestMysqlGreetingParser:
         from app.ingest import db_banner
         assert hasattr(db_banner, "_probe_mysql")
         assert hasattr(db_banner, "_DISPATCH")
-        ports = {p for p, _ in db_banner._DISPATCH}
+        # PR #2: dispatch rows carry (legacy_port, fn, service_types,
+        # legacy_ports) so each probe gates on service_type with a
+        # port-set fallback.
+        ports = {row[0] for row in db_banner._DISPATCH}
         assert ports == {5432, 3306}
+        service_types = set().union(*(row[2] for row in db_banner._DISPATCH))
+        assert service_types == {"postgres", "mysql"}
