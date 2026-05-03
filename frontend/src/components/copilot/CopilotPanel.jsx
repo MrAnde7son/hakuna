@@ -679,10 +679,11 @@ export default function CopilotPanel({ open, onClose, currentPath, currentSearch
   const mdComponents = useMemo(() => ({
     ...baseMdComponents,
     a: ({ href, children }) => {
-      const isInternal = href && href.startsWith('/')
-      if (isInternal) {
+      // Treat both "/path" and hash-prefixed "#/path" (LLM occasionally emits hash-router style) as internal SPA routes
+      const internalHref = href && (href.startsWith('/') ? href : (href.startsWith('#/') ? href.slice(1) : null))
+      if (internalHref) {
         // Normalize copilot tool param names to frontend URL param names
-        const normalizedHref = href.replace(/([?&])has_exploit(=)/g, '$1exploit$2')
+        const normalizedHref = internalHref.replace(/([?&])has_exploit(=)/g, '$1exploit$2')
         return (
           <a
             href={normalizedHref}
