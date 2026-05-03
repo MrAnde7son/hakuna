@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import useURLFilters from '../../hooks/useURLFilters.js'
 import { useTranslation } from 'react-i18next'
-import { Layers, ChevronDown, ChevronUp, ExternalLink, RefreshCw, ArrowRight, Monitor, Shield, Zap, AlertTriangle, Info, CheckCircle } from 'lucide-react'
+import { Layers, ChevronDown, ChevronUp, ExternalLink, RefreshCw, ArrowRight, Monitor, Shield, Zap, AlertTriangle, Info, CheckCircle, Target } from 'lucide-react'
 import { useScan } from '../../App.jsx'
 import { getAggregatedSolutions, rebuildAggregatedSolutions } from '../../api.js'
 import ReactMarkdown from 'react-markdown'
@@ -186,11 +186,45 @@ function DownstreamImpactBanner({ impact }) {
   )
 }
 
+function buildCampaignQueryFromSolution(rec) {
+  // Match by exact finding IDs — the solution already enumerates them, so this
+  // is precise regardless of whether the findings have CVEs, are tied to an
+  // SBOM component, or are misconfig-style (e.g. "SMB Hardening"). Rule engine
+  // finding.id supports comma-separated bulk values.
+  const ids = rec.finding_ids || []
+  if (ids.length > 0) {
+    return [{ field: 'finding.id', op: 'eq', value: ids.join(',') }]
+  }
+  // Fallbacks for older solution records that didn't persist finding_ids.
+  const cves = (rec.cve_ids || []).slice(0, 100)
+  if (cves.length > 0) {
+    return [{ field: 'finding.cve', op: 'eq', value: cves.join(',') }]
+  }
+  return [{ field: 'finding.plugin_name', op: 'contains', value: (rec.title || '').slice(0, 50) }]
+}
+
 function RecommendationCard({ rec, highlighted }) {
   const { t } = useTranslation()
   const [expanded, setExpanded] = useState(highlighted || false)
   const navigate = useNavigate()
   const cardRef = useRef(null)
+
+  const handleCreateCampaign = (e) => {
+    e.stopPropagation()
+    const query = buildCampaignQueryFromSolution(rec)
+    const name = rec.title?.slice(0, 80) || 'Aggregated remediation'
+    const description = rec.affected_component
+      ? `Remediation for ${rec.affected_component}${rec.target_version ? ` → ${rec.target_version}` : ''} (${rec.finding_count} findings, ${rec.cve_count || 0} CVEs)`
+      : `Aggregated remediation: ${rec.finding_count} findings`
+    const params = new URLSearchParams({
+      create: '1',
+      name,
+      description,
+      query: JSON.stringify(query),
+      query_logic: 'AND',
+    })
+    navigate(`/campaigns?${params.toString()}`)
+  }
 
   useEffect(() => {
     if (highlighted && cardRef.current) {
@@ -270,8 +304,23 @@ function RecommendationCard({ rec, highlighted }) {
             </div>
           </div>
 
-          <div style={{ padding: 4, color: 'var(--text-muted)' }}>
-            {expanded ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <button
+              onClick={handleCreateCampaign}
+              title="Create remediation campaign for this solution"
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 5,
+                padding: '6px 12px', borderRadius: 6, fontSize: 12, fontWeight: 600,
+                border: '1px solid #1e3a5f66', background: '#1e3a5f22', color: '#60a5fa',
+                cursor: 'pointer', whiteSpace: 'nowrap',
+              }}
+            >
+              <Target size={12} />
+              Create Campaign
+            </button>
+            <div style={{ padding: 4, color: 'var(--text-muted)' }}>
+              {expanded ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+            </div>
           </div>
         </div>
       </div>

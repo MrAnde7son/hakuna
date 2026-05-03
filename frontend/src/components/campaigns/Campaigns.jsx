@@ -7,7 +7,7 @@ import {
   Flame, Shield, Timer, Wrench, Globe, Sparkles, FileText, CalendarClock, Siren, Ticket, ShieldAlert,
 } from 'lucide-react'
 import { useScan } from '../../App.jsx'
-import { getCampaigns, createCampaign, deleteCampaign, runCampaign, getWorkflows, createWorkflow, deleteWorkflow, getWorkflowTemplates, createWorkflowFromTemplate, exportConfig, importConfig, authListUsers, getIntegrations, previewCampaignQuery } from '../../api.js'
+import { getCampaigns, createCampaign, deleteCampaign, runCampaign, getWorkflows, createWorkflow, deleteWorkflow, getWorkflowTemplates, createWorkflowFromTemplate, exportConfig, importConfig, authListUsers, getIntegrations, previewCampaignQuery, nlpToCampaignConditions } from '../../api.js'
 import { Card, PageHeader, Button, Spinner, EmptyState, Pill, ExportImportButtons, ErrorBanner, SkeletonCard, useToast } from '../shared/ui.jsx'
 import { capture } from '../../utils/analytics.js'
 
@@ -318,6 +318,10 @@ function CreateCampaignModal({ scanId, onClose, onCreate, prefill }) {
   const [saving, setSaving] = useState(false)
   const [users, setUsers] = useState([])
   const [ownerId, setOwnerId] = useState('')
+  // NLP input on template-selection step
+  const [nlpQuery, setNlpQuery] = useState('')
+  const [nlpLoading, setNlpLoading] = useState(false)
+  const [nlpError, setNlpError] = useState(null)
   // Auto-ticket config
   const [ticketEnabled, setTicketEnabled] = useState(false)
   const [ticketIntegration, setTicketIntegration] = useState('jira')
@@ -353,6 +357,48 @@ function CreateCampaignModal({ scanId, onClose, onCreate, prefill }) {
       if (ticketing.length === 1) setTicketIntegration(ticketing[0].provider)
     }).catch(() => {})
   }, [])
+
+  const handleNLPSubmit = async () => {
+    const q = nlpQuery.trim()
+    if (!q) return
+    setNlpLoading(true)
+    setNlpError(null)
+    try {
+      const res = await nlpToCampaignConditions(q, scanId || null)
+      if (!res.conditions || res.conditions.length === 0) {
+        setNlpError("Couldn't extract conditions from that query. Try rephrasing or pick a template.")
+        return
+      }
+      const tpl = {
+        id: 'nlp_generated',
+        icon: Sparkles,
+        color: '#a855f7',
+        bg: 'rgba(168,85,247,0.10)',
+        border: 'rgba(168,85,247,0.25)',
+        name: q.length > 60 ? q.slice(0, 57) + '…' : q,
+        description: `From natural language: "${q}"`,
+        query: res.conditions,
+        query_logic: res.query_logic || 'AND',
+      }
+      setSelectedTemplate(tpl)
+      setName(tpl.name)
+      setDescription(tpl.description)
+      setPreviewResult({
+        asset_count: res.asset_count || 0,
+        finding_count: res.finding_count || 0,
+      })
+      setStep('details')
+      capture('campaign_nlp_used', {
+        query_length: q.length,
+        condition_count: res.conditions.length,
+        finding_count: res.finding_count || 0,
+      })
+    } catch (e) {
+      setNlpError('Failed to interpret query. Try again or pick a template.')
+    } finally {
+      setNlpLoading(false)
+    }
+  }
 
   const handleSelectTemplate = (tpl) => {
     setSelectedTemplate(tpl)
@@ -448,6 +494,42 @@ function CreateCampaignModal({ scanId, onClose, onCreate, prefill }) {
         {step === 'templates' ? (
           /* ── Template grid ── */
           <div style={{ overflowY: 'auto', padding: 20 }}>
+            {/* NLP describe bar — alternative to template selection */}
+            <div style={{
+              marginBottom: 16, padding: '12px 14px', borderRadius: 10,
+              background: 'rgba(168,85,247,0.06)', border: '1px solid rgba(168,85,247,0.20)',
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+                <Sparkles size={14} color="#a855f7" />
+                <span style={{ fontSize: 12, fontWeight: 600, color: '#a855f7' }}>
+                  Describe your campaign in plain English
+                </span>
+                <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                  · or pick a template below
+                </span>
+              </div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <input
+                  value={nlpQuery}
+                  onChange={e => { setNlpQuery(e.target.value); if (nlpError) setNlpError(null) }}
+                  onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleNLPSubmit() } }}
+                  placeholder='e.g. "critical Windows servers with exploits in DMZ"'
+                  disabled={nlpLoading}
+                  style={{
+                    flex: 1, padding: '8px 12px', background: 'var(--bg-card)',
+                    border: '1px solid var(--border)', borderRadius: 8, fontSize: 13,
+                    color: 'var(--text-primary)', boxSizing: 'border-box',
+                  }}
+                />
+                <Button onClick={handleNLPSubmit} disabled={!nlpQuery.trim() || nlpLoading}>
+                  {nlpLoading ? 'Interpreting…' : 'Generate'}
+                </Button>
+              </div>
+              {nlpError && (
+                <div style={{ marginTop: 6, fontSize: 11, color: '#ef4444' }}>{nlpError}</div>
+              )}
+            </div>
+
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
               {CAMPAIGN_TEMPLATES.map(tpl => {
                 const Icon = tpl.icon

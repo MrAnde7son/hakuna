@@ -26,6 +26,7 @@ import services.rule_engine as rule_engine
 import services.workflow_engine as workflow_engine
 import services.integrations as integ_module
 import services.ownership_inference as ownership_inference
+from services.nlp_to_rules import nlp_to_conditions
 
 router = APIRouter()
 
@@ -197,6 +198,45 @@ def get_rule_engine_catalog(db: Session = Depends(get_db), org_ids: Optional[Lis
 def get_condition_catalog(db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
     """Return condition catalog for campaign queries (proxies to unified catalog)."""
     return rule_engine.get_condition_catalog(db, org_ids)
+
+
+class NLPToConditionsBody(BaseModel):
+    q: str
+    scan_id: Optional[int] = None
+
+
+@router.post("/api/campaigns/nlp-to-conditions")
+def nlp_to_campaign_conditions(
+    body: NLPToConditionsBody,
+    db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    """Translate a natural-language query into rule-engine conditions + run a
+    live preview so the UI can show finding/asset counts before the user commits.
+    """
+    translated = nlp_to_conditions(body.q)
+    conditions = translated["conditions"]
+    asset_count = finding_count = 0
+    if conditions:
+        try:
+            results = cq.run_query(
+                db, conditions, translated["query_logic"], body.scan_id, org_ids=org_ids,
+            )
+            asset_count = len(results)
+            finding_count = sum(len(r["findings"]) for r in results)
+        except Exception:
+            # Translator may emit a condition the rule engine can't evaluate
+            # against the current schema (e.g. unknown enum). Fail soft so the
+            # user still gets the conditions to edit.
+            pass
+    return {
+        "conditions": conditions,
+        "query_logic": translated["query_logic"],
+        "chips": translated["chips"],
+        "asset_count": asset_count,
+        "finding_count": finding_count,
+        "original_query": translated["original_query"],
+    }
 
 
 @router.post("/api/campaigns/preview")

@@ -544,6 +544,12 @@ export const previewCampaignQuery = (data) =>
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
   })
+export const nlpToCampaignConditions = (q, scan_id = null) =>
+  request('/campaigns/nlp-to-conditions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ q, scan_id }),
+  })
 export const advancedSearch = (data) =>
   request('/search/advanced', {
     method: 'POST',

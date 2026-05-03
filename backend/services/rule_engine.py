@@ -180,6 +180,7 @@ CONDITION_CATALOG = [
             {"field": "finding.description",     "label": "Description",        "ops": ["contains", "not_contains", "regex"], "value_type": "string", "placeholder": "buffer overflow"},
             {"field": "finding.solution",        "label": "Solution",           "ops": ["contains", "not_contains", "regex"], "value_type": "string", "placeholder": "Upgrade to"},
             {"field": "finding.cve",             "label": "CVE",    "ops": ["contains", "eq"],                "value_type": "string", "placeholder": "CVE-2021-44228"},
+            {"field": "finding.id",              "label": "Finding ID",         "ops": ["eq", "neq"],     "value_type": "string", "placeholder": "1, 2, 3 (comma-separated)"},
             {"field": "finding.cwe",             "label": "CWE",    "ops": ["contains", "eq", "contains_any", "contains_all"], "value_type": "string", "placeholder": "CWE-79"},
             {"field": "finding.has_cwe",         "label": "Has CWE",            "ops": ["is_true", "is_false"],           "value_type": "none"},
             {
@@ -901,6 +902,20 @@ def _eval_finding_row(cond: dict, finding) -> bool:
         custom = getattr(finding, "custom_fields", None) or {}
         return _eval_custom_field_value(custom.get(key), op, value)
 
+    if sub == "id":
+        # Comma-separated bulk match, mirroring finding.cve semantics. Used by
+        # the "Create Campaign from Aggregated Solution" CTA to pin a campaign
+        # to an exact set of findings.
+        try:
+            target_ids = {int(v.strip()) for v in str(value or "").split(",") if v.strip()}
+        except ValueError:
+            return False
+        if not target_ids:
+            return False
+        present = finding.id in target_ids
+        if op == "eq":  return present
+        if op == "neq": return not present
+        return False
     if sub == "severity":
         return _num_op(float(finding.severity or 0), op, value)
     if sub == "cvss3":
