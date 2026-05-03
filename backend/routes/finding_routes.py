@@ -135,8 +135,10 @@ def list_findings(
     if auto_resolved is not None:
         q = q.filter(Finding.auto_resolved == auto_resolved)
     if cve:
-        # Partial match within JSON-serialized cves array (case-insensitive)
-        q = q.filter(Finding.cves.ilike(f"%{cve}%"))
+        # Partial match within JSON-serialized cves array (case-insensitive).
+        # Finding.cves is a JSON column, so cast to text before ILIKE — Postgres
+        # has no ILIKE operator on json/jsonb directly.
+        q = q.filter(cast(Finding.cves, Text).ilike(f"%{cve}%"))
     if request.query_params.get("port"):
         q = q.filter(Finding.port == request.query_params["port"])
     if request.query_params.get("min_priority"):

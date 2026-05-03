@@ -133,14 +133,15 @@ const NAV_GROUPS = [
       { path: '/inventory', labelKey: 'nav.inventory', icon: Database, permission: 'page_inventory' },
     ],
   },
-  {
-    labelKey: 'nav.siem',
-    items: [
-      { path: '/siem/search', labelKey: 'nav.eventSearch', icon: Radio, permission: 'page_siem' },
-      { path: '/siem/rules', labelKey: 'nav.detectionRules', icon: Shield, permission: 'page_siem' },
-      { path: '/siem/alerts', labelKey: 'nav.alerts', icon: AlertTriangle, permission: 'page_siem' },
-    ],
-  },
+  // # TODO:remove to simplify navigation
+  // {
+  //   labelKey: 'nav.siem',
+  //   items: [
+  //     { path: '/siem/search', labelKey: 'nav.eventSearch', icon: Radio, permission: 'page_siem' },
+  //     { path: '/siem/rules', labelKey: 'nav.detectionRules', icon: Shield, permission: 'page_siem' },
+  //     { path: '/siem/alerts', labelKey: 'nav.alerts', icon: AlertTriangle, permission: 'page_siem' },
+  //   ],
+  // },
   {
     labelKey: 'nav.response',
     items: [

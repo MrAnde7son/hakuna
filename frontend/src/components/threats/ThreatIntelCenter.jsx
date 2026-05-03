@@ -10,7 +10,7 @@ import {
   Search, Filter, ChevronDown, ChevronUp, ChevronRight, ExternalLink,
   AlertCircle, CheckCircle, Clock, Plus, X,
   FileText, TrendingUp, Flag, Database, Radio, Package,
-  Code, Crosshair, Wrench,
+  Code, Crosshair, Wrench, Target, Eye,
 } from 'lucide-react'
 import { useScan } from '../../App.jsx'
 import { getAssetDisplayName } from '../../utils/assetDisplay.js'
@@ -54,6 +54,80 @@ function renderCitations(text) {
     /^\(Citation:/.test(part)
       ? <span key={i} style={{ color: 'var(--text-muted)', fontSize: 11, fontStyle: 'italic' }}>{part}</span>
       : part
+  )
+}
+
+// ─── Drill-down + campaign action helpers ─────────────────────────────────────
+
+/** Build a /findings URL with the given filters; appends scan_id when provided. */
+function buildFindingsUrl(filters = {}, scanId = null) {
+  const params = new URLSearchParams()
+  if (scanId) params.set('scan_id', String(scanId))
+  Object.entries(filters).forEach(([k, v]) => {
+    if (v == null || v === '' || v === false) return
+    params.set(k, typeof v === 'boolean' ? 'true' : String(v))
+  })
+  const qs = params.toString()
+  return qs ? `/findings?${qs}` : '/findings'
+}
+
+/** Build a /campaigns URL that auto-opens the create modal pre-seeded with rule-engine query. */
+function buildCampaignCreateUrl({ name, description, query, query_logic = 'AND' }) {
+  const params = new URLSearchParams({
+    create: '1',
+    name: name || '',
+    query: JSON.stringify(query || []),
+    query_logic,
+  })
+  if (description) params.set('description', description)
+  return `/campaigns?${params.toString()}`
+}
+
+/** Compact action button used inside row drill-downs. */
+function ActionBtn({ icon: Icon, label, onClick, color = 'var(--accent)' }) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        display: 'inline-flex', alignItems: 'center', gap: 5,
+        padding: '5px 10px', borderRadius: 6, fontSize: 11, fontWeight: 600,
+        background: 'transparent', color,
+        border: `1px solid ${color}40`, cursor: 'pointer',
+        whiteSpace: 'nowrap',
+      }}
+      onMouseEnter={e => { e.currentTarget.style.background = `${color}12` }}
+      onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}
+    >
+      {Icon && <Icon size={11} />}
+      {label}
+    </button>
+  )
+}
+
+/**
+ * Drill-down toolbar: jumps to /findings with filters or opens the campaign-create modal
+ * pre-populated with a rule-engine query targeting the same scope.
+ */
+function RowActions({ findingsHref, campaignSpec, inventoryHref, assetsHref, label = 'Drill down' }) {
+  const navigate = useNavigate()
+  const stop = (fn) => (e) => { e.stopPropagation(); fn() }
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+      <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginRight: 2 }}>
+        {label}
+      </span>
+      {findingsHref && <ActionBtn icon={Eye} label="Affected Findings" onClick={stop(() => navigate(findingsHref))} />}
+      {assetsHref && <ActionBtn icon={Users} label="Affected Assets" onClick={stop(() => navigate(assetsHref))} color="#6366f1" />}
+      {inventoryHref && <ActionBtn icon={Package} label="Software Inventory" onClick={stop(() => navigate(inventoryHref))} color="#10b981" />}
+      {campaignSpec && (
+        <ActionBtn
+          icon={Target}
+          label="Create Campaign"
+          color="#dc2626"
+          onClick={stop(() => navigate(buildCampaignCreateUrl(campaignSpec)))}
+        />
+      )}
+    </div>
   )
 }
 
@@ -895,7 +969,7 @@ function CveSources({ cve }) {
   )
 }
 
-function CveRow({ cve, expanded, onToggle }) {
+function CveRow({ cve, expanded, onToggle, scopeScanId }) {
   const { t } = useTranslation()
   return (
     <>
@@ -1057,6 +1131,20 @@ function CveRow({ cve, expanded, onToggle }) {
                   </div>
                 )}
               </div>
+            </div>
+            <div style={{
+              borderTop: '1px solid var(--border)', marginTop: 12, paddingTop: 10,
+              display: 'flex', justifyContent: 'flex-end',
+            }}>
+              <RowActions
+                findingsHref={buildFindingsUrl({ cve: cve.cve_id }, scopeScanId)}
+                campaignSpec={{
+                  name: `Remediate ${cve.cve_id}`,
+                  description: `Findings exposing ${cve.cve_id}${cve.in_kev ? ' (CISA KEV)' : ''}.`,
+                  query: [{ field: 'finding.cve', op: 'contains', value: cve.cve_id }],
+                  query_logic: 'AND',
+                }}
+              />
             </div>
           </td>
         </tr>
@@ -1262,6 +1350,7 @@ function CveIntelTab({ initialSearch = '', initialKevOnly = false, initialMinEps
                     cve={cve}
                     expanded={expandedId === cve.cve_id}
                     onToggle={() => setExpandedId(id => id === cve.cve_id ? null : cve.cve_id)}
+                    scopeScanId={inScanOnly ? activeScanId : null}
                   />
                 ))}
               </tbody>
@@ -1293,7 +1382,7 @@ function CveIntelTab({ initialSearch = '', initialKevOnly = false, initialMinEps
 const SEVERITY_LABELS = ['Info', 'Low', 'Medium', 'High', 'Critical']
 const SEVERITY_COLORS = ['#6b7280', '#16a34a', '#d97706', '#ea580c', '#dc2626']
 
-function GroupCard({ group, exposure }) {
+function GroupCard({ group, exposure, scopeScanId }) {
   const { t } = useTranslation()
   const [expanded, setExpanded] = useState(false)
   const [ttps, setTtps] = useState([])
@@ -1565,25 +1654,12 @@ function GroupCard({ group, exposure }) {
                 }).slice(0, 15).map(t => {
                   const isMatched = exposure?.matched_ttps?.includes(t.technique_id)
                   return (
-                    <div key={t.id} style={{
-                      display: 'flex', alignItems: 'center', gap: 8,
-                      padding: '6px 8px', borderRadius: 6,
-                      borderBottom: '1px solid var(--border)',
-                      background: isMatched ? '#16a34a0d' : 'transparent',
-                    }}>
-                      {isMatched && (
-                        <span style={{
-                          fontSize: 9, fontWeight: 700, color: '#16a34a',
-                          background: '#16a34a20', border: '1px solid #16a34a40',
-                          borderRadius: 3, padding: '1px 4px', whiteSpace: 'nowrap',
-                        }}>MATCHED</span>
-                      )}
-                      <span style={{ fontFamily: 'monospace', fontSize: 11, color: isMatched ? '#16a34a' : '#7c3aed', fontWeight: 600 }}>
-                        {t.technique_id}
-                      </span>
-                      <span style={{ fontSize: 12, color: 'var(--text-primary)', flex: 1 }}>{t.name}</span>
-                      <Pill label={t.tactic || '?'} color="#6b7280" small />
-                    </div>
+                    <TtpRow
+                      key={t.id}
+                      ttp={t}
+                      isMatched={isMatched}
+                      scopeScanId={scopeScanId}
+                    />
                   )
                 })}
                 {ttps.length > 15 && (
@@ -1594,7 +1670,66 @@ function GroupCard({ group, exposure }) {
               </div>
             )}
           </div>
+
+          <div style={{
+            borderTop: '1px solid var(--border)', marginTop: 14, paddingTop: 12,
+            display: 'flex', justifyContent: 'flex-end',
+          }} onClick={e => e.stopPropagation()}>
+            <RowActions
+              findingsHref={group.id ? buildFindingsUrl({ threat_group_id: group.id }, scopeScanId) : null}
+              campaignSpec={group.name ? {
+                name: `Defend against ${group.name}`,
+                description: `Findings linked to TTPs used by ${group.name}${group.is_ransomware ? ' (ransomware operator)' : ''}.`,
+                query: [
+                  { field: 'finding.threat_group', op: 'eq', value: group.name },
+                ],
+                query_logic: 'AND',
+              } : null}
+            />
+          </div>
         </div>
+      )}
+    </div>
+  )
+}
+
+function TtpRow({ ttp, isMatched, scopeScanId }) {
+  const navigate = useNavigate()
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 8,
+      padding: '6px 8px', borderRadius: 6,
+      borderBottom: '1px solid var(--border)',
+      background: isMatched ? '#16a34a0d' : 'transparent',
+    }}>
+      {isMatched && (
+        <span style={{
+          fontSize: 9, fontWeight: 700, color: '#16a34a',
+          background: '#16a34a20', border: '1px solid #16a34a40',
+          borderRadius: 3, padding: '1px 4px', whiteSpace: 'nowrap',
+        }}>MATCHED</span>
+      )}
+      <span style={{ fontFamily: 'monospace', fontSize: 11, color: isMatched ? '#16a34a' : '#7c3aed', fontWeight: 600 }}>
+        {ttp.technique_id}
+      </span>
+      <span style={{ fontSize: 12, color: 'var(--text-primary)', flex: 1 }}>{ttp.name}</span>
+      <Pill label={ttp.tactic || '?'} color="#6b7280" small />
+      {isMatched && (
+        <button
+          onClick={(e) => {
+            e.stopPropagation()
+            navigate(buildFindingsUrl({ technique_id: ttp.technique_id }, scopeScanId))
+          }}
+          title="View findings matching this technique"
+          style={{
+            background: 'transparent', border: '1px solid #16a34a40', color: '#16a34a',
+            borderRadius: 4, padding: '2px 6px', fontSize: 10, fontWeight: 600,
+            cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 3,
+          }}
+        >
+          <Eye size={10} />
+          Findings
+        </button>
       )}
     </div>
   )
@@ -1782,6 +1917,7 @@ function ThreatGroupsTab({ initialInMyEnv = false }) {
               key={g.id}
               group={g}
               exposure={scanExposure[g.id] || null}
+              scopeScanId={inScanOnly ? activeScanId : null}
             />
           ))}
         </div>
@@ -1851,6 +1987,7 @@ function EolBadge({ isEol, eolDate }) {
 }
 
 function ProductsTab() {
+  const { activeScanId } = useScan()
   const PAGE_SIZE = 50
   const [products, setProducts] = useState([])
   const [total, setTotal] = useState(0)
@@ -1896,13 +2033,8 @@ function ProductsTab() {
   const toggleExpand = (slug) => setExpanded(prev => ({ ...prev, [slug]: !prev[slug] }))
 
   if (loading) return <Spinner />
-  if (!products.length) return (
-    <EmptyState
-      icon={Package}
-      title="No product lifecycle data"
-      sub="Run Sync Intel to fetch product data"
-    />
-  )
+
+  const hasActiveFilters = Boolean(search) || eolFilter !== 'all' || scanOnly
 
   return (
     <div>
@@ -1947,6 +2079,13 @@ function ProductsTab() {
       </div>
 
       {/* Product list */}
+      {products.length === 0 ? (
+        <EmptyState
+          icon={Package}
+          title={hasActiveFilters ? 'No products match your filters' : 'No product lifecycle data'}
+          sub={hasActiveFilters ? 'Try clearing the search or filters above.' : 'Run Sync Intel to fetch product data'}
+        />
+      ) : (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         {products.map(p => {
           const isOpen = expanded[p.slug]
@@ -2041,6 +2180,22 @@ function ProductsTab() {
                       ))}
                     </tbody>
                   </table>
+                  <div style={{ marginTop: 12, display: 'flex', justifyContent: 'flex-end' }}>
+                    <RowActions
+                      findingsHref={buildFindingsUrl({ product: p.product_name }, scanOnly ? activeScanId : null)}
+                      inventoryHref={`/inventory?tab=software&search=${encodeURIComponent(p.product_name)}${hasEol ? '&sbom=eol' : ''}`}
+                      campaignSpec={{
+                        name: hasEol
+                          ? `Replace end-of-life ${p.product_name}`
+                          : `Patch ${p.product_name}`,
+                        description: hasEol
+                          ? `Findings on assets running end-of-life ${p.product_name}.`
+                          : `Findings on assets running ${p.product_name}.`,
+                        query: [{ field: 'finding.product', op: 'eq', value: p.product_name }],
+                        query_logic: 'AND',
+                      }}
+                    />
+                  </div>
                 </div>
               )}
             </Card>
@@ -2061,6 +2216,7 @@ function ProductsTab() {
           </button>
         )}
       </div>
+      )}
     </div>
   )
 }
@@ -2458,6 +2614,24 @@ function PatchCatalogTab() {
                             +{a.affected_packages.length - 20} more packages
                           </div>
                         )}
+                      </div>
+                    )}
+                    {(a.cve_ids?.length > 0) && (
+                      <div style={{
+                        borderTop: '1px solid var(--border)', marginTop: 12, paddingTop: 10,
+                        display: 'flex', justifyContent: 'flex-end',
+                      }}>
+                        <RowActions
+                          findingsHref={a.cve_ids.length === 1
+                            ? buildFindingsUrl({ cve: a.cve_ids[0] })
+                            : null}
+                          campaignSpec={{
+                            name: `Apply ${a.advisory_id}`,
+                            description: `Findings covered by ${SOURCE_LABELS[a.source] || a.source} advisory ${a.advisory_id} (${a.cve_ids.length} CVE${a.cve_ids.length > 1 ? 's' : ''}).`,
+                            query: a.cve_ids.map(cve => ({ field: 'finding.cve', op: 'contains', value: cve })),
+                            query_logic: 'OR',
+                          }}
+                        />
                       </div>
                     )}
                   </div>

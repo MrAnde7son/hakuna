@@ -1644,18 +1644,32 @@ function SBOMChildrenRow({ parentId, sbomMap }) {
 
 
 function SoftwareTab({ scanId, assetId }) {
+  // Consume one-shot URL params for cross-page drill-downs (e.g. from Threat Intel → product).
+  const [searchParams, setSearchParams] = useSearchParams()
+  const initialSearch = searchParams.get('search') || ''
+  const initialSbom = searchParams.get('sbom') || ''
   const [rows, setRows]               = useState([])
   const [total, setTotal]             = useState(0)
   const [page, setPage]               = useState(1)
   const [loading, setLoading]         = useState(true)
-  const [search, setSearch]           = useState('')
+  const [search, setSearch]           = useState(initialSearch)
   const [category, setCategory]       = useState('')
   const [groupByAsset, setGroupByAsset] = useState(false)
   const [sortBy, setSortBy]           = useState('name')
   const [sortOrder, setSortOrder]     = useState('asc')
   const [expandedRow, setExpandedRow] = useState(null)
-  const [sbomFilter, setSbomFilter]   = useState('')  // '' | 'has_cves' | 'eol' | 'running_vuln'
+  const [sbomFilter, setSbomFilter]   = useState(['', 'has_cves', 'eol', 'running_vuln'].includes(initialSbom) ? initialSbom : '')
   const [autoUpdateFilter, setAutoUpdateFilter] = useState('')  // '' | 'enabled' | 'disabled'
+
+  // Strip the consumed params so they don't reapply on user-initiated state changes.
+  useEffect(() => {
+    if (!initialSearch && !initialSbom) return
+    const next = new URLSearchParams(searchParams)
+    next.delete('search')
+    next.delete('sbom')
+    setSearchParams(next, { replace: true })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // SBOM data
   const [sbomComps, setSbomComps]     = useState([])

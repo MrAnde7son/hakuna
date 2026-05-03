@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import {
   Target, Plus, Play, Trash2, Clock, AlertTriangle, CheckCircle, PauseCircle,
@@ -297,13 +297,24 @@ function readableCondition(cond) {
   return `${field} ${op} ${val ?? ''}`
 }
 
-function CreateCampaignModal({ scanId, onClose, onCreate }) {
+function CreateCampaignModal({ scanId, onClose, onCreate, prefill }) {
   const { t } = useTranslation()
   const toast = useToast()
-  const [step, setStep] = useState('templates') // 'templates' | 'details'
-  const [selectedTemplate, setSelectedTemplate] = useState(null)
-  const [name, setName] = useState('')
-  const [description, setDescription] = useState('')
+  const prefillTemplate = prefill ? {
+    id: 'threat_intel_prefill',
+    icon: ShieldAlert,
+    color: '#dc2626',
+    bg: 'rgba(220,38,38,0.10)',
+    border: 'rgba(220,38,38,0.25)',
+    name: prefill.name || 'Threat-intel campaign',
+    description: prefill.description || '',
+    query: prefill.query || [],
+    query_logic: prefill.query_logic || 'AND',
+  } : null
+  const [step, setStep] = useState(prefillTemplate ? 'details' : 'templates') // 'templates' | 'details'
+  const [selectedTemplate, setSelectedTemplate] = useState(prefillTemplate)
+  const [name, setName] = useState(prefillTemplate?.name || '')
+  const [description, setDescription] = useState(prefillTemplate?.description || '')
   const [saving, setSaving] = useState(false)
   const [users, setUsers] = useState([])
   const [ownerId, setOwnerId] = useState('')
@@ -318,6 +329,18 @@ function CreateCampaignModal({ scanId, onClose, onCreate }) {
   // Preview
   const [previewResult, setPreviewResult] = useState(null)
   const [previewing, setPreviewing] = useState(false)
+
+  // Auto-preview when opened with prefilled query (e.g. from threat intel)
+  useEffect(() => {
+    if (prefillTemplate && prefillTemplate.query.length > 0 && scanId) {
+      setPreviewing(true)
+      previewCampaignQuery({ query: prefillTemplate.query, query_logic: prefillTemplate.query_logic, scan_id: scanId })
+        .then(res => setPreviewResult(res))
+        .catch(() => {})
+        .finally(() => setPreviewing(false))
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   useEffect(() => {
     authListUsers().then(data => setUsers(data.users || data || [])).catch(() => {})
@@ -1129,12 +1152,32 @@ export default function Campaigns() {
   const toast = useToast()
   const { activeScanId } = useScan()
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
   const [campaigns, setCampaigns] = useState([])
   const [workflows, setWorkflows] = useState([])
   const [loading, setLoading] = useState(true)
   const [fetchError, setFetchError] = useState(null)
   const [showCreate, setShowCreate] = useState(false)
+  const [createPrefill, setCreatePrefill] = useState(null)
   const [showCreateWf, setShowCreateWf] = useState(false)
+
+  // Auto-open create modal when navigated with ?create=1 (from threat intel etc.)
+  useEffect(() => {
+    if (searchParams.get('create') !== '1') return
+    let query = []
+    try { query = JSON.parse(searchParams.get('query') || '[]') } catch { query = [] }
+    setCreatePrefill({
+      name: searchParams.get('name') || '',
+      description: searchParams.get('description') || '',
+      query,
+      query_logic: searchParams.get('query_logic') || 'AND',
+    })
+    setShowCreate(true)
+    const next = new URLSearchParams(searchParams)
+    ;['create', 'name', 'description', 'query', 'query_logic'].forEach(k => next.delete(k))
+    setSearchParams(next, { replace: true })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
   const [tab, setTab] = useState('campaigns')
   const [wfSearch, setWfSearch] = useState('')
   const [campSearch, setCampSearch] = useState('')
@@ -1334,7 +1377,8 @@ export default function Campaigns() {
       {showCreate && (
         <CreateCampaignModal
           scanId={activeScanId}
-          onClose={() => setShowCreate(false)}
+          prefill={createPrefill}
+          onClose={() => { setShowCreate(false); setCreatePrefill(null) }}
           onCreate={handleCreate}
         />
       )}
