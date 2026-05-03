@@ -36,8 +36,9 @@ from scanner.vm.llm_provider import (
 
 
 class TestResolvePriority:
-    def test_anthropic_wins_when_all_keys_present(self):
-        """Same order as backend — Anthropic is priority 1."""
+    def test_vertex_wins_when_all_keys_present(self):
+        """Same order as backend — Vertex AI is priority 1 so usage
+        draws from the GCP credit pool."""
         info = resolve_provider(
             integration_configs={},
             env={
@@ -49,10 +50,18 @@ class TestResolvePriority:
             },
         )
         assert info is not None
+        assert info.provider == "vertex_ai"
+        assert info.model == "vertex/gemini-2.5-pro"
+
+    def test_anthropic_selected_when_no_google_creds(self):
+        info = resolve_provider(
+            integration_configs={},
+            env={"ANTHROPIC_API_KEY": "a", "OPENAI_API_KEY": "o"},
+        )
         assert info.provider == "anthropic"
         assert info.model == "claude-sonnet-4-6"
 
-    def test_openai_selected_when_anthropic_missing(self):
+    def test_openai_selected_when_only_openai_key(self):
         info = resolve_provider(
             integration_configs={},
             env={"OPENAI_API_KEY": "o", "GROQ_API_KEY": "r"},
@@ -69,7 +78,7 @@ class TestResolvePriority:
             env={"GOOGLE_CLOUD_PROJECT": "p", "GOOGLE_API_KEY": "g"},
         )
         assert info.provider == "vertex_ai"
-        assert info.model == "vertex/gemini-2.5-flash"
+        assert info.model == "vertex/gemini-2.5-pro"
         assert info.config["project_id"] == "p"
 
     def test_gemini_selected_when_only_api_key_present(self):

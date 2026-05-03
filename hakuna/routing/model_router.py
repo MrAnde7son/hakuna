@@ -5,19 +5,23 @@ Usage:
     from hakuna.routing.model_router import ModelRouter
 
     router = ModelRouter()
-    model = router.select_model("risk_scoring", complexity="low")   # → haiku
-    model = router.select_model("remediation_planning")             # → sonnet
+    model = router.select_model("risk_scoring", complexity="low")   # → fast tier
+    model = router.select_model("remediation_planning")             # → reasoning tier
 
 Routing rules (per spec):
-    normalization            → claude-haiku-4-5-20251001
-    ticket_formatting        → claude-haiku-4-5-20251001
-    field_mapping            → claude-haiku-4-5-20251001
-    risk_scoring + low       → claude-haiku-4-5-20251001
-    risk_scoring + high      → claude-sonnet-4-6
-    remediation_planning     → claude-sonnet-4-6
-    executive_summary        → claude-sonnet-4-6
-    exploit_correlation      → claude-sonnet-4-6
-    default                  → claude-sonnet-4-6
+    normalization            → vertex/gemini-2.5-flash
+    ticket_formatting        → vertex/gemini-2.5-flash
+    field_mapping            → vertex/gemini-2.5-flash
+    risk_scoring + low       → vertex/gemini-2.5-flash
+    risk_scoring + high      → vertex/gemini-2.5-pro
+    remediation_planning     → vertex/gemini-2.5-pro
+    executive_summary        → vertex/gemini-2.5-pro
+    exploit_correlation      → vertex/gemini-2.5-pro
+    default                  → vertex/gemini-2.5-pro
+
+Defaults run on Vertex-billed Gemini so usage draws on the GCP credit
+pool. Anthropic models stay available — set the agent's ``model``
+column or pass an override to ``select_model`` to opt in.
 
 Complexity is determined by:
     - number of affected assets (>50 = high)
@@ -30,9 +34,12 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 # ── Model IDs ─────────────────────────────────────────────────────────
+# Constant names retained for backwards-compatibility with importers
+# (e.g. agent_routes._DEFAULT_MODEL). SONNET is the reasoning-tier
+# default, HAIKU is the fast/cheap-tier default — Gemini today.
 
-SONNET = "claude-sonnet-4-6"
-HAIKU = "claude-haiku-4-5-20251001"
+SONNET = "vertex/gemini-2.5-pro"
+HAIKU = "vertex/gemini-2.5-flash"
 
 # ── Routing table ─────────────────────────────────────────────────────
 

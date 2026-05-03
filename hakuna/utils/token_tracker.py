@@ -16,7 +16,7 @@ Usage:
     response = client.messages.create(...)
     tracker.track_call(
         agent_name="daily_triage",
-        model="claude-sonnet-4-6",
+        model="vertex/gemini-2.5-pro",
         input_tokens=response.usage.input_tokens,
         output_tokens=response.usage.output_tokens,
         cached_tokens=getattr(response.usage, "cache_read_input_tokens", 0),
@@ -35,9 +35,10 @@ from typing import Any, Callable, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 # ── Pricing table (per 1M tokens, USD) ────────────────────────────────
-#   Source: Anthropic pricing page, March 2026
+#   Sources: Anthropic + Google Cloud pricing pages, March 2026
 #   cache_write costs same as regular input tokens
 _PRICING: Dict[str, Dict[str, float]] = {
+    # Anthropic
     "claude-sonnet-4-6": {
         "input": 3.00,
         "output": 15.00,
@@ -64,9 +65,32 @@ _PRICING: Dict[str, Dict[str, float]] = {
         "output": 75.00,
         "cache_read": 1.50,
     },
+    # Google Gemini (direct + Vertex billing — same per-token rates).
+    # Vertex IDs share pricing with the underlying model family.
+    "gemini-2.5-pro": {
+        "input": 1.25,
+        "output": 10.00,
+        "cache_read": 0.31,
+    },
+    "gemini-2.5-flash": {
+        "input": 0.30,
+        "output": 2.50,
+        "cache_read": 0.075,
+    },
+    "vertex/gemini-2.5-pro": {
+        "input": 1.25,
+        "output": 10.00,
+        "cache_read": 0.31,
+    },
+    "vertex/gemini-2.5-flash": {
+        "input": 0.30,
+        "output": 2.50,
+        "cache_read": 0.075,
+    },
 }
 
-_DEFAULT_PRICING = {"input": 3.00, "output": 15.00, "cache_read": 0.30}
+# Default pricing falls back to Gemini 2.5 Pro rates — the new system default.
+_DEFAULT_PRICING = {"input": 1.25, "output": 10.00, "cache_read": 0.31}
 
 
 def _get_pricing(model: str) -> Dict[str, float]:

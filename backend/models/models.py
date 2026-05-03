@@ -1852,7 +1852,7 @@ class Agent(Base):
     tools = Column(JSON, default=list)                    # list of tool names from registry
     guardrails = Column(JSON, default=dict)               # {max_steps, read_only, blocked_tools, scope_scan_id}
     memory = Column(JSON, default=dict)                   # persistent key-value memory
-    model = Column(String, default="claude-sonnet-4-6")   # which Claude model to use
+    model = Column(String, default="vertex/gemini-2.5-pro")  # default LLM (Vertex-billed Gemini)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

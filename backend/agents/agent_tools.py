@@ -3672,7 +3672,7 @@ def build_report(db: Session, params: dict):
         "description": {"type": "string", "description": "Brief description of what the agent does"},
         "system_prompt": {"type": "string", "description": "Instructions for the agent — what it should do when run"},
         "tools": {"type": "array", "items": {"type": "string"}, "description": "List of tool names the agent can use (from the tool catalog)"},
-        "model": {"type": "string", "description": "Optional: LLM model to use (default: claude-sonnet-4-6)"},
+        "model": {"type": "string", "description": "Optional: LLM model to use (default: vertex/gemini-2.5-pro)"},
         "guardrails": {"type": "object", "description": "Optional: {max_steps: int, read_only: bool} — constraints on agent behavior"},
         "confirmed": {"type": "boolean", "description": "REQUIRED: Set to true only after user has approved this action"},
     },
@@ -3692,7 +3692,7 @@ def create_agent_tool(db: Session, params: dict):
         description=params.get("description", ""),
         system_prompt=system_prompt,
         tools=tools,
-        model=params.get("model", "claude-sonnet-4-6"),
+        model=params.get("model", "vertex/gemini-2.5-pro"),
         guardrails=params.get("guardrails", {"max_steps": 15}),
     )
     db.add(agent)

@@ -796,21 +796,16 @@ _CAP_INTERNAL_HOST = "internal_host"
 _CAP_WEB_ROOT = "web_root"
 
 
-# The Vertex-AI-hosted Claude model id used by high-orchestration
-# specialists (authn, injection). Vertex encodes Anthropic models as
-# ``<family>-<size>-<major>-<minor>@<YYYYMMDD>`` — the date is the
-# official Vertex model revision and changes when Anthropic updates
-# the backing weights. Override via env if a newer version is
-# published or a different size is preferred:
-#
-#     AGENT_CLAUDE_VERTEX_MODEL=claude-opus-4-1@20250805
-#
-# The default below is the most recent Sonnet version Anthropic has
-# publicly listed on Vertex Model Garden as of this scanner build.
-# If the model isn't enabled in your Vertex region, the adapter
-# surfaces a clear error on first call (see AnthropicVertexAdapter).
-_CLAUDE_VERTEX_MODEL = os.environ.get(
-    "AGENT_CLAUDE_VERTEX_MODEL", "claude-sonnet-4-6",
+# The Vertex-AI model id used by high-orchestration specialists (authn,
+# injection). Default is Gemini 2.5 Pro — the GCP-billed reasoning
+# model that draws from the project's credit pool. Override via env to
+# pin a Claude-on-Vertex model if the deployment has Anthropic-on-GCP
+# entitlement (e.g. ``AGENT_HIGH_ORCH_VERTEX_MODEL=claude-sonnet-4-6``);
+# the legacy ``AGENT_CLAUDE_VERTEX_MODEL`` env var is still honoured
+# for backwards compatibility.
+_HIGH_ORCH_VERTEX_MODEL = os.environ.get(
+    "AGENT_HIGH_ORCH_VERTEX_MODEL",
+    os.environ.get("AGENT_CLAUDE_VERTEX_MODEL", "vertex/gemini-2.5-pro"),
 )
 
 
@@ -833,19 +828,17 @@ SPECIALISTS: dict[str, SpecialistSpec] = {
         augmented_by=(_CAP_CRED, _CAP_SESSION, _CAP_WEB_ROOT),
         produces=("sql_read", "sql_write", "cmd_exec", "file_read"),
         max_runs=2,
-        # Route through Claude Sonnet for the same reason authn does:
-        # this is a multi-step orchestration specialist (discovery →
-        # parameter triage → baseline → payload → classify → emit)
-        # and Gemini Flash reliably ends enriched re-runs with
-        # end_turn + zero probes. Empirically observed: on DVWA
-        # run=2 enriched yielded and finished 11 seconds later with
-        # no HTTP activity. Sonnet holds the full flow.
-        #
-        # Routed via Vertex (``provider=vertex_ai`` + a claude-* model
-        # id) so billing stays on the existing GCP project rather than
-        # requiring a separate Anthropic account.
+        # Route through the high-orchestration Vertex model (Gemini 2.5
+        # Pro by default; can be pinned to Claude-on-Vertex via env)
+        # for the same reason authn does: this is a multi-step
+        # orchestration specialist (discovery → parameter triage →
+        # baseline → payload → classify → emit) and Gemini Flash
+        # reliably ends enriched re-runs with end_turn + zero probes.
+        # Empirically observed: on DVWA run=2 enriched yielded and
+        # finished 11 seconds later with no HTTP activity. Pro / Sonnet
+        # holds the full flow. Billing stays on the GCP project.
         preferred_provider="vertex_ai",
-        preferred_model=_CLAUDE_VERTEX_MODEL,
+        preferred_model=_HIGH_ORCH_VERTEX_MODEL,
     ),
     "xss": SpecialistSpec(
         category="xss",
@@ -886,15 +879,16 @@ SPECIALISTS: dict[str, SpecialistSpec] = {
         # produces new creds within one scan window.
         produces=(_CAP_CRED, _CAP_SESSION, _CAP_IDENTIFIER),
         max_runs=1,
-        # Route authn through Claude Sonnet (served via Vertex so
-        # billing stays on GCP). Authn's multi-step orchestration
-        # (form discovery → try_login loop → post-success tool
-        # sequence) is where Gemini Flash drops steps in practice.
-        # Sonnet holds the whole flow. Falls back to the scan
-        # default if Vertex isn't configured or Claude isn't
-        # enabled in the region — logged at adapter build time.
+        # Route authn through the high-orchestration Vertex model
+        # (Gemini 2.5 Pro by default; can be pinned to Claude-on-Vertex
+        # via AGENT_HIGH_ORCH_VERTEX_MODEL). Authn's multi-step
+        # orchestration (form discovery → try_login loop → post-success
+        # tool sequence) is where Gemini Flash drops steps in practice;
+        # Pro / Sonnet holds the whole flow. Falls back to the scan
+        # default if Vertex isn't configured — logged at adapter build
+        # time.
         preferred_provider="vertex_ai",
-        preferred_model=_CLAUDE_VERTEX_MODEL,
+        preferred_model=_HIGH_ORCH_VERTEX_MODEL,
     ),
     "authz": SpecialistSpec(
         category="authz",
