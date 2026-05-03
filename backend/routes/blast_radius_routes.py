@@ -15,7 +15,7 @@ from models.models import (
     InventoryNetConn, InventoryLoggedOn, InventoryScheduledTask,
     InventoryPatch, InventoryShare, InventorySecurityControl,
     InventoryCredential, InventoryDatabaseInstance, InventoryCertificate,
-    AssetRelationship, FirewallPolicy,
+    InventoryDomainTrust, AssetRelationship, FirewallPolicy,
 )
 from parsers.inventory_extractor import _cn_from_dn
 from services.blast_radius import (
@@ -329,6 +329,8 @@ def get_blast_radius(
 ):
     """Compute blast radius for a specific asset using inventory + relationship data."""
 
+    set_statement_timeout(db)
+
     asset = db.query(Asset).filter(Asset.id == asset_id).first()
     if not asset:
         raise HTTPException(404, "Asset not found")
@@ -357,29 +359,72 @@ def get_blast_radius(
         all_assets = [asset]
     asset_map = {a.id: a for a in all_assets}
     ip_to_asset_id = {a.ip: a.id for a in all_assets if a.ip}
+    all_org_asset_ids = [a.id for a in all_assets]
+
+    # ── Prefetch indicator sets for asset node data (one query each) ────────
+    dc_asset_set: set[int] = {
+        r[0] for r in db.query(InventoryComputer.asset_id).filter(
+            InventoryComputer.asset_id.in_(all_org_asset_ids),
+            InventoryComputer.is_domain_controller == True,
+        ).all()
+    } if all_org_asset_ids else set()
+    av_asset_set: set[int] = {
+        r[0] for r in db.query(InventorySecurityControl.asset_id).filter(
+            InventorySecurityControl.asset_id.in_(all_org_asset_ids),
+            InventorySecurityControl.control_type == "av",
+            InventorySecurityControl.is_enabled == True,
+        ).all()
+    } if all_org_asset_ids else set()
+    writable_share_asset_set: set[int] = {
+        r[0] for r in db.query(InventoryShare.asset_id).filter(
+            InventoryShare.asset_id.in_(all_org_asset_ids),
+            InventoryShare.is_writeable == True,
+        ).all()
+    } if all_org_asset_ids else set()
+
+    # ── Prefetch BFS-loop inventory data, grouped for O(1) lookup ───────────
+    logons_by_asset: dict[int, list] = {}
+    if all_org_asset_ids:
+        for lo in db.query(InventoryLoggedOn).filter(
+            InventoryLoggedOn.asset_id.in_(all_org_asset_ids),
+        ).all():
+            logons_by_asset.setdefault(lo.asset_id, []).append(lo)
+
+    users_by_asset: dict[int, list] = {}
+    users_by_name_idx: dict[str, list] = {}
+    priv_users_by_name: dict[str, list] = {}
+    if all_org_asset_ids:
+        for u in db.query(InventoryUser).filter(
+            InventoryUser.asset_id.in_(all_org_asset_ids),
+        ).all():
+            users_by_asset.setdefault(u.asset_id, []).append(u)
+            if u.username:
+                users_by_name_idx.setdefault(u.username.lower(), []).append(u)
+                if u.is_domain_admin or u.is_local_admin or u.is_privileged:
+                    priv_users_by_name.setdefault(u.username, []).append(u)
+
+    groups_by_asset: dict[int, list] = {}
+    if all_org_asset_ids:
+        for g in db.query(InventoryGroup).filter(
+            InventoryGroup.asset_id.in_(all_org_asset_ids),
+        ).all():
+            groups_by_asset.setdefault(g.asset_id, []).append(g)
+
+    # Map asset_id → org_id for batched outbound-edge queries
+    scan_org_map: dict[int, int] = {}
+    scan_ids_needed = {a.scan_id for a in all_assets if a.scan_id}
+    if scan_ids_needed:
+        for sid, oid in db.query(Scan.id, Scan.org_id).filter(
+            Scan.id.in_(scan_ids_needed),
+        ).all():
+            scan_org_map[sid] = oid
+    asset_org_map: dict[int, int] = {
+        a.id: scan_org_map.get(a.scan_id) for a in all_assets if a.scan_id
+    }
 
     nodes: dict = {}
     edges: list = []
     seen_edge_ids: set = set()
-
-    def _asset_dc(aid):
-        return db.query(InventoryComputer).filter(
-            InventoryComputer.asset_id == aid,
-            InventoryComputer.is_domain_controller == True,
-        ).first() is not None
-
-    def _asset_av(aid):
-        return db.query(InventorySecurityControl).filter(
-            InventorySecurityControl.asset_id == aid,
-            InventorySecurityControl.control_type == "av",
-            InventorySecurityControl.is_enabled == True,
-        ).first() is not None
-
-    def _asset_share(aid):
-        return db.query(InventoryShare).filter(
-            InventoryShare.asset_id == aid,
-            InventoryShare.is_writeable == True,
-        ).first() is not None
 
     def _asset_node_data(a):
         return {
@@ -390,9 +435,9 @@ def get_blast_radius(
             "risk_score": a.risk_score, "criticality": a.criticality,
             "critical_count": a.critical_count, "high_count": a.high_count,
             "medium_count": a.medium_count,
-            "is_dc": _asset_dc(a.id),
-            "has_av": _asset_av(a.id),
-            "has_writeable_share": _asset_share(a.id),
+            "is_dc": a.id in dc_asset_set,
+            "has_av": a.id in av_asset_set,
+            "has_writeable_share": a.id in writable_share_asset_set,
         }
 
     def add_node(nid, ntype, data):
@@ -439,16 +484,7 @@ def get_blast_radius(
             add_node(nid, "user", _user_node_data(u))
         return nid
 
-    # Pre-compute DC asset IDs for group membership paths
-    dc_asset_ids = [a.id for a in all_assets if _asset_dc(a.id)]
-
-    # Pre-index all org users by username (lowercase) for fast member resolution
-    all_org_asset_ids = [a.id for a in all_assets]
-    all_scan_users = db.query(InventoryUser).filter(InventoryUser.asset_id.in_(all_org_asset_ids)).all()
-    users_by_name_idx = {}
-    for u in all_scan_users:
-        if u.username:
-            users_by_name_idx.setdefault(u.username.lower(), []).append(u)
+    dc_asset_ids = list(dc_asset_set)
 
     start_nid = f"asset-{asset_id}"
     add_node(start_nid, "asset", {**_asset_node_data(asset), "_start": True})
@@ -502,6 +538,21 @@ def get_blast_radius(
 
     for hop in range(2):
         next_queue = []
+
+        # Batch outbound-edge lookup for the whole hop, grouped by org.
+        edges_out_by_src: dict[int, list] = {}
+        queue_by_org: dict[int, list[int]] = {}
+        for cur_id in queue:
+            oid = asset_org_map.get(cur_id)
+            if oid:
+                queue_by_org.setdefault(oid, []).append(cur_id)
+        for oid, ids in queue_by_org.items():
+            for src_id, edge_list in list_outbound_edges(
+                db, org_id=oid, src_asset_ids=ids,
+                edge_types=["asset_to_asset_port", "connects_to"],
+            ).items():
+                edges_out_by_src.setdefault(src_id, []).extend(edge_list)
+
         for cur_id in queue:
             cur = asset_map.get(cur_id)
             if not cur:
@@ -511,65 +562,43 @@ def get_blast_radius(
             # Pulls `asset_to_asset_port` (materialized from netconns)
             # plus legacy `connects_to`. Per-edge label encodes the
             # port so the UI keeps the ":<port>" affordance.
-            cur_org = (
-                db.query(Scan.org_id)
-                .filter(Scan.id == cur.scan_id)
-                .scalar()
-                if cur.scan_id else None
-            )
-            if cur_org:
-                edges_out = list_outbound_edges(
-                    db, org_id=cur_org, src_asset_ids=[cur_id],
-                    edge_types=["asset_to_asset_port", "connects_to"],
-                ).get(cur_id, [])
-                for rel in edges_out:
-                    dst_id = rel.target_asset_id
-                    if not dst_id or dst_id == cur_id:
-                        continue
-                    dst = asset_map.get(dst_id)
-                    if not dst:
-                        continue
-                    props = rel.properties or {}
-                    port = props.get("port") or props.get("remote_port") or "?"
-                    add_node(f"asset-{dst_id}", "asset", _asset_node_data(dst))
-                    add_edge(
-                        f"e-net-{cur_id}-{dst_id}-{port}",
-                        f"asset-{cur_id}", f"asset-{dst_id}",
-                        "network_connection", f":{port}",
-                    )
-                    if dst_id not in visited_assets:
-                        visited_assets.add(dst_id)
-                        next_queue.append(dst_id)
+            for rel in edges_out_by_src.get(cur_id, ()):
+                dst_id = rel.target_asset_id
+                if not dst_id or dst_id == cur_id:
+                    continue
+                dst = asset_map.get(dst_id)
+                if not dst:
+                    continue
+                props = rel.properties or {}
+                port = props.get("port") or props.get("remote_port") or "?"
+                add_node(f"asset-{dst_id}", "asset", _asset_node_data(dst))
+                add_edge(
+                    f"e-net-{cur_id}-{dst_id}-{port}",
+                    f"asset-{cur_id}", f"asset-{dst_id}",
+                    "network_connection", f":{port}",
+                )
+                if dst_id not in visited_assets:
+                    visited_assets.add(dst_id)
+                    next_queue.append(dst_id)
 
             # 2. Privileged users currently logged on (credential exposure)
-            for logon in db.query(InventoryLoggedOn).filter(
-                InventoryLoggedOn.asset_id == cur_id,
-            ).all():
+            for logon in logons_by_asset.get(cur_id, ()):
                 if not logon.username:
                     continue
-                user = db.query(InventoryUser).filter(
-                    InventoryUser.asset_id.in_(all_org_asset_ids),
-                    InventoryUser.username == logon.username,
-                    or_(
-                        InventoryUser.is_domain_admin == True,
-                        InventoryUser.is_local_admin == True,
-                        InventoryUser.is_privileged == True,
-                    ),
-                ).first()
-                if not user:
+                priv_match = next(
+                    (u for u in priv_users_by_name.get(logon.username, ())),
+                    None,
+                )
+                if not priv_match:
                     continue
-                unid = _add_user_node(user)
+                unid = _add_user_node(priv_match)
                 add_edge(f"e-logon-{cur_id}-{unid}",
                          f"asset-{cur_id}", unid, "credential_exposure", "Logged On")
 
             # 3. Admin accounts declared on this asset
-            for user in db.query(InventoryUser).filter(
-                InventoryUser.asset_id == cur_id,
-                or_(
-                    InventoryUser.is_domain_admin == True,
-                    InventoryUser.is_local_admin == True,
-                ),
-            ).all():
+            for user in users_by_asset.get(cur_id, ()):
+                if not (user.is_domain_admin or user.is_local_admin):
+                    continue
                 unid = _add_user_node(user)
                 etype = "domain_admin" if user.is_domain_admin else "local_admin"
                 elabel = "Domain Admin" if user.is_domain_admin else "Local Admin"
@@ -578,12 +607,11 @@ def get_blast_radius(
 
                 # Domain admins expose all other assets they control (1 hop)
                 if user.is_domain_admin and hop == 0:
-                    for other in db.query(InventoryUser).filter(
-                        InventoryUser.asset_id.in_(all_org_asset_ids),
-                        InventoryUser.username == user.username,
-                        InventoryUser.asset_id != cur_id,
-                        InventoryUser.is_domain_admin == True,
-                    ).limit(5).all():
+                    others = [
+                        o for o in priv_users_by_name.get(user.username, ())
+                        if o.is_domain_admin and o.asset_id != cur_id
+                    ][:5]
+                    for other in others:
                         other_asset = asset_map.get(other.asset_id)
                         if not other_asset:
                             continue
@@ -599,9 +627,7 @@ def get_blast_radius(
             # 4. AD group memberships → DC access
             cur_os_lower = (cur.os or "").lower()
             is_linux = any(h in cur_os_lower for h in LINUX_OS_HINTS)
-            for user in db.query(InventoryUser).filter(
-                InventoryUser.asset_id == cur_id,
-            ).all():
+            for user in users_by_asset.get(cur_id, ()):
                 for group_entry in (user.member_of or []):
                     cn = _cn_from_dn(group_entry) if "=" in group_entry else group_entry.strip()
                     if "\\" in cn:
@@ -631,9 +657,7 @@ def get_blast_radius(
 
             # 5. Local / Linux group membership → access to this asset
             local_groups_map = LINUX_ACCESS_GROUPS if is_linux else LOCAL_ACCESS_GROUPS
-            for group in db.query(InventoryGroup).filter(
-                InventoryGroup.asset_id == cur_id,
-            ).all():
+            for group in groups_by_asset.get(cur_id, ()):
                 group_lower = (group.group_name or "").lower().strip()
                 if group_lower not in local_groups_map:
                     continue
@@ -644,7 +668,7 @@ def get_blast_radius(
                         cn = cn.split("\\", 1)[1]
                     if not cn or cn.endswith("$"):
                         continue  # skip computer accounts
-                    for mu in users_by_name_idx.get(cn.lower(), []):
+                    for mu in users_by_name_idx.get(cn.lower(), ()):
                         munid = _add_user_node(mu)
                         add_edge(
                             f"e-grp-{munid}-{cur_id}-{etype}",
@@ -667,32 +691,40 @@ def get_blast_radius(
     }
     infra_visited = set()
     try:
-        for aid in list(visited_assets):
-            for rel in db.query(AssetRelationship).filter(
-                AssetRelationship.source_asset_id == aid,
-                ~AssetRelationship.relationship_type.in_(_INFRA_EXCLUDED),
-            ).all():
-                tgt_id = rel.target_asset_id
-                if tgt_id in visited_assets or tgt_id in infra_visited:
-                    continue
-                tgt = asset_map.get(tgt_id) or db.query(Asset).filter(Asset.id == tgt_id).first()
-                if not tgt:
-                    continue
-                asset_map[tgt_id] = tgt
-                if tgt.ip:
-                    ip_to_asset_id.setdefault(tgt.ip, tgt_id)
-                add_node(f"asset-{tgt_id}", "asset", _asset_node_data(tgt))
-                label = rel.relationship_type.replace("_", " ").title()
-                detail = rel.source_detail or {}
-                if detail.get("connector"):
-                    label += f" ({detail['connector']})"
-                add_edge(
-                    f"e-infra-{rel.id}",
-                    f"asset-{aid}", f"asset-{tgt_id}",
-                    rel.relationship_type, label,
-                )
-                infra_visited.add(tgt_id)
-                visited_assets.add(tgt_id)
+        infra_rels = db.query(AssetRelationship).filter(
+            AssetRelationship.source_asset_id.in_(list(visited_assets)),
+            ~AssetRelationship.relationship_type.in_(_INFRA_EXCLUDED),
+        ).all() if visited_assets else []
+        # Bulk-fetch any unknown target assets in one query
+        missing_tgt_ids = {
+            r.target_asset_id for r in infra_rels
+            if r.target_asset_id and r.target_asset_id not in asset_map
+        }
+        if missing_tgt_ids:
+            for ta in db.query(Asset).filter(Asset.id.in_(missing_tgt_ids)).all():
+                asset_map[ta.id] = ta
+                if ta.ip:
+                    ip_to_asset_id.setdefault(ta.ip, ta.id)
+        for rel in infra_rels:
+            aid = rel.source_asset_id
+            tgt_id = rel.target_asset_id
+            if not tgt_id or tgt_id in visited_assets or tgt_id in infra_visited:
+                continue
+            tgt = asset_map.get(tgt_id)
+            if not tgt:
+                continue
+            add_node(f"asset-{tgt_id}", "asset", _asset_node_data(tgt))
+            label = rel.relationship_type.replace("_", " ").title()
+            detail = rel.source_detail or {}
+            if detail.get("connector"):
+                label += f" ({detail['connector']})"
+            add_edge(
+                f"e-infra-{rel.id}",
+                f"asset-{aid}", f"asset-{tgt_id}",
+                rel.relationship_type, label,
+            )
+            infra_visited.add(tgt_id)
+            visited_assets.add(tgt_id)
     except Exception:
         pass  # table may not exist yet before restart
 
@@ -754,14 +786,22 @@ def get_blast_radius(
     except Exception:
         pass  # firewall_policies table may not exist yet
 
+    # Snapshot of asset nodes after BFS + infra/firewall — used by sections
+    # 6 and 7. Sections 8+ recompute since 7 can add domain-trust targets.
+    pre_trust_asset_ids = [
+        int(n["id"].split("-")[1]) for n in nodes.values() if n["type"] == "asset"
+    ]
+
     # ── 6. Scheduled tasks running as privileged users (persistence paths) ──
-    for nid, n in list(nodes.items()):
-        if n["type"] != "asset":
-            continue
-        aid = int(nid.split("-")[1])
+    schtasks_by_asset: dict[int, list] = {}
+    if pre_trust_asset_ids:
         for task in db.query(InventoryScheduledTask).filter(
-            InventoryScheduledTask.asset_id == aid,
+            InventoryScheduledTask.asset_id.in_(pre_trust_asset_ids),
         ).all():
+            schtasks_by_asset.setdefault(task.asset_id, []).append(task)
+    for aid, tasks in schtasks_by_asset.items():
+        nid = f"asset-{aid}"
+        for task in tasks:
             run_user = (task.run_as_user or "").strip()
             if not run_user:
                 continue
@@ -776,14 +816,16 @@ def get_blast_radius(
                     break
 
     # ── 7. Domain trusts (cross-domain attack paths from DC assets) ──
-    for nid, n in list(nodes.items()):
-        if n["type"] != "asset" or not n["data"].get("is_dc"):
-            continue
-        aid = int(nid.split("-")[1])
-        from models.models import InventoryDomainTrust
-        for trust in db.query(InventoryDomainTrust).filter(
-            InventoryDomainTrust.asset_id == aid,
+    dc_node_ids = [aid for aid in pre_trust_asset_ids if aid in dc_asset_set]
+    trusts_by_asset: dict[int, list] = {}
+    if dc_node_ids:
+        for tr in db.query(InventoryDomainTrust).filter(
+            InventoryDomainTrust.asset_id.in_(dc_node_ids),
         ).all():
+            trusts_by_asset.setdefault(tr.asset_id, []).append(tr)
+    for aid, trusts in trusts_by_asset.items():
+        nid = f"asset-{aid}"
+        for trust in trusts:
             trusted_name = (trust.trusted_domain or "").lower()
             flat = (trust.flat_name or "").lower()
             for other_a in all_assets:
@@ -804,14 +846,21 @@ def get_blast_radius(
                 if other_a.id not in visited_assets:
                     visited_assets.add(other_a.id)
 
+    # Refresh asset id list — section 7 may have added domain-trust targets.
+    asset_node_ids = [
+        int(n["id"].split("-")[1]) for n in nodes.values() if n["type"] == "asset"
+    ]
+
     # ── 8. Weak / exposed credentials on visited assets ──
-    for nid, n in list(nodes.items()):
-        if n["type"] != "asset":
-            continue
-        aid = int(nid.split("-")[1])
+    creds_by_asset: dict[int, list] = {}
+    if asset_node_ids:
         for cred in db.query(InventoryCredential).filter(
-            InventoryCredential.asset_id == aid,
-        ).limit(5).all():
+            InventoryCredential.asset_id.in_(asset_node_ids),
+        ).all():
+            creds_by_asset.setdefault(cred.asset_id, []).append(cred)
+    for aid, cred_list in creds_by_asset.items():
+        nid = f"asset-{aid}"
+        for cred in cred_list[:5]:
             proto = (cred.protocol or "unknown").upper()
             add_edge(
                 f"e-cred-{cred.id}",
@@ -820,7 +869,7 @@ def get_blast_radius(
             )
 
     # ── 9. Exploitable findings / CVEs on ALL visited assets ──
-    visited_asset_ids = [int(n["id"].split("-")[1]) for n in nodes.values() if n["type"] == "asset"]
+    visited_asset_ids = asset_node_ids
     if finding_id:
         scoped_finding = db.query(Finding).filter(Finding.id == finding_id).first()
         exploit_findings = [scoped_finding] if scoped_finding else []
@@ -886,18 +935,15 @@ def get_blast_radius(
         )
 
     # ── 10. Listening risky services on visited assets ──
-    listening_services = {}
-    for nid, n in list(nodes.items()):
-        if n["type"] != "asset":
-            continue
-        aid = int(nid.split("-")[1])
+    listening_services: dict[int, list] = {}
+    if asset_node_ids:
         for conn in db.query(InventoryNetConn).filter(
-            InventoryNetConn.asset_id == aid,
+            InventoryNetConn.asset_id.in_(asset_node_ids),
             InventoryNetConn.state.in_(["LISTEN", "LISTENING"]),
         ).all():
             port = conn.local_port
             if port and port in RISKY_PORTS:
-                listening_services.setdefault(aid, []).append(
+                listening_services.setdefault(conn.asset_id, []).append(
                     (port, RISKY_PORTS[port])
                 )
 
@@ -908,26 +954,25 @@ def get_blast_radius(
     critical_patches = [p for p in missing_patches if (p.vuln_count or 0) >= 5]
 
     # ── 12. Exposed database instances on visited assets ──
-    db_instances = {}
-    for nid, n in list(nodes.items()):
-        if n["type"] != "asset":
-            continue
-        aid = int(nid.split("-")[1])
+    db_instances: dict[int, list] = {}
+    if asset_node_ids:
         for dbi in db.query(InventoryDatabaseInstance).filter(
-            InventoryDatabaseInstance.asset_id == aid,
+            InventoryDatabaseInstance.asset_id.in_(asset_node_ids),
             InventoryDatabaseInstance.is_running == True,
         ).all():
-            db_instances.setdefault(aid, []).append(dbi)
+            db_instances.setdefault(dbi.asset_id, []).append(dbi)
 
     # ── 13. Writeable shares on visited assets (explicit edges) ──
-    for nid, n in list(nodes.items()):
-        if n["type"] != "asset":
-            continue
-        aid = int(nid.split("-")[1])
+    shares_by_asset: dict[int, list] = {}
+    if asset_node_ids:
         for share in db.query(InventoryShare).filter(
-            InventoryShare.asset_id == aid,
+            InventoryShare.asset_id.in_(asset_node_ids),
             InventoryShare.is_writeable == True,
-        ).limit(3).all():
+        ).all():
+            shares_by_asset.setdefault(share.asset_id, []).append(share)
+    for aid, share_list in shares_by_asset.items():
+        nid = f"asset-{aid}"
+        for share in share_list[:3]:
             add_edge(
                 f"e-share-{share.id}",
                 nid, nid,

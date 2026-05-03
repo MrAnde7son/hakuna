@@ -712,13 +712,30 @@ async def run_agent_stream(agent_id: int, body: AgentRunRequest, request: Reques
     async def event_stream():
         # Use a fresh DB session for the background work
         stream_db = SessionLocal()
+        run_id: Optional[int] = None
         try:
             ag = stream_db.query(Agent).filter(Agent.id == agent_data["id"]).first()
             for event in run_agent_streaming(ag, user_input, stream_db):
+                if event.get("type") == "start" and event.get("run_id"):
+                    run_id = event["run_id"]
                 yield f"data: {json.dumps(event)}\n\n"
                 await asyncio.sleep(0)  # yield control
             yield "data: [DONE]\n\n"
         finally:
+            # If the client disconnected (or any other error killed the generator)
+            # before run_agent_streaming finalized the row, the AgentRun row is
+            # stuck in 'running'. Mark it failed now so it shows up correctly in
+            # the UI immediately, instead of waiting for the 10-minute janitor.
+            if run_id is not None:
+                try:
+                    run = stream_db.query(AgentRun).filter(AgentRun.id == run_id).first()
+                    if run and run.status == "running":
+                        run.status = "failed"
+                        run.error = "Client disconnected before run completed"
+                        run.finished_at = datetime.utcnow()
+                        stream_db.commit()
+                except Exception:
+                    stream_db.rollback()
             stream_db.close()
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
@@ -735,12 +752,14 @@ def list_runs(agent_id: int, limit: int = 20, db: Session = Depends(get_db)):
         .limit(limit)
         .all()
     )
-    # Auto-expire stale "running" runs (stuck due to disconnected streams)
+    # Safety net: the SSE endpoint marks runs failed in its finally: block on
+    # disconnect, but if that path didn't run (worker crash, etc.) sweep stale
+    # 'running' rows here so the UI doesn't show them as in-flight forever.
     stale_cutoff = datetime.utcnow() - timedelta(minutes=10)
     for r in runs:
         if r.status == "running" and r.created_at and r.created_at < stale_cutoff:
             r.status = "failed"
-            r.error = "Run timed out (stream disconnected)"
+            r.error = "Run abandoned (no completion signal)"
             r.finished_at = datetime.utcnow()
     db.commit()
     return [_run_to_dict(r, include_trace=False) for r in runs]

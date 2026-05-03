@@ -29,7 +29,7 @@ resource "google_compute_instance" "audit_worker" {
   boot_disk {
     initialize_params {
       image = "debian-cloud/debian-12"
-      size  = 20 # GB — just the api image + logs
+      size  = 40 # GB — api image (~2GB pulled) plus headroom for old layers between prune cycles
       type  = "pd-standard"
     }
   }
@@ -156,6 +156,30 @@ resource "google_compute_instance" "audit_worker" {
 
     docker compose pull || echo "Image pull failed — service will retry."
 
+    # ── Daily docker prune (prevents disk fill from old image layers) ──────
+    cat > /etc/systemd/system/docker-prune.service << 'PRUNE_SERVICE'
+    [Unit]
+    Description=Prune unused Docker images, containers, networks
+    Requires=docker.service
+    After=docker.service
+
+    [Service]
+    Type=oneshot
+    ExecStart=/usr/bin/docker system prune -af --filter "until=168h"
+    PRUNE_SERVICE
+
+    cat > /etc/systemd/system/docker-prune.timer << 'PRUNE_TIMER'
+    [Unit]
+    Description=Run docker-prune daily
+
+    [Timer]
+    OnCalendar=daily
+    Persistent=true
+
+    [Install]
+    WantedBy=timers.target
+    PRUNE_TIMER
+
     # ── Create systemd service ──────────────────────────────────────────────
     cat > /etc/systemd/system/hakuna-audit-worker.service << SERVICE
     [Unit]
@@ -177,6 +201,7 @@ resource "google_compute_instance" "audit_worker" {
     SERVICE
 
     systemctl daemon-reload
+    systemctl enable --now docker-prune.timer
     systemctl enable hakuna-audit-worker
     systemctl start hakuna-audit-worker
 

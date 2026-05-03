@@ -129,6 +129,30 @@ resource "google_compute_instance" "cloud_scanner" {
 
     docker compose pull || echo "Image pull failed — service will retry."
 
+    # ── Daily docker prune (prevents disk fill from old image layers) ──────
+    cat > /etc/systemd/system/docker-prune.service << 'PRUNE_SERVICE'
+    [Unit]
+    Description=Prune unused Docker images, containers, networks
+    Requires=docker.service
+    After=docker.service
+
+    [Service]
+    Type=oneshot
+    ExecStart=/usr/bin/docker system prune -af --filter "until=168h"
+    PRUNE_SERVICE
+
+    cat > /etc/systemd/system/docker-prune.timer << 'PRUNE_TIMER'
+    [Unit]
+    Description=Run docker-prune daily
+
+    [Timer]
+    OnCalendar=daily
+    Persistent=true
+
+    [Install]
+    WantedBy=timers.target
+    PRUNE_TIMER
+
     # ── systemd service ─────────────────────────────────────────────────────
     cat > /etc/systemd/system/hakuna-cloud-scanner.service << SERVICE
     [Unit]
@@ -150,6 +174,7 @@ resource "google_compute_instance" "cloud_scanner" {
     SERVICE
 
     systemctl daemon-reload
+    systemctl enable --now docker-prune.timer
     systemctl enable hakuna-cloud-scanner
     systemctl start hakuna-cloud-scanner
 
