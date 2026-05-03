@@ -102,7 +102,7 @@ class ProtocolAudit:
     credential_connector_ids: list[str]  # valid IntegrationCredential.connector_id values
     tool_names: list[str]           # palette registered with @agent_tool
     missions: list[MissionTemplate]
-    default_model: str = "claude-sonnet-4-6"
+    default_model: str = "vertex/gemini-2.5-pro"
     default_wallclock_s: int = 600
     required_ports: tuple[int, ...] = ()  # ports the protocol listens on
 

@@ -79,15 +79,17 @@ PROVIDER_FOR_MODEL: dict[str, str] = {
 # ── Priority order for "pick the best configured provider" ───────────
 #
 # Entries: (provider, env_var, fallback_model). Order is preserved —
-# first configured provider wins. Anthropic is ahead of vertex_ai to
-# match the VM scanner (hakuna-vm-scanner/scanner/vm/llm_provider.py)
-# and the backend's prior behavior; deployments that prefer Vertex
-# billing simply don't set ANTHROPIC_API_KEY.
+# first configured provider wins. Vertex AI is the system default
+# because the deployment runs on GCP and the credit pool covers
+# Gemini-on-Vertex but not Claude. Gemini 2.5 Pro is the
+# Sonnet-equivalent reasoning model; deployments wanting Anthropic
+# direct just set ANTHROPIC_API_KEY and the explicit-model path on the
+# agent record overrides this default.
 _PROVIDER_DEFAULTS: list[tuple[str, Optional[str], str]] = [
+    ("vertex_ai",     "GOOGLE_CLOUD_PROJECT", "vertex/gemini-2.5-pro"),
+    ("google_gemini", "GOOGLE_API_KEY",       "gemini-2.5-pro"),
     ("anthropic",     "ANTHROPIC_API_KEY",    "claude-sonnet-4-6"),
     ("openai",        "OPENAI_API_KEY",       "gpt-4o"),
-    ("vertex_ai",     "GOOGLE_CLOUD_PROJECT", "vertex/gemini-2.5-flash"),
-    ("google_gemini", "GOOGLE_API_KEY",       "gemini-2.5-flash"),
     ("groq",          "GROQ_API_KEY",         "llama-3.3-70b-versatile"),
     ("ollama",        None,                   "ollama/llama3"),
 ]
@@ -217,9 +219,9 @@ class LLMRouter:
         ``default_model`` in its IntegrationConfig, use it; otherwise
         use the hardcoded fallback.
 
-        Last-ditch fallback: Sonnet 4.6. If nothing is configured the
-        caller's first real call will raise a clean "not configured"
-        error rather than timing out.
+        Last-ditch fallback: Gemini 2.5 Pro on Vertex. If nothing is
+        configured the caller's first real call will raise a clean
+        "not configured" error rather than timing out.
         """
         for provider, env_var, fallback_model in _PROVIDER_DEFAULTS:
             cfg = self._provider_cfg(db, provider)
@@ -240,7 +242,7 @@ class LLMRouter:
                     return explicit
             return fallback_model
 
-        return "claude-sonnet-4-6"
+        return "vertex/gemini-2.5-pro"
 
     def find_fallback_model(
         self,
@@ -290,8 +292,8 @@ class LLMRouter:
             "vertex_ai": {
                 "display": "Google Vertex AI",
                 "models": [
-                    "vertex/gemini-2.5-flash",
                     "vertex/gemini-2.5-pro",
+                    "vertex/gemini-2.5-flash",
                     "vertex/gemini-2.0-flash",
                 ],
             },

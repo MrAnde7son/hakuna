@@ -86,7 +86,7 @@ def get_or_create_validator_agent(db: Session, org_id: int) -> Agent:
             "autonomy_level": "conservative",
         },
         memory={},
-        model="claude-sonnet-4-6",
+        model="vertex/gemini-2.5-pro",
     )
     db.add(agent)
     db.commit()

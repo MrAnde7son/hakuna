@@ -39,10 +39,16 @@ const MODELS = [
   { value: 'gpt-4.1', label: 'GPT-4.1', group: 'OpenAI' },
   { value: 'gpt-4.1-mini', label: 'GPT-4.1 Mini', group: 'OpenAI' },
   { value: 'o3-mini', label: 'o3-mini', group: 'OpenAI' },
-  // Google Gemini
+  // Google Gemini (direct API key)
   { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash', group: 'Google' },
   { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro', group: 'Google' },
   { value: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash', group: 'Google' },
+  // Google Vertex AI (GCP-billed)
+  { value: 'vertex/gemini-2.5-pro', label: 'Gemini 2.5 Pro (Vertex)', group: 'Vertex AI' },
+  { value: 'vertex/gemini-2.5-flash', label: 'Gemini 2.5 Flash (Vertex)', group: 'Vertex AI' },
+  { value: 'vertex/gemini-2.0-flash', label: 'Gemini 2.0 Flash (Vertex)', group: 'Vertex AI' },
+  { value: 'vertex/claude-sonnet-4-5@20250929', label: 'Claude Sonnet 4.5 (Vertex)', group: 'Vertex AI' },
+  { value: 'vertex/claude-haiku-4-5@20251001', label: 'Claude Haiku 4.5 (Vertex)', group: 'Vertex AI' },
   // Groq
   { value: 'llama-3.3-70b-versatile', label: 'Llama 3.3 70B', group: 'Groq' },
   { value: 'llama-3.1-8b-instant', label: 'Llama 3.1 8B', group: 'Groq' },
@@ -1261,7 +1267,7 @@ function ConfigPanel({ editing, setEditing, toolCatalog, toggleTool, updateGuard
         ) : (
           <>
             <select
-              value={editing.model || availableModels?.default_model || 'claude-sonnet-4-6'}
+              value={editing.model || availableModels?.default_model || 'vertex/gemini-2.5-pro'}
               onChange={e => setEditing({ ...editing, model: e.target.value })}
               style={{
                 padding: '6px 10px', borderRadius: 6, border: '1px solid var(--border)',

@@ -7,10 +7,10 @@ path and the env-var fallback chain for the others.
 
 Resolution order (same as backend _PROVIDER_DEFAULTS):
 
-    1. anthropic       — ANTHROPIC_API_KEY, default claude-sonnet-4-6
-    2. openai          — OPENAI_API_KEY, default gpt-4o
-    3. vertex_ai       — GOOGLE_CLOUD_PROJECT, default vertex/gemini-2.5-flash
-    4. google_gemini   — GOOGLE_API_KEY, default gemini-2.5-flash
+    1. vertex_ai       — GOOGLE_CLOUD_PROJECT, default vertex/gemini-2.5-pro
+    2. google_gemini   — GOOGLE_API_KEY, default gemini-2.5-pro
+    3. anthropic       — ANTHROPIC_API_KEY, default claude-sonnet-4-6
+    4. openai          — OPENAI_API_KEY, default gpt-4o
     5. groq            — GROQ_API_KEY, default llama-3.3-70b-versatile
     6. ollama          — base_url from integration_configs, default ollama/llama3
 
@@ -44,10 +44,10 @@ logger = logging.getLogger(__name__)
 
 
 _PROVIDER_DEFAULTS: list[tuple[str, str | None, str]] = [
+    ("vertex_ai",     "GOOGLE_CLOUD_PROJECT",  "vertex/gemini-2.5-pro"),
+    ("google_gemini", "GOOGLE_API_KEY",        "gemini-2.5-pro"),
     ("anthropic",     "ANTHROPIC_API_KEY",     "claude-sonnet-4-6"),
     ("openai",        "OPENAI_API_KEY",        "gpt-4o"),
-    ("vertex_ai",     "GOOGLE_CLOUD_PROJECT",  "vertex/gemini-2.5-flash"),
-    ("google_gemini", "GOOGLE_API_KEY",        "gemini-2.5-flash"),
     ("groq",          "GROQ_API_KEY",          "llama-3.3-70b-versatile"),
     ("ollama",        None,                    "ollama/llama3"),
 ]

@@ -36,11 +36,12 @@ class ModelTier(str, Enum):
     BALANCED = "balanced"        # General-purpose, good for most stages
 
 
-# Default model mapping per tier — now backed by ModelRouter for consistency
+# Default model mapping per tier — now backed by ModelRouter for consistency.
+# Defaults run on Vertex-billed Gemini so usage draws on GCP credits.
 DEFAULT_MODEL_ROUTING = {
-    ModelTier.REASONING: "claude-sonnet-4-6",
-    ModelTier.DETERMINISTIC: "claude-haiku-4-5-20251001",
-    ModelTier.BALANCED: "claude-sonnet-4-6",
+    ModelTier.REASONING: "vertex/gemini-2.5-pro",
+    ModelTier.DETERMINISTIC: "vertex/gemini-2.5-flash",
+    ModelTier.BALANCED: "vertex/gemini-2.5-pro",
 }
 
 # Tier → ModelRouter task_type mapping

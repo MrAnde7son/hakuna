@@ -41,10 +41,10 @@ MAX_CONTEXT_TURNS = 10  # Last N exchanges to include as conversation context
 # fundamentally incompatible with multi-step agentic workflows.
 # Ollama models vary in tool-use quality — we include it as a last resort.
 _COPILOT_MODEL_PREFERENCE = [
+    ("vertex_ai", "vertex/gemini-2.5-pro"),
+    ("google_gemini", "gemini-2.5-pro"),
     ("anthropic", "claude-sonnet-4-6"),
     ("openai", "gpt-4o"),
-    ("google_gemini", "gemini-2.5-flash"),
-    ("vertex_ai", "vertex/gemini-2.5-flash"),
     ("ollama", None),  # model resolved dynamically from Ollama config
 ]
 
