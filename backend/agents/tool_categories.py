@@ -83,6 +83,18 @@ TOOL_CATEGORIES = {
             "delete_scan", "rename_scan", "upload_scan",
         ],
     },
+    "scan_launch": {
+        "keywords": [
+            "launch", "trigger", "run scan", "run a scan", "start scan",
+            "start a scan", "kick off", "scan against", "scan on",
+            "vm scan", "vulnerability scan", "rescan", "re-scan",
+        ],
+        "tools": [
+            "trigger_easm_scan", "check_easm_scan_status",
+            "compute_scan_plan", "explain_scan_plan", "execute_scan_plan",
+            "list_easm_domains", "query_assets",
+        ],
+    },
     "tags": {
         "keywords": [
             "tag", "label", "classify", "organize", "categorize",

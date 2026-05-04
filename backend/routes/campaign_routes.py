@@ -633,8 +633,12 @@ def update_campaign_finding(
             "wont_fix": "accepted_risk",
         }
         if cf.finding and body.status in _STATUS_TO_WORKFLOW:
-            cf.finding.workflow_status = _STATUS_TO_WORKFLOW[body.status]
+            new_ws = _STATUS_TO_WORKFLOW[body.status]
+            cf.finding.workflow_status = new_ws
             cf.finding.status_changed_at = datetime.utcnow()
+            if new_ws == "resolved" and not cf.finding.resolved_at:
+                cf.finding.resolved_at = datetime.utcnow()
+                cf.finding.sla_status = "resolved"
     if body.exception_type is not None and cf.finding:
         # Also set the more specific workflow_status from exception type
         cf.finding.workflow_status = body.exception_type
