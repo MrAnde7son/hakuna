@@ -1710,6 +1710,15 @@ def _import_nuclei_job_findings(db: Session, scan: Scan, job_result: dict) -> di
         cvss3_score, cvss3_vector = _extract_nuclei_cvss(f)
         ctx = _seed_nuclei_context(f, asset, authenticated)
 
+        # Agent specialists confirm the vuln by sending a PoC request and
+        # observing the response — the LLM verdict is the exploit signal.
+        # Without this flag, "Has Exploit" filters miss findings the
+        # platform literally just exploited.
+        exploit_available = (
+            _finding_type == "agent-vuln"
+            and (llm_validation or {}).get("verdict") == "true_positive"
+        )
+
         # Persist Nuclei tags so the post-ingest TTP matcher can use them
         # as technique hints for non-CVE templates (default-login, takeover,
         # misconfig) where keyword + family matching misses.
@@ -1745,6 +1754,7 @@ def _import_nuclei_job_findings(db: Session, scan: Scan, job_result: dict) -> di
             ctx_reachability=ctx["ctx_reachability"],
             ctx_accessibility=ctx["ctx_accessibility"],
             ctx_exploitability=ctx["ctx_exploitability"],
+            exploit_available=exploit_available,
             custom_fields=custom_fields,
         )
         db.add(finding)
