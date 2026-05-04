@@ -16,6 +16,7 @@ import logging
 import re
 from typing import Optional, List, Dict, Any, Tuple
 
+from sqlalchemy import Text, cast
 from sqlalchemy.orm import Session
 
 from models.threat_intel_models import ThreatCVE
@@ -429,10 +430,15 @@ def _query_threat_intel_cves(
 
     try:
         sp = db.begin_nested()
+        # affected_products is a JSON column; Postgres has no LIKE/ILIKE
+        # operator on json, so cast to text first. Without this the query
+        # raises ``operator does not exist: json ~~ unknown`` and the
+        # except-block below silently returns [], producing zero CVE
+        # matches for every CPE.
         candidates = (
             db.query(ThreatCVE)
             .filter(ThreatCVE.affected_products.isnot(None))
-            .filter(ThreatCVE.affected_products.like("%" + comp_lower + "%"))
+            .filter(cast(ThreatCVE.affected_products, Text).ilike("%" + comp_lower + "%"))
             .all()
         )
         sp.commit()

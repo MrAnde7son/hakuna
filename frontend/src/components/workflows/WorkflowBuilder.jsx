@@ -10,6 +10,7 @@ import {
 import {
   getWorkflow, updateWorkflow, executeWorkflow, getWorkflowExecutions,
   getWorkflowExecution, getNodeCatalog, getIntegration, getAgents,
+  generateWorkflow,
 } from '../../api.js'
 import { Button, Spinner, EmptyState, Pill, ErrorBanner } from '../shared/ui.jsx'
 import { capture } from '../../utils/analytics.js'
@@ -77,6 +78,13 @@ export default function WorkflowBuilder() {
   const [nodeOutputOpen, setNodeOutputOpen] = useState(false)
   const [fetchError, setFetchError] = useState(null)
   const [agents, setAgents] = useState([])
+
+  // Describe-with-AI modal state
+  const [showDescribeModal, setShowDescribeModal] = useState(false)
+  const [nlPrompt, setNlPrompt] = useState('')
+  const [generating, setGenerating] = useState(false)
+  const [generated, setGenerated] = useState(null)
+  const [genError, setGenError] = useState(null)
 
   const loadWorkflow = () => {
     setLoading(true)
@@ -371,6 +379,69 @@ export default function WorkflowBuilder() {
     setDirty(true)
   }, [])
 
+  // ─── NLP generation ──────────────────────
+  const openDescribeModal = useCallback(() => {
+    setNlPrompt('')
+    setGenerated(null)
+    setGenError(null)
+    setShowDescribeModal(true)
+  }, [])
+
+  const closeDescribeModal = useCallback(() => {
+    setShowDescribeModal(false)
+    setGenerating(false)
+  }, [])
+
+  const handleGenerate = useCallback(async () => {
+    if (!nlPrompt.trim()) return
+    setGenerating(true)
+    setGenError(null)
+    try {
+      const result = await generateWorkflow(nlPrompt.trim())
+      setGenerated(result)
+      capture('workflow_nlp_generated', {
+        workflow_id: id,
+        prompt_length: nlPrompt.length,
+        node_count: result.nodes?.length || 0,
+        warning_count: result.warnings?.length || 0,
+        model: result.model,
+        in_builder: true,
+      })
+    } catch (e) {
+      setGenError(e.message || 'Failed to generate workflow')
+    } finally {
+      setGenerating(false)
+    }
+  }, [nlPrompt, id])
+
+  const handleApplyGenerated = useCallback(() => {
+    if (!generated) return
+    const newNodes = (generated.nodes || []).map(n => ({
+      node_id: n.node_id,
+      node_type: n.node_type,
+      node_subtype: n.node_subtype,
+      label: n.label,
+      config: n.config || {},
+      position_x: n.position_x ?? 100,
+      position_y: n.position_y ?? 200,
+    }))
+    const newEdges = (generated.edges || []).map(e => ({
+      edge_id: e.edge_id || `edge-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      source_node_id: e.source_node_id,
+      target_node_id: e.target_node_id,
+      source_handle: e.source_handle || 'output',
+      target_handle: e.target_handle || 'input',
+      label: e.label,
+    }))
+    setNodes(newNodes)
+    setEdges(newEdges)
+    setSelectedNode(null)
+    setDirty(true)
+    setShowAiBanner(true)
+    sessionStorage.setItem(aiBannerKey, '1')
+    setShowDescribeModal(false)
+  }, [generated, aiBannerKey])
+
   const loadExecutions = useCallback(async () => {
     try {
       const execs = await getWorkflowExecutions(id)
@@ -440,6 +511,20 @@ export default function WorkflowBuilder() {
               </Pill>
             </button>
           )}
+          <button
+            onClick={openDescribeModal}
+            title="Describe the automation in plain English — AI will draft the nodes for you"
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 5,
+              padding: '5px 10px', borderRadius: 6, fontSize: 12, fontWeight: 600,
+              cursor: 'pointer',
+              background: 'rgba(168,85,247,0.10)',
+              border: '1px solid rgba(168,85,247,0.35)',
+              color: '#a855f7',
+            }}
+          >
+            <Sparkles size={13} /> Describe with AI
+          </button>
           <Button size="sm" variant="ghost" onClick={() => setShowNodePalette(true)}>
             <Plus size={14} /> Add Node
           </Button>
@@ -835,10 +920,24 @@ export default function WorkflowBuilder() {
             }}>
               <GitBranch size={40} style={{ marginBottom: 12, opacity: 0.5 }} />
               <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 6 }}>Empty Workflow</div>
-              <div style={{ fontSize: 13, marginBottom: 16 }}>Start by adding a trigger node</div>
-              <Button size="sm" variant="primary" onClick={() => setShowNodePalette(true)}>
-                <Plus size={14} /> Add Node
-              </Button>
+              <div style={{ fontSize: 13, marginBottom: 16 }}>Describe what you want, or add a trigger node</div>
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'center' }}>
+                <button
+                  onClick={openDescribeModal}
+                  style={{
+                    display: 'inline-flex', alignItems: 'center', gap: 6,
+                    padding: '8px 14px', borderRadius: 8, fontSize: 13, fontWeight: 600,
+                    cursor: 'pointer', color: '#fff',
+                    background: 'linear-gradient(135deg, #a855f7, #6366f1)',
+                    border: 'none', boxShadow: '0 2px 8px rgba(168,85,247,0.30)',
+                  }}
+                >
+                  <Sparkles size={14} /> Describe with AI
+                </button>
+                <Button size="sm" variant="ghost" onClick={() => setShowNodePalette(true)}>
+                  <Plus size={14} /> Add Node
+                </Button>
+              </div>
             </div>
           )}
         </div>
@@ -1139,6 +1238,139 @@ export default function WorkflowBuilder() {
                   </div>
                 )
               })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Describe-with-AI modal */}
+      {showDescribeModal && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 100,
+          display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+          onClick={closeDescribeModal}>
+          <div onClick={e => e.stopPropagation()}
+            style={{ background: 'var(--card)', borderRadius: 16, width: 580, maxHeight: '80vh',
+              overflow: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.2)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+              padding: '16px 20px', borderBottom: '1px solid var(--border)' }}>
+              <div style={{ fontWeight: 700, fontSize: 16, display: 'flex', alignItems: 'center', gap: 8 }}>
+                <Sparkles size={16} color="#a855f7" /> Describe Your Workflow
+              </div>
+              <button onClick={closeDescribeModal}
+                style={{ background: 'none', border: 'none', cursor: 'pointer' }}><X size={18} /></button>
+            </div>
+            <div style={{ padding: '16px 20px' }}>
+              {!generated ? (
+                <>
+                  <div style={{
+                    marginBottom: 14, padding: '10px 12px', borderRadius: 8,
+                    background: 'rgba(168,85,247,0.06)', border: '1px solid rgba(168,85,247,0.20)',
+                    display: 'flex', alignItems: 'flex-start', gap: 8,
+                  }}>
+                    <Sparkles size={14} color="#a855f7" style={{ marginTop: 2, flexShrink: 0 }} />
+                    <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                      Describe the automation in plain English — an AI will draft the nodes for this workflow.
+                      {nodes.length > 0 && (
+                        <> <strong style={{ color: '#f59e0b' }}>Heads up:</strong> applying the draft will replace the {nodes.length} existing node{nodes.length === 1 ? '' : 's'} on the canvas.</>
+                      )}
+                    </div>
+                  </div>
+                  <textarea
+                    value={nlPrompt}
+                    onChange={e => { setNlPrompt(e.target.value); if (genError) setGenError(null) }}
+                    placeholder='e.g. "When a KEV finding lands on a domain controller, ticket the AD team in ServiceNow with priority Highest and notify #ad-security on Slack"'
+                    rows={5}
+                    disabled={generating}
+                    autoFocus
+                    style={{
+                      width: '100%', padding: '10px 12px', background: 'var(--bg-secondary)',
+                      border: '1px solid var(--border)', borderRadius: 8, fontSize: 13,
+                      color: 'var(--text-primary)', resize: 'vertical', boxSizing: 'border-box',
+                      fontFamily: 'inherit',
+                    }}
+                  />
+                  {genError && (
+                    <div style={{ marginTop: 8, fontSize: 12, color: '#ef4444' }}>{genError}</div>
+                  )}
+                  <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
+                    <Button variant='ghost' onClick={closeDescribeModal} type='button'>Cancel</Button>
+                    <Button onClick={handleGenerate} disabled={!nlPrompt.trim() || generating}>
+                      {generating ? 'Generating…' : 'Generate Workflow'}
+                    </Button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div style={{
+                    marginBottom: 14, padding: '10px 12px', borderRadius: 8,
+                    background: 'rgba(168,85,247,0.06)', border: '1px solid rgba(168,85,247,0.20)',
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+                      <Sparkles size={14} color="#a855f7" />
+                      <span style={{ fontSize: 12, fontWeight: 600, color: '#a855f7' }}>
+                        Draft generated{generated.model ? ` · ${generated.model}` : ''}
+                      </span>
+                    </div>
+                    <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 4 }}>{generated.name}</div>
+                    <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{generated.description}</div>
+                  </div>
+
+                  <div style={{ marginBottom: 8, fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                    Nodes ({(generated.nodes || []).length}) · Edges ({(generated.edges || []).length})
+                  </div>
+                  <div style={{
+                    marginBottom: 16, padding: 10, borderRadius: 8,
+                    background: 'var(--bg-secondary)', border: '1px solid var(--border)',
+                    maxHeight: 220, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6,
+                  }}>
+                    {(generated.nodes || []).map(n => (
+                      <div key={n.node_id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
+                        <Pill color={n.node_type === 'trigger' ? '#818cf8' : n.node_type === 'filter' ? '#84cc16' : '#f87171'}>
+                          {n.node_type}
+                        </Pill>
+                        <code style={{ fontSize: 11, color: 'var(--text-muted)' }}>{n.node_subtype}</code>
+                        <span style={{ color: 'var(--text-primary)' }}>· {n.label}</span>
+                      </div>
+                    ))}
+                  </div>
+
+                  {generated.warnings && generated.warnings.length > 0 && (
+                    <div style={{
+                      marginBottom: 14, padding: '10px 12px', borderRadius: 8,
+                      background: 'rgba(245,158,11,0.06)', border: '1px solid rgba(245,158,11,0.25)',
+                    }}>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: '#f59e0b', marginBottom: 4 }}>
+                        ⚠ {generated.warnings.length} warning{generated.warnings.length !== 1 ? 's' : ''}
+                      </div>
+                      <ul style={{ margin: 0, paddingLeft: 18, fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.6 }}>
+                        {generated.warnings.slice(0, 5).map((w, i) => <li key={i}>{w}</li>)}
+                      </ul>
+                    </div>
+                  )}
+
+                  {nodes.length > 0 && (
+                    <div style={{
+                      marginBottom: 14, padding: '8px 12px', borderRadius: 8,
+                      background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.30)',
+                      fontSize: 12, color: '#b45309',
+                    }}>
+                      Applying will replace the {nodes.length} existing node{nodes.length === 1 ? '' : 's'} on the canvas. The change isn't saved until you click <strong>Save</strong> in the toolbar.
+                    </div>
+                  )}
+
+                  <div style={{ display: 'flex', gap: 8, justifyContent: 'space-between' }}>
+                    <Button variant='ghost' onClick={() => { setGenerated(null); setGenError(null) }} type='button'>
+                      ← Try Again
+                    </Button>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <Button variant='ghost' onClick={closeDescribeModal} type='button'>Cancel</Button>
+                      <Button onClick={handleApplyGenerated}>
+                        Apply to Canvas
+                      </Button>
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
           </div>
         </div>

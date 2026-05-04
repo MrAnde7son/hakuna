@@ -2232,6 +2232,7 @@ def _import_assets_for_domain(
             )
         except Exception:
             logger.exception("internet_to_asset edge write failed for asset %s", asset.id)
+            db.rollback()
 
         fcount, fids = _generate_easm_findings(db, scan.id, asset, ea)
         findings_created += fcount
@@ -2527,6 +2528,7 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
                     logger.info(f"EASM CPE→CVE sync for '{domain}': {cpe_result}")
             except Exception:
                 logger.exception(f"CPE→CVE sync failed for '{domain}' (non-fatal)")
+                db.rollback()
 
             created, findings_created, _new_asset_ids, _new_finding_ids = _import_assets_for_domain(
                 db, scan, easm_assets, domain,
@@ -2581,6 +2583,7 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
                 logger.info(f"EASM breach check for '{domain}': {breach_result}")
             except Exception:
                 logger.exception(f"HIBP sync failed for '{domain}' (non-fatal)")
+                db.rollback()
 
             try:
                 from threat_intel.wikidata_sync import sync_corporate_tree_to_db
@@ -2599,6 +2602,7 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
                 _associate_subsidiary_domains(db, org.id)
             except Exception:
                 logger.exception(f"Corporate structure sync failed for domain '{domain}' (non-fatal)")
+                db.rollback()
 
             # Fan out EASM scans to high-confidence subsidiary domains. Only
             # domains tagged from official registries (Wikidata/EDGAR/GLEIF) or
@@ -2619,6 +2623,7 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
                     )
             except Exception:
                 logger.exception(f"Subsidiary fan-out failed for scan_id={scan.id} (non-fatal)")
+                db.rollback()
 
             # ── Notifications ──
             # Mirror the Nessus ingest pattern in app.py:_run_scan_ingest so
@@ -2687,6 +2692,7 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
                 db.commit()
             except Exception:
                 logger.exception(f"EASM completion notification failed for '{domain}' (non-fatal)")
+                db.rollback()
 
             logger.info(f"EASM scan completed for '{domain}': assets={created}, findings={findings_created} (scan_id={scan.id})")
 
@@ -2789,6 +2795,7 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
                     "finalize_scan will reconcile at completion)",
                     scan.id,
                 )
+                db.rollback()
 
         scan.raw_metadata = {
             **meta,
@@ -2819,6 +2826,7 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
                     "finalize_batch failed for EASM scan %d (non-fatal)",
                     scan.id,
                 )
+                db.rollback()
 
         return {
             "scan_id": scan.id,
@@ -2914,6 +2922,7 @@ async def enrich_assets_from_easm(db: Session, org: Organization, scan_id: int):
                 "internet_to_asset edge write failed for asset %s during Nessus enrich",
                 asset.id,
             )
+            db.rollback()
 
         enriched += 1
 
