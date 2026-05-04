@@ -596,6 +596,73 @@ def get_inventory_summary(scan_id: Optional[int] = None, db: Session = Depends(g
     # Database servers
     db_instance_count = _q(InventoryDatabaseInstance).count()
 
+    # Top certificate issuers (limit to 5)
+    from sqlalchemy import func
+    issuer_q = (
+        _q(InventoryCertificate)
+        .with_entities(InventoryCertificate.issuer_cn, func.count(InventoryCertificate.id).label("c"))
+        .filter(InventoryCertificate.issuer_cn.isnot(None))
+        .group_by(InventoryCertificate.issuer_cn)
+        .order_by(desc("c"))
+        .limit(5)
+        .all()
+    )
+    top_issuers = [{"issuer": row[0], "count": row[1]} for row in issuer_q]
+    weak_key_certs = _q(InventoryCertificate).filter(
+        InventoryCertificate.key_bits.isnot(None),
+        InventoryCertificate.key_bits < 2048,
+    ).count()
+
+    # ── External Attack Surface (EASM) aggregates ──
+    easm_q = db.query(Asset).join(Scan, Asset.scan_id == Scan.id).filter(Asset.easm_data.isnot(None))
+    easm_q = apply_scan_org_filter(easm_q, org_ids)
+    if scan_id:
+        easm_q = easm_q.filter(Asset.scan_id == scan_id)
+    easm_assets = easm_q.all()
+
+    easm_total = len(easm_assets)
+    easm_alive = 0
+    easm_with_waf = 0
+    easm_with_cdn = 0
+    easm_with_tls = 0
+    easm_tls_expired = 0
+    easm_tls_self_signed = 0
+    port_counts: dict[int, int] = {}
+    tech_set: set[str] = set()
+    for a in easm_assets:
+        d = a.easm_data or {}
+        if (d.get("liveness_state") or "").lower() == "alive":
+            easm_alive += 1
+        if d.get("waf"):
+            easm_with_waf += 1
+        if d.get("cdn_provider"):
+            easm_with_cdn += 1
+        tls = d.get("tls_cert") or {}
+        if tls:
+            easm_with_tls += 1
+            if tls.get("is_expired"):
+                easm_tls_expired += 1
+            if tls.get("is_self_signed"):
+                easm_tls_self_signed += 1
+        for p in (d.get("open_ports") or []):
+            try:
+                pn = int(p)
+            except (TypeError, ValueError):
+                continue
+            port_counts[pn] = port_counts.get(pn, 0) + 1
+        for tech in (d.get("detected_technologies") or d.get("tech_stack") or []):
+            if isinstance(tech, dict):
+                name = tech.get("name") or tech.get("technology")
+            else:
+                name = tech
+            if name:
+                tech_set.add(str(name))
+    top_open_ports = sorted(
+        ({"port": p, "count": c} for p, c in port_counts.items()),
+        key=lambda r: r["count"],
+        reverse=True,
+    )[:6]
+
     return {
         "counts": {
             "users": total_users,
@@ -653,11 +720,24 @@ def get_inventory_summary(scan_id: Optional[int] = None, db: Session = Depends(g
             "expired_certs": expired_certs,
             "expiring_soon_certs": expiring_soon,
             "self_signed_certs": self_signed_certs,
+            "weak_key_certs": weak_key_certs,
+            "top_cert_issuers": top_issuers,
             "sensitive_env_vars": sensitive_env_vars,
             "credential_exposures": total_credentials,
             "default_accounts": _q(InventoryCredential).filter(InventoryCredential.credential_type == "default_account").count(),
             "cleartext_credentials": _q(InventoryCredential).filter(InventoryCredential.credential_type == "cleartext").count(),
             "brute_forceable": _q(InventoryCredential).filter(InventoryCredential.credential_type == "brute_forceable").count(),
+            "external_surface": {
+                "total": easm_total,
+                "alive": easm_alive,
+                "with_waf": easm_with_waf,
+                "with_cdn": easm_with_cdn,
+                "with_tls": easm_with_tls,
+                "tls_expired": easm_tls_expired,
+                "tls_self_signed": easm_tls_self_signed,
+                "tech_count": len(tech_set),
+                "top_open_ports": top_open_ports,
+            },
         },
     }
 

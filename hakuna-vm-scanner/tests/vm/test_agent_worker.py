@@ -60,6 +60,7 @@ from scanner.vm.agent_specialists import (
 from scanner.vm.agent_worker import (
     _agent_payload_to_finding,
     _apply_discovered_identity,
+    _classify_cwe,
     _composition_hints,
     _credentials_to_headers,
     _seed_scan_config_capability,
@@ -492,6 +493,60 @@ class TestAgentPayloadToFinding:
             target="https://x",
         )
         assert f["llm_validation"]["confidence"] == 1.0
+
+
+class TestClassifyCwe:
+    """Agent findings used to ship with empty classification, leaving them
+    CWE-less in the UI. The category-keyed map populates classification
+    so the backend's CWE extractor (vm_scanner._extract_nuclei_cwes) can
+    pick them up the same way it does for Nuclei findings."""
+
+    def test_category_default_when_no_keyword_matches(self):
+        # csrf has no keyword overrides — always falls to the default.
+        assert _classify_cwe("csrf", "Anything goes here") == ["CWE-352"]
+        # ssrf likewise has no overrides.
+        assert _classify_cwe("ssrf", "Blind SSRF to internal metadata") == ["CWE-918"]
+
+    def test_unknown_category_returns_empty(self):
+        # If a new category ships in the worker before the map is updated,
+        # we'd rather emit no CWE than the wrong one.
+        assert _classify_cwe("brand-new-category", "anything") == []
+
+    def test_injection_keywords_pick_specific_cwe(self):
+        spec = _classify_cwe
+        assert spec("injection", "SQL Injection via id parameter") == ["CWE-89"]
+        assert spec("injection", "OS Command Injection via ip") == ["CWE-78"]
+        assert spec("injection", "Server-side template injection in name") == ["CWE-1336"]
+        assert spec("injection", "LDAP injection in search") == ["CWE-90"]
+        assert spec("injection", "XPath injection in lookup") == ["CWE-643"]
+        assert spec("injection", "NoSQL injection in mongo query") == ["CWE-943"]
+        assert spec("injection", "CRLF header injection") == ["CWE-93"]
+        # Generic injection without a recognisable subtype falls to CWE-74.
+        assert spec("injection", "Some weird injection") == ["CWE-74"]
+
+    def test_authn_keywords_pick_specific_cwe(self):
+        assert _classify_cwe("authn", "DVWA default login admin/password") == ["CWE-798"]
+        assert _classify_cwe("authn", "No rate limit on login form") == ["CWE-307"]
+        assert _classify_cwe("authn", "Missing authentication on /admin") == ["CWE-306"]
+        assert _classify_cwe("authn", "Generic auth bypass") == ["CWE-287"]
+
+    def test_files_distinguishes_lfi_from_rfi(self):
+        assert _classify_cwe("files", "LFI in page parameter") == ["CWE-22"]
+        assert _classify_cwe("files", "Remote file inclusion via URL") == ["CWE-98"]
+
+    def test_authz_keywords_pick_specific_cwe(self):
+        assert _classify_cwe("authz", "IDOR exposing user 42 invoice") == ["CWE-639"]
+        assert _classify_cwe("authz", "Missing authorization on /admin") == ["CWE-862"]
+        assert _classify_cwe("authz", "Generic broken access control") == ["CWE-863"]
+
+    def test_classification_is_populated_in_finding(self):
+        f = _agent_payload_to_finding(
+            specialist=SPECIALISTS["injection"],
+            payload={"severity": "high", "title": "SQL Injection in id",
+                     "description": "", "verdict": "true_positive"},
+            target="http://x",
+        )
+        assert f["classification"] == {"cwe-id": ["CWE-89"]}
 
 
 class TestTrimEvidence:

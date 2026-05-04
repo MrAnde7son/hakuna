@@ -356,6 +356,86 @@ def _apply_discovered_identity(ctx: AgentContext) -> list[str]:
 # ── Finding translation ──────────────────────────────────────────
 
 
+# Per-category CWE map. Each entry is (default_cwe, ((keywords, override_cwe), ...)).
+# Keywords are matched case-insensitively against the LLM-supplied title; first
+# match wins. The default fires when nothing in the title narrows it further.
+# Refinement is intentionally scoped per-category so e.g. an "authn" finding
+# mentioning "sql" doesn't get re-classified as injection — categories are
+# already chosen by the specialist that emitted the finding.
+_CWE_BY_CATEGORY: dict[str, tuple[str, tuple[tuple[tuple[str, ...], str], ...]]] = {
+    "injection": ("CWE-74", (
+        (("nosql", "mongo"), "CWE-943"),
+        (("sql",), "CWE-89"),
+        (("os command", "command injection", "shell injection", "shellshock",
+          "rce", "remote code execution"), "CWE-78"),
+        (("ldap",), "CWE-90"),
+        (("xpath",), "CWE-643"),
+        (("ssti", "server-side template", "template injection"), "CWE-1336"),
+        (("expression language", "el injection", "ognl"), "CWE-917"),
+        (("crlf", "header injection"), "CWE-93"),
+        (("code injection", "code execution", "eval"), "CWE-94"),
+    )),
+    "xss": ("CWE-79", ()),
+    "ssrf": ("CWE-918", ()),
+    "authn": ("CWE-287", (
+        (("default credential", "default login", "default password",
+          "default creds"), "CWE-798"),
+        (("hardcoded", "hard-coded"), "CWE-798"),
+        (("weak password", "password policy", "password complexity"), "CWE-521"),
+        (("brute force", "no rate limit", "rate limit", "rate-limit"), "CWE-307"),
+        (("missing authentication", "no authentication",
+          "unauthenticated access"), "CWE-306"),
+        (("credentials in url", "credentials in query"), "CWE-598"),
+        (("cleartext", "plaintext password", "plain-text password"), "CWE-319"),
+    )),
+    "authz": ("CWE-285", (
+        (("idor", "insecure direct object"), "CWE-639"),
+        (("privilege escalation", "horizontal privilege",
+          "vertical privilege"), "CWE-269"),
+        (("missing authorization", "missing authz",
+          "no authorization"), "CWE-862"),
+        (("incorrect authorization", "broken access"), "CWE-863"),
+    )),
+    "csrf": ("CWE-352", ()),
+    "files": ("CWE-22", (
+        (("rfi", "remote file inclusion"), "CWE-98"),
+        (("lfi", "local file inclusion", "path traversal",
+          "directory traversal", "arbitrary file read",
+          "file disclosure"), "CWE-22"),
+    )),
+    "upload": ("CWE-434", (
+        (("filename", "external control of file name"), "CWE-73"),
+    )),
+    "session": ("CWE-384", (
+        (("session fixation",), "CWE-384"),
+        (("predictable session", "weak session", "weak token"), "CWE-330"),
+        (("missing httponly", "no httponly", "httponly"), "CWE-1004"),
+        (("missing secure", "no secure flag", "secure flag"), "CWE-614"),
+        (("session hijack", "session leakage", "exposed session",
+          "leaked session"), "CWE-598"),
+    )),
+}
+
+
+def _classify_cwe(category: str, title: str) -> list[str]:
+    """Pick a CWE for an agent finding from its category and title.
+
+    Returns a single-element list to match the shape Nuclei emits for
+    ``classification["cwe-id"]`` — the backend's CWE extractor accepts
+    either a string or a list, and a list keeps the door open if we
+    later want a finding to carry multiple CWEs.
+    """
+    entry = _CWE_BY_CATEGORY.get(category)
+    if entry is None:
+        return []
+    default_cwe, overrides = entry
+    needle = (title or "").lower()
+    for keywords, override_cwe in overrides:
+        if any(kw in needle for kw in keywords):
+            return [override_cwe]
+    return [default_cwe]
+
+
 def _agent_payload_to_finding(
     *, specialist: SpecialistSpec, payload: dict, target: str,
 ) -> dict:
@@ -404,7 +484,7 @@ def _agent_payload_to_finding(
         "type": "agent-vuln",
         "tags": ["agent", specialist.category],
         "reference": [],
-        "classification": {},
+        "classification": {"cwe-id": _classify_cwe(specialist.category, title)},
         "curl_command": request_str if request_str.startswith("curl") else "",
         "matcher_name": f"agent-{specialist.category}",
         "extracted_results": _trim_evidence(request_str, response_str),

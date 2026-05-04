@@ -363,6 +363,107 @@ function Count({ n }) {
   return <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{n}</span>
 }
 
+// ─── Certificates summary card ─────────────────────────────
+function CertificatesCard({ counts, as, onTabChange }) {
+  const total = counts.certificates || 0
+  const expired = as.expired_certs || 0
+  const expiring = as.expiring_soon_certs || 0
+  const selfSigned = as.self_signed_certs || 0
+  const weakKey = as.weak_key_certs || 0
+  const issuers = as.top_cert_issuers || []
+  const Stat = ({ label, value, color }) => (
+    <div style={{ flex: 1, minWidth: 0 }}>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>{label}</div>
+      <div style={{ fontSize: 18, fontWeight: 700, color: value > 0 ? color : 'var(--text-muted)', fontVariantNumeric: 'tabular-nums', marginTop: 2 }}>{value}</div>
+    </div>
+  )
+  return (
+    <Card onClick={() => onTabChange('certs')}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
+        <FileText size={15} color="#8b5cf6" />
+        <span style={{ fontWeight: 700, fontSize: 13 }}>Certificates</span>
+        <Count n={total} />
+      </div>
+      <div style={{ display: 'flex', gap: 12, marginBottom: 14 }}>
+        <Stat label="Expired"      value={expired}    color="var(--danger)" />
+        <Stat label="≤30d"         value={expiring}   color="var(--warning)" />
+        <Stat label="Self-signed"  value={selfSigned} color="var(--warning)" />
+        <Stat label="Weak key"     value={weakKey}    color="var(--danger)" />
+      </div>
+      {issuers.length > 0 && (
+        <div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 6 }}>Top issuers</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {issuers.slice(0, 4).map((it, i) => (
+              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
+                <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.issuer}</span>
+                <span style={{ fontWeight: 600, color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' }}>{it.count}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </Card>
+  )
+}
+
+// ─── External Attack Surface card ──────────────────────────
+function ExternalSurfaceCard({ surface, onTabChange }) {
+  const s = surface || {}
+  const total = s.total || 0
+  if (total === 0) {
+    return (
+      <Card>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
+          <Globe size={15} color="#0ea5e9" />
+          <span style={{ fontWeight: 700, fontSize: 13 }}>External Attack Surface</span>
+        </div>
+        <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>
+          No EASM-discovered assets in this scope.
+        </div>
+      </Card>
+    )
+  }
+  const Stat = ({ label, value, color }) => (
+    <div style={{ flex: 1, minWidth: 0 }}>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>{label}</div>
+      <div style={{ fontSize: 18, fontWeight: 700, color: value > 0 ? color : 'var(--text-muted)', fontVariantNumeric: 'tabular-nums', marginTop: 2 }}>{value}</div>
+    </div>
+  )
+  const tlsIssues = (s.tls_expired || 0) + (s.tls_self_signed || 0)
+  return (
+    <Card onClick={() => onTabChange('easm_assets')}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
+        <Globe size={15} color="#0ea5e9" />
+        <span style={{ fontWeight: 700, fontSize: 13 }}>External Attack Surface</span>
+        <Count n={total} />
+      </div>
+      <div style={{ display: 'flex', gap: 12, marginBottom: 14 }}>
+        <Stat label="Live"       value={s.alive || 0}    color="var(--info)" />
+        <Stat label="With WAF"   value={s.with_waf || 0} color="var(--success, #10b981)" />
+        <Stat label="With CDN"   value={s.with_cdn || 0} color="var(--info)" />
+        <Stat label="TLS issues" value={tlsIssues}       color="var(--warning)" />
+      </div>
+      {s.top_open_ports?.length > 0 && (
+        <div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 6 }}>Top open ports</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {s.top_open_ports.slice(0, 6).map((p, i) => (
+              <div key={i} style={{
+                background: 'var(--bg-muted)', border: '1px solid var(--border)',
+                borderRadius: 6, padding: '3px 8px', fontSize: 12,
+              }}>
+                <span style={{ fontWeight: 600 }}>{p.port}</span>
+                <span style={{ color: 'var(--text-muted)', marginLeft: 6, fontVariantNumeric: 'tabular-nums' }}>×{p.count}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </Card>
+  )
+}
+
 // ─── Attack Surface tab ────────────────────────────────────
 function AttackSurfaceTab({ scanId, onTabChange }) {
   const { t } = useTranslation()
@@ -413,7 +514,7 @@ function AttackSurfaceTab({ scanId, onTabChange }) {
       {/* ── Inventory Overview ── */}
       <div>
         <SectionLabel>Inventory Overview</SectionLabel>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(9, 1fr)', gap: 10, marginTop: 8 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 10, marginTop: 8 }}>
           <StatCard label="Users"          value={counts.users}           icon={Users}    color="#0ea5e9" onClick={() => onTabChange('users')} />
           <StatCard label="Groups"         value={counts.groups}          icon={Shield}   color="#8b5cf6" onClick={() => onTabChange('groups')} />
           <StatCard label="Computers"      value={counts.computers}       icon={Monitor}  color="#06b6d4" onClick={() => onTabChange('computers')} />
@@ -421,22 +522,18 @@ function AttackSurfaceTab({ scanId, onTabChange }) {
           <StatCard label="Services"       value={counts.services}        icon={Server}   color="#64748b" onClick={() => onTabChange('services')} />
           <StatCard label="Shares"         value={counts.shares}          icon={Share2}   color="#f59e0b" onClick={() => onTabChange('shares')} />
           <StatCard label="Software"       value={counts.software}        icon={Package}  color="#10b981" onClick={() => onTabChange('software')} />
-          <StatCard label="Net Conns"      value={counts.netconns}        icon={Network}  color="#06b6d4" onClick={() => onTabChange('netconns')} />
-          <StatCard label="Sched. Tasks"   value={counts.scheduled_tasks} icon={Clock}    color="#f59e0b" onClick={() => onTabChange('tasks')} />
         </div>
       </div>
 
       {/* ── Security & Compliance ── */}
       <div>
         <SectionLabel>Security & Compliance</SectionLabel>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(9, 1fr)', gap: 10, marginTop: 8 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 10, marginTop: 8 }}>
           <StatCard label="Missing Patches"value={counts.missing_patches} icon={Layers}   color="#dc2626" onClick={() => onTabChange('patches')} />
           <StatCard label="Security Ctrl"  value={counts.security_controls} icon={Lock}   color="#10b981" onClick={() => onTabChange('security')} />
           <StatCard label="Certificates"   value={counts.certificates}   icon={FileText}  color="#8b5cf6" onClick={() => onTabChange('certs')} />
           <StatCard label="Pwd Policy"     value={counts.password_policies} icon={Lock}   color="#dc2626" onClick={() => onTabChange('policy')} />
           <StatCard label="Logged On"      value={counts.logged_on}      icon={LogIn}     color="#0ea5e9" onClick={() => onTabChange('loggedon')} />
-          <StatCard label="Processes"      value={counts.processes}       icon={Activity}  color="#64748b" onClick={() => onTabChange('processes')} />
-          <StatCard label="Env Variables"  value={counts.env_vars}        icon={Terminal}  color="#f59e0b" onClick={() => onTabChange('envvars')} />
           <StatCard label="AI Tools"       value={counts.ai_tools}        icon={BrainCircuit} color="#8b5cf6" onClick={() => onTabChange('aitools')} />
           <StatCard label="Credentials"    value={counts.credentials}     icon={Key}          color="#ef4444" onClick={() => onTabChange('credentials')} />
         </div>
@@ -515,7 +612,8 @@ function AttackSurfaceTab({ scanId, onTabChange }) {
       </div>
 
       {/* ── Security Posture + Infrastructure ── */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+      {/* ── Posture · Certificates · External Attack Surface ── */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 14, alignItems: 'stretch' }}>
 
         {/* Security Posture */}
         <Card onClick={() => onTabChange('security')}>
@@ -523,24 +621,25 @@ function AttackSurfaceTab({ scanId, onTabChange }) {
             <Shield size={15} color="#f59e0b" />
             <span style={{ fontWeight: 700, fontSize: 13 }}>Security Posture</span>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 24px' }}>
+          <div>
             <PostureRow label="Password never expires"  value={as.password_never_expires_count}  severity="warn" />
-            <PostureRow label="Weak password policies"  value={as.weak_password_policies || 0}   severity="critical" />
             <PostureRow label="Never changed password"  value={as.never_changed_password_count}   severity="critical" />
+            <PostureRow label="Weak password policies"  value={as.weak_password_policies || 0}   severity="critical" />
             <PostureRow label="Local admin accounts"    value={as.local_admins_count}             severity="warn" />
             <PostureRow label="Writeable shares"        value={as.writeable_shares || 0}          severity="warn" />
-            <PostureRow label="Hosts with AV enabled"   value={as.hosts_with_av || 0}            severity="good" />
-            <PostureRow label="Established connections"  value={as.established_connections}        severity="info" />
-            <PostureRow label="Sensitive env variables"  value={as.sensitive_env_vars || 0}        severity="critical" />
-            <PostureRow label="Expired certificates"     value={as.expired_certs || 0}            severity="critical" />
-            <PostureRow label="Expiring soon (≤30d)"     value={as.expiring_soon_certs || 0}      severity="warn" />
-            <PostureRow label="Self-signed certificates" value={as.self_signed_certs || 0}        severity="warn" />
+            <PostureRow label="Sensitive env variables" value={as.sensitive_env_vars || 0}        severity="critical" />
+            <PostureRow label="Established connections" value={as.established_connections}        severity="info" />
+            <PostureRow label="Hosts with AV enabled"   value={as.hosts_with_av || 0}             severity="good" />
           </div>
         </Card>
 
-        {/* Right column: Domain Controllers + Logged On stacked */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-          {/* Domain Controllers */}
+        <CertificatesCard counts={counts} as={as} onTabChange={onTabChange} />
+        <ExternalSurfaceCard surface={as.external_surface} onTabChange={onTabChange} />
+      </div>
+
+      {/* ── Domain Controllers + Logged-on (only when present) ── */}
+      {(as.domain_controllers?.length > 0 || as.logged_on_users?.length > 0) && (
+        <div style={{ display: 'grid', gridTemplateColumns: as.domain_controllers?.length > 0 && as.logged_on_users?.length > 0 ? '1fr 1fr' : '1fr', gap: 14 }}>
           {as.domain_controllers?.length > 0 && (
             <Card onClick={() => onTabChange('computers')}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
@@ -562,7 +661,6 @@ function AttackSurfaceTab({ scanId, onTabChange }) {
             </Card>
           )}
 
-          {/* Logged-on users */}
           {as.logged_on_users?.length > 0 && (
             <Card onClick={() => onTabChange('loggedon')}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
@@ -584,7 +682,7 @@ function AttackSurfaceTab({ scanId, onTabChange }) {
             </Card>
           )}
         </div>
-      </div>
+      )}
 
       {/* ── Top Missing Patches ── */}
       {as.top_missing_patches?.length > 0 && (
