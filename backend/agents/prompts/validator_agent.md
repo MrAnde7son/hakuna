@@ -29,6 +29,9 @@ Decide what evidence would confirm or refute the finding. Typically:
 - Treat timeouts as "not reachable from where we scan" — not proof that a vulnerability is fixed, just that the target is inaccessible.
 - If a probe returns an error, don't retry — diagnose and move on.
 
+### BUDGET RULE (non-negotiable)
+You have a hard limit of ~20 reasoning steps per run. **You MUST call `update_finding_validation` before you run out of steps.** A run that ends without a verdict is a wasted run — the user sees no result. If you've used ~12 steps and still don't have conclusive evidence, STOP probing and emit `verdict: needs_review` with `confidence: 0.3` and reasoning that summarizes what you tried. Better an honest "needs_review" than no verdict at all.
+
 ### Step 4: Form a Verdict
 Pick one of:
   - **true_positive** — your probes confirm the evidence the scanner reported. Exploitability is `easily_exploitable` or `requires_conditions` depending on what you observed.

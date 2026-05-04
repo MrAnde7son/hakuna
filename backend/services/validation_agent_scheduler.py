@@ -47,6 +47,13 @@ VALIDATOR_TOOLS = [
 ]
 
 
+VALIDATOR_GUARDRAILS = {
+    "max_steps": 20,
+    "read_only": False,
+    "autonomy_level": "conservative",
+}
+
+
 def get_or_create_validator_agent(db: Session, org_id: int) -> Agent:
     """Return the per-org validator Agent, creating it on first use.
 
@@ -69,6 +76,9 @@ def get_or_create_validator_agent(db: Session, org_id: int) -> Agent:
         if existing.system_prompt != desired_prompt:
             existing.system_prompt = desired_prompt
             changed = True
+        if (existing.guardrails or {}) != VALIDATOR_GUARDRAILS:
+            existing.guardrails = dict(VALIDATOR_GUARDRAILS)
+            changed = True
         if changed:
             db.commit()
             db.refresh(existing)
@@ -80,11 +90,7 @@ def get_or_create_validator_agent(db: Session, org_id: int) -> Agent:
         description=VALIDATOR_AGENT_DESCRIPTION,
         system_prompt=ENHANCED_PROMPTS["validator_agent"],
         tools=list(VALIDATOR_TOOLS),
-        guardrails={
-            "max_steps": 10,
-            "read_only": False,
-            "autonomy_level": "conservative",
-        },
+        guardrails=dict(VALIDATOR_GUARDRAILS),
         memory={},
         model="vertex/gemini-2.5-pro",
     )
