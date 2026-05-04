@@ -848,6 +848,19 @@ export const createWorkflowFromTemplate = (data) =>
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
   })
+export const generateWorkflow = (description, model = null) =>
+  request('/workflows/generate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ description, model }),
+    timeout: 60_000,
+  })
+export const createWorkflowFromGenerated = (data) =>
+  request('/workflows/from-generated', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
 export const getWorkflow = (id) => request(`/workflows/${id}`)
 export const updateWorkflow = (id, data) =>
   request(`/workflows/${id}`, {

@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import {
   Play, Save, ArrowLeft, Plus, Trash2, X,
   GitBranch, Zap, Target, Clock, Upload, Server,
   UserPlus, Tag, CheckCircle, AlertTriangle, Globe, Bell,
   BarChart2, ChevronRight, Filter, Mail, MessageSquare,
-  Terminal, Ticket, History, Shield, Monitor, AlertCircle, Plug, Bot,
+  Terminal, Ticket, History, Shield, Monitor, AlertCircle, Plug, Bot, Sparkles,
 } from 'lucide-react'
 import {
   getWorkflow, updateWorkflow, executeWorkflow, getWorkflowExecutions,
@@ -35,7 +35,22 @@ const HANDLE_SIZE = 12
 export default function WorkflowBuilder() {
   const { id } = useParams()
   const navigate = useNavigate()
+  const location = useLocation()
   const canvasRef = useRef(null)
+  // One-time AI-generated banner — set when navigating in from the "Describe"
+  // flow. Persisted to sessionStorage so a hard reload still shows it once.
+  const aiBannerKey = `wf_ai_banner_${id}`
+  const [showAiBanner, setShowAiBanner] = useState(() => {
+    if (location.state?.aiGenerated) {
+      sessionStorage.setItem(aiBannerKey, '1')
+      return true
+    }
+    return sessionStorage.getItem(aiBannerKey) === '1'
+  })
+  const dismissAiBanner = () => {
+    sessionStorage.removeItem(aiBannerKey)
+    setShowAiBanner(false)
+  }
 
   const [workflow, setWorkflow] = useState(null)
   const [nodes, setNodes] = useState([])
@@ -440,6 +455,25 @@ export default function WorkflowBuilder() {
           </Button>
         </div>
       </div>
+
+      {/* AI-generated draft banner */}
+      {showAiBanner && workflow.status === 'draft' && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 10, padding: '10px 16px',
+          background: 'rgba(168,85,247,0.08)', borderBottom: '1px solid rgba(168,85,247,0.30)', flexShrink: 0,
+        }}>
+          <Sparkles size={14} color="#a855f7" style={{ flexShrink: 0 }} />
+          <div style={{ flex: 1, fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+            <strong style={{ color: '#a855f7' }}>AI-generated draft.</strong>{' '}
+            Review nodes, configs, and integration targets before activating.
+            This workflow is in draft state — it won't run on triggers until you switch status to <em>active</em>.
+          </div>
+          <button onClick={dismissAiBanner}
+            style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 4 }}>
+            <X size={14} />
+          </button>
+        </div>
+      )}
 
       {/* Validation warnings */}
       {validationWarnings.length > 0 && (

@@ -7,7 +7,7 @@ import {
   Flame, Shield, Timer, Wrench, Globe, Sparkles, FileText, CalendarClock, Siren, Ticket, ShieldAlert,
 } from 'lucide-react'
 import { useScan } from '../../App.jsx'
-import { getCampaigns, createCampaign, deleteCampaign, runCampaign, getWorkflows, createWorkflow, deleteWorkflow, getWorkflowTemplates, createWorkflowFromTemplate, exportConfig, importConfig, authListUsers, getIntegrations, previewCampaignQuery, nlpToCampaignConditions } from '../../api.js'
+import { getCampaigns, createCampaign, deleteCampaign, runCampaign, getWorkflows, createWorkflow, deleteWorkflow, getWorkflowTemplates, createWorkflowFromTemplate, exportConfig, importConfig, authListUsers, getIntegrations, previewCampaignQuery, nlpToCampaignConditions, generateWorkflow, createWorkflowFromGenerated } from '../../api.js'
 import { Card, PageHeader, Button, Spinner, EmptyState, Pill, ExportImportButtons, ErrorBanner, SkeletonCard, useToast } from '../shared/ui.jsx'
 import { capture } from '../../utils/analytics.js'
 
@@ -1065,7 +1065,7 @@ function WorkflowCard({ workflow, onDelete }) {
 
 function CreateWorkflowModal({ onClose, onCreate }) {
   const { t } = useTranslation()
-  const [mode, setMode] = useState('template') // 'template' | 'custom'
+  const [mode, setMode] = useState('template') // 'template' | 'custom' | 'describe'
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
   const [saving, setSaving] = useState(false)
@@ -1073,6 +1073,11 @@ function CreateWorkflowModal({ onClose, onCreate }) {
   const [categories, setCategories] = useState([])
   const [loadingTpl, setLoadingTpl] = useState(true)
   const [tplSearch, setTplSearch] = useState('')
+  // Describe mode (LLM generation)
+  const [nlPrompt, setNlPrompt] = useState('')
+  const [generating, setGenerating] = useState(false)
+  const [generated, setGenerated] = useState(null) // {name, description, nodes, edges, warnings, model}
+  const [genError, setGenError] = useState(null)
 
   useEffect(() => {
     getWorkflowTemplates().then(data => {
@@ -1099,10 +1104,46 @@ function CreateWorkflowModal({ onClose, onCreate }) {
     } finally { setSaving(false) }
   }
 
+  const handleGenerate = async () => {
+    if (!nlPrompt.trim()) return
+    setGenerating(true)
+    setGenError(null)
+    try {
+      const result = await generateWorkflow(nlPrompt.trim())
+      setGenerated(result)
+      capture('workflow_nlp_generated', {
+        prompt_length: nlPrompt.length,
+        node_count: result.nodes?.length || 0,
+        warning_count: result.warnings?.length || 0,
+        model: result.model,
+      })
+    } catch (e) {
+      setGenError(e.message || 'Failed to generate workflow')
+    } finally {
+      setGenerating(false)
+    }
+  }
+
+  const handleAcceptGenerated = async () => {
+    if (!generated) return
+    setSaving(true)
+    try {
+      const wf = await createWorkflowFromGenerated({
+        name: generated.name,
+        description: generated.description,
+        nodes: generated.nodes,
+        edges: generated.edges,
+        original_prompt: generated.original_prompt,
+      })
+      onCreate(wf, { aiGenerated: true })
+    } finally { setSaving(false) }
+  }
+
   const CATEGORY_ICONS = { triage: GitBranch, patching: Settings, incident: Zap, integration: Settings }
 
   const modeTabs = [
     { key: 'template', label: t('campaigns.useTemplate') },
+    { key: 'describe', label: 'Describe' },
     { key: 'custom', label: t('campaigns.startFromScratch') },
   ]
 
@@ -1130,7 +1171,110 @@ function CreateWorkflowModal({ onClose, onCreate }) {
           ))}
         </div>
 
-        {mode === 'template' ? (
+        {mode === 'describe' ? (
+          <div>
+            {!generated ? (
+              <>
+                <div style={{
+                  marginBottom: 14, padding: '10px 12px', borderRadius: 8,
+                  background: 'rgba(168,85,247,0.06)', border: '1px solid rgba(168,85,247,0.20)',
+                  display: 'flex', alignItems: 'flex-start', gap: 8,
+                }}>
+                  <Sparkles size={14} color="#a855f7" style={{ marginTop: 2, flexShrink: 0 }} />
+                  <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                    Describe the automation in plain English — an AI will draft a workflow you can review.
+                    The result is saved as <strong>draft</strong> and won't run until you activate it.
+                  </div>
+                </div>
+                <textarea
+                  value={nlPrompt}
+                  onChange={e => { setNlPrompt(e.target.value); if (genError) setGenError(null) }}
+                  placeholder='e.g. "When a KEV finding lands on a domain controller, ticket the AD team in ServiceNow with priority Highest and notify #ad-security on Slack"'
+                  rows={4}
+                  disabled={generating}
+                  autoFocus
+                  style={{
+                    width: '100%', padding: '10px 12px', background: 'var(--bg-secondary)',
+                    border: '1px solid var(--border)', borderRadius: 8, fontSize: 13,
+                    color: 'var(--text-primary)', resize: 'vertical', boxSizing: 'border-box',
+                    fontFamily: 'inherit',
+                  }}
+                />
+                {genError && (
+                  <div style={{ marginTop: 8, fontSize: 12, color: '#ef4444' }}>{genError}</div>
+                )}
+                <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
+                  <Button variant='ghost' onClick={onClose} type='button'>{t('common.cancel')}</Button>
+                  <Button onClick={handleGenerate} disabled={!nlPrompt.trim() || generating}>
+                    {generating ? 'Generating…' : 'Generate Workflow'}
+                  </Button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div style={{
+                  marginBottom: 14, padding: '10px 12px', borderRadius: 8,
+                  background: 'rgba(168,85,247,0.06)', border: '1px solid rgba(168,85,247,0.20)',
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+                    <Sparkles size={14} color="#a855f7" />
+                    <span style={{ fontSize: 12, fontWeight: 600, color: '#a855f7' }}>
+                      Draft generated · {generated.model}
+                    </span>
+                  </div>
+                  <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 4 }}>{generated.name}</div>
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{generated.description}</div>
+                </div>
+
+                {/* Node list (compact) */}
+                <div style={{ marginBottom: 12, fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                  Nodes ({generated.nodes.length}) · Edges ({generated.edges.length})
+                </div>
+                <div style={{
+                  marginBottom: 16, padding: 10, borderRadius: 8,
+                  background: 'var(--bg-secondary)', border: '1px solid var(--border)',
+                  maxHeight: 220, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6,
+                }}>
+                  {generated.nodes.map(n => (
+                    <div key={n.node_id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
+                      <Pill color={n.node_type === 'trigger' ? '#818cf8' : n.node_type === 'filter' ? '#84cc16' : '#f87171'}>
+                        {n.node_type}
+                      </Pill>
+                      <code style={{ fontSize: 11, color: 'var(--text-muted)' }}>{n.node_subtype}</code>
+                      <span style={{ color: 'var(--text-primary)' }}>· {n.label}</span>
+                    </div>
+                  ))}
+                </div>
+
+                {generated.warnings && generated.warnings.length > 0 && (
+                  <div style={{
+                    marginBottom: 14, padding: '10px 12px', borderRadius: 8,
+                    background: 'rgba(245,158,11,0.06)', border: '1px solid rgba(245,158,11,0.25)',
+                  }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: '#f59e0b', marginBottom: 4 }}>
+                      ⚠ {generated.warnings.length} warning{generated.warnings.length !== 1 ? 's' : ''}
+                    </div>
+                    <ul style={{ margin: 0, paddingLeft: 18, fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.6 }}>
+                      {generated.warnings.slice(0, 5).map((w, i) => <li key={i}>{w}</li>)}
+                    </ul>
+                  </div>
+                )}
+
+                <div style={{ display: 'flex', gap: 8, justifyContent: 'space-between' }}>
+                  <Button variant='ghost' onClick={() => { setGenerated(null); setGenError(null) }} type='button'>
+                    ← Try Again
+                  </Button>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <Button variant='ghost' onClick={onClose} type='button'>{t('common.cancel')}</Button>
+                    <Button onClick={handleAcceptGenerated} disabled={saving}>
+                      {saving ? 'Saving…' : 'Save as Draft & Open'}
+                    </Button>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        ) : mode === 'template' ? (
           <div>
             {loadingTpl ? <Spinner /> : templates.length === 0 ? (
               <div style={{ textAlign: 'center', padding: 20, color: '#94a3b8' }}>{t('campaigns.noTemplatesAvailable')}</div>
@@ -1285,9 +1429,9 @@ export default function Campaigns() {
     navigate(`/campaigns/${c.id}`)
   }
 
-  const handleCreateWf = (wf) => {
+  const handleCreateWf = (wf, opts = {}) => {
     setShowCreateWf(false)
-    navigate(`/workflows/${wf.id}`)
+    navigate(`/workflows/${wf.id}`, opts.aiGenerated ? { state: { aiGenerated: true } } : undefined)
   }
 
   const handleDelete = async (id) => {

@@ -22,6 +22,7 @@ from models.models import (
     WorkflowExecution, WorkflowExecutionLog,
 )
 import services.workflow_engine as workflow_engine
+from services.workflow_generator import generate_workflow
 
 
 router = APIRouter(tags=["workflows"])
@@ -143,6 +144,100 @@ def create_workflow_from_template_endpoint(body: WorkflowCreateFromTemplate, db:
         return d
     except ValueError as e:
         raise HTTPException(400, str(e))
+
+
+class WorkflowGenerateBody(BaseModel):
+    description: str
+    model: Optional[str] = None  # override default LLM
+
+
+class WorkflowFromGeneratedBody(BaseModel):
+    name: str
+    description: Optional[str] = None
+    nodes: list
+    edges: list
+    campaign_id: Optional[int] = None
+    original_prompt: Optional[str] = None  # for audit / future "explain" feature
+
+
+@router.post("/api/workflows/generate")
+def generate_workflow_endpoint(
+    body: WorkflowGenerateBody,
+    db: Session = Depends(get_db),
+):
+    """Generate a workflow JSON from a natural-language description.
+
+    Does NOT save — caller must POST to /api/workflows/from-generated to
+    persist as a draft. This separation lets the UI show the user a preview
+    + warnings before they commit.
+    """
+    try:
+        return generate_workflow(db, body.description, model=body.model)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        logger_msg = f"Workflow generation failed: {e}"
+        import logging
+        logging.getLogger(__name__).exception(logger_msg)
+        raise HTTPException(500, "Failed to generate workflow. Check LLM provider configuration.")
+
+
+@router.post("/api/workflows/from-generated")
+def create_workflow_from_generated(
+    body: WorkflowFromGeneratedBody,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user),
+):
+    """Persist an LLM-generated workflow as a draft.
+
+    Forced to status="draft" so an LLM hallucination cannot fire side-effects
+    until a human flips it to active.
+    """
+    wf = Workflow(
+        org_id=user.org_id if user else None,
+        name=body.name,
+        description=body.description,
+        campaign_id=body.campaign_id,
+        status="draft",
+        is_enabled=False,
+    )
+    db.add(wf)
+    db.flush()
+
+    for nd in body.nodes:
+        db.add(WorkflowNode(
+            workflow_id=wf.id,
+            node_id=nd["node_id"],
+            node_type=nd["node_type"],
+            node_subtype=nd["node_subtype"],
+            label=nd.get("label", ""),
+            config=nd.get("config", {}) or {},
+            position_x=nd.get("position_x", 0),
+            position_y=nd.get("position_y", 0),
+        ))
+    for ed in body.edges:
+        db.add(WorkflowEdge(
+            workflow_id=wf.id,
+            edge_id=ed["edge_id"],
+            source_node_id=ed["source_node_id"],
+            target_node_id=ed["target_node_id"],
+            source_handle=ed.get("source_handle", "output"),
+            target_handle=ed.get("target_handle", "input"),
+            label=ed.get("label"),
+        ))
+
+    log_audit(db, "create", "workflow", wf.id,
+              entity_name=wf.name,
+              changes={"name": wf.name, "ai_generated": True,
+                       "original_prompt": body.original_prompt or ""},
+              actor=user)
+    db.commit()
+    db.refresh(wf)
+    d = _workflow_to_dict(wf)
+    d["nodes"] = [_node_to_dict(n) for n in wf.nodes]
+    d["edges"] = [_edge_to_dict(e) for e in wf.edges]
+    d["ai_generated"] = True
+    return d
 
 
 @router.post("/api/workflows")
