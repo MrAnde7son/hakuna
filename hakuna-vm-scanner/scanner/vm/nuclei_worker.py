@@ -66,6 +66,13 @@ from scanner.vm.config import (
 # routing table into memory for what's otherwise a string check).
 _ADHOC_WEB_PORTS: frozenset[int] = frozenset({80, 443, 3000, 5000, 8000, 8001, 8080, 8443, 8888, 9090, 9443})
 from scanner.vm.db import _normalize_dsn
+from scanner.vm.evasion import (
+    RETRYABLE_STATUSES,
+    EvasionConfig,
+    EvasionPlan,
+    apply_to_nuclei_cmd,
+    decide_evasion,
+)
 from scanner.vm.preflight import probe_http, probe_tcp, should_preflight
 from scanner.vm.plan_executor import (
     ScanPlanInvalidError,
@@ -73,6 +80,15 @@ from scanner.vm.plan_executor import (
     cleanup_tempfiles,
 )
 from scanner.vm.router import TemplateRouter
+
+# Minimum wall-clock left on the per-asset deadline before we'll attempt
+# an evasion retry. The stall watchdog fires at NUCLEI_STALL_GRACE_SECONDS
+# (default 90s) — if we have less than that remaining, even a perfectly
+# routed retry would re-trip the watchdog before any meaningful coverage,
+# so we skip the retry and surface the first-attempt status instead. This
+# also naturally suppresses retries after a true ``timeout`` (the first
+# attempt ate the full budget and there's nothing left to spend).
+_EVASION_RETRY_MIN_REMAINING_S = 90
 
 logger = logging.getLogger(__name__)
 
@@ -508,7 +524,19 @@ async def _run_nuclei_scan_async(
                 "error": f"target unreachable ({pre.reason}): {pre.detail}",
                 "preflight": pre.to_dict(),
             }
-        if pre is not None and pre.cdn and NUCLEI_SKIP_CDN_TARGETS:
+        # CDN short-circuit. With evasion enabled and a proxy pool
+        # configured, we instead fall through and let the evasion path
+        # try once with rotated proxy + headers — that recovers the
+        # scans that historically rotted in this branch. Only
+        # short-circuit when evasion can't help (disabled, or CDN
+        # auto-trigger turned off, or no proxy pool).
+        evasion_cfg = EvasionConfig.from_env()
+        cdn_can_be_bypassed = (
+            evasion_cfg.enabled
+            and evasion_cfg.auto_on_cdn
+            and bool(evasion_cfg.proxy_pool)
+        )
+        if pre is not None and pre.cdn and NUCLEI_SKIP_CDN_TARGETS and not cdn_can_be_bypassed:
             logger.info(
                 "nuclei_worker skipping CDN-fronted asset=%s target=%s cdn=%s",
                 asset_id, target, pre.cdn,
@@ -617,63 +645,124 @@ async def _run_nuclei_scan_async(
         commands = [{"cmd": legacy_cmd, "tempfiles": [], "action": None}]
 
     # 4. Execute each command in sequence, sharing the per-asset wall-clock
-    # budget. Aggregate findings across runs.
+    # budget. Aggregate findings across runs. The whole loop is wrapped in
+    # an attempt-counter — if the first attempt is blocked/timeout/cdn and
+    # evasion is configured, we re-run once with proxy + header rewrites.
+    plan_flags = (plan_dict or {}).get("flags") if plan_dict else None
+    target_host = _target_hostname(target)
+    deadline = start + SCAN_TIMEOUT_SECONDS
+
     findings: list[dict] = []
     templates_run: set[str] = set()
     nuclei_stats: dict = {}
     stderr_text = ""
     status = "complete" if commands else "skipped"
-    deadline = start + SCAN_TIMEOUT_SECONDS
+
+    attempt = 0
+    evasion_plan: EvasionPlan | None = decide_evasion(
+        config=evasion_cfg,
+        attempt=0,
+        preflight_cdn=(pre.cdn if pre is not None else None),
+        prior_status=None,
+        plan_flags=plan_flags,
+        target_host=target_host,
+    )
+    evasion_label_first = evasion_plan.label if evasion_plan else None
+    evasion_label_retry: str | None = None
 
     try:
-        for entry in commands:
-            remaining = deadline - time.monotonic()
-            if remaining <= 1:
-                logger.warning("Asset %s: per-asset budget exhausted, %d cmd(s) left unrun", asset_id, len(commands) - commands.index(entry))
-                status = "partial"
-                break
-            cmd = entry["cmd"]
-            logger.info("nuclei cmd: %s", _redacted_cmd_for_log(cmd))
-            run_result = await _run_one_nuclei(
-                cmd, timeout_seconds=int(remaining), target_for_log=target or asset_id,
-            )
+        while True:
+            attempt_findings: list[dict] = []
+            attempt_templates: set[str] = set()
+            attempt_stderr = ""
+            attempt_stats: dict = {}
+            attempt_status = "complete" if commands else "skipped"
 
-            findings.extend(run_result["findings"])
-            templates_run.update(run_result["templates_run"])
-            stderr_text = "\n".join(filter(None, [stderr_text, run_result["stderr_text"]]))
-            # Nuclei stats from the LAST command win for templates_loaded/
-            # requests_sent — the values from earlier commands have already
-            # been logged and accumulating them across commands would be
-            # misleading (templates_loaded is per-invocation).
-            nuclei_stats = run_result["nuclei_stats"] or nuclei_stats
-            if run_result.get("stalled"):
-                # Watchdog killed the run — preflight passed but every
-                # request from the scanner IP was dropped (typical WAF/
-                # edge behaviour). Distinct from "timeout" so the UI can
-                # tell ops "your target is blocking us" vs "we ran out
-                # of budget."
-                logger.error("nuclei stalled (WAF/edge block) for asset %s target=%s", asset_id, target)
-                status = "blocked"
+            cmds_for_attempt = _apply_plan_to_commands(commands, evasion_plan)
+            if evasion_plan is not None:
+                logger.info(
+                    "nuclei attempt %d for %s running with evasion=%s proxy=%s",
+                    attempt, target or asset_id, evasion_plan.label,
+                    "yes" if evasion_plan.proxy_url else "no",
+                )
+
+            for entry in cmds_for_attempt:
+                remaining = deadline - time.monotonic()
+                if remaining <= 1:
+                    logger.warning(
+                        "Asset %s: per-asset budget exhausted, %d cmd(s) left unrun",
+                        asset_id, len(cmds_for_attempt) - cmds_for_attempt.index(entry),
+                    )
+                    attempt_status = "partial"
+                    break
+                cmd = entry["cmd"]
+                logger.info("nuclei cmd: %s", _redacted_cmd_for_log(cmd))
+                run_result = await _run_one_nuclei(
+                    cmd, timeout_seconds=int(remaining), target_for_log=target or asset_id,
+                )
+
+                attempt_findings.extend(run_result["findings"])
+                attempt_templates.update(run_result["templates_run"])
+                attempt_stderr = "\n".join(filter(None, [attempt_stderr, run_result["stderr_text"]]))
+                attempt_stats = run_result["nuclei_stats"] or attempt_stats
+                if run_result.get("stalled"):
+                    logger.error("nuclei stalled (WAF/edge block) for asset %s target=%s", asset_id, target)
+                    attempt_status = "blocked"
+                    break
+                if run_result.get("timed_out"):
+                    logger.error("nuclei timed out for asset %s", asset_id)
+                    attempt_status = "timeout"
+                    break
+                if run_result["exit_code"] != 0 and attempt_status == "complete":
+                    attempt_status = "partial"
+                logger.info(
+                    "nuclei finished for %s: exit=%d templates_loaded=%s requests=%s matched=%d",
+                    asset_id, run_result["exit_code"],
+                    attempt_stats.get("templates_loaded", "?"),
+                    attempt_stats.get("requests_sent", "?"),
+                    len(attempt_templates),
+                )
+
+            # Promote attempt → final results. Any prior attempt's findings
+            # are discarded — the retry is *the* result, not additive.
+            # Findings discovered during a stalled first attempt would be
+            # rare (the watchdog fires precisely when nothing got through)
+            # and keeping them would conflate two scan postures in one
+            # finding set.
+            findings = attempt_findings
+            templates_run = attempt_templates
+            stderr_text = attempt_stderr
+            nuclei_stats = attempt_stats
+            status = attempt_status
+
+            if attempt > 0:
+                break  # only one retry
+            if status not in RETRYABLE_STATUSES:
                 break
-            if run_result.get("timed_out"):
-                # Don't retry — the same template set hits the same wall on
-                # the next attempt. Surface the partial stats we just
-                # collected so the UI can show duration/templates/stderr
-                # instead of a misleading "[error] 0/0 0s".
-                logger.error("nuclei timed out for asset %s", asset_id)
-                status = "timeout"
+            remaining = deadline - time.monotonic()
+            if remaining < _EVASION_RETRY_MIN_REMAINING_S:
+                logger.info(
+                    "skipping evasion retry for asset %s — only %.0fs of budget left",
+                    asset_id, remaining,
+                )
                 break
-            if run_result["exit_code"] != 0 and status == "complete":
-                status = "partial"
-            logger.info(
-                "nuclei finished for %s: exit=%d templates_loaded=%s requests=%s matched=%d",
-                asset_id, run_result["exit_code"],
-                nuclei_stats.get("templates_loaded", "?"),
-                nuclei_stats.get("requests_sent", "?"),
-                len(templates_run),
+            retry_plan = decide_evasion(
+                config=evasion_cfg,
+                attempt=1,
+                preflight_cdn=(pre.cdn if pre is not None else None),
+                prior_status=status,
+                plan_flags=plan_flags,
+                target_host=target_host,
             )
+            if retry_plan is None:
+                break
+            attempt = 1
+            evasion_plan = retry_plan
+            evasion_label_retry = retry_plan.label
     finally:
-        # Always clean up tmpfiles (per-endpoint target lists).
+        # Always clean up tmpfiles (per-endpoint target lists). The
+        # underlying tempfiles are referenced by the original commands;
+        # the per-attempt copies share them.
         for entry in commands:
             cleanup_tempfiles(entry.get("tempfiles") or [])
 
@@ -690,6 +779,10 @@ async def _run_nuclei_scan_async(
         "routing_info": routing_info,
         "authenticated": bool(credentials),
     }
+    if evasion_label_first or evasion_label_retry:
+        result_payload["evasion_used"] = True
+        result_payload["evasion_attempts"] = attempt + 1
+        result_payload["evasion_label"] = evasion_label_retry or evasion_label_first
     if plan_skip_reason:
         result_payload["plan_skip_reason"] = plan_skip_reason
     # Echo back the plan version we executed against (None when no plan was
@@ -808,6 +901,44 @@ def _target_args(targets: list[str]) -> list[str]:
         if t:
             out.extend(["-target", t])
     return out
+
+
+def _target_hostname(target: str) -> str | None:
+    """Extract the hostname from a Nuclei target string.
+
+    Handles ``http(s)://host[:port][/path]``, bare ``host``, and
+    ``host:port``. Returns None for empty / unparseable inputs. Used by
+    evasion to populate Host / X-Forwarded-Host when prefer_origin is
+    set — those headers need the *public* hostname, not whatever the
+    target was rewritten to (e.g. when scanning origin-direct).
+    """
+    if not target:
+        return None
+    from urllib.parse import urlparse
+    if target.startswith(("http://", "https://")):
+        try:
+            return urlparse(target).hostname
+        except Exception:
+            return None
+    # bare host[:port]
+    host = target.split("/", 1)[0]
+    if ":" in host and not host.startswith("["):
+        host = host.rsplit(":", 1)[0]
+    return host or None
+
+
+def _apply_plan_to_commands(commands: list[dict], plan: EvasionPlan | None) -> list[dict]:
+    """Return a shallow-copied command list with the evasion plan applied.
+
+    Returns the original list when plan is None — callers can pass the
+    return value straight to the run loop without checking.
+    """
+    if plan is None:
+        return commands
+    return [
+        {**entry, "cmd": apply_to_nuclei_cmd(entry["cmd"], plan)}
+        for entry in commands
+    ]
 
 
 def _resolve_target(asset) -> str:
@@ -975,6 +1106,11 @@ async def _run_nuclei_adhoc_async(
     persists findings to the findings table via _emit_finding().
     """
     start = time.monotonic()
+    # Preflight result lives across the function — initialised None for
+    # bare-IP targets that skip preflight entirely. The evasion block
+    # below reads ``pre`` to decide CDN-auto.
+    pre = None
+    adhoc_evasion_cfg = EvasionConfig.from_env()
 
     # Preflight — HTTP probe only in the adhoc path. Bare IP/hostname
     # targets here lack the open_ports context the asset path has, so
@@ -998,10 +1134,16 @@ async def _run_nuclei_adhoc_async(
                 "error": f"target unreachable ({pre.reason}): {pre.detail}",
                 "preflight": pre.to_dict(),
             }
-        if pre.cdn and NUCLEI_SKIP_CDN_TARGETS:
-            # Edge throttling drops effective rps to ~5/s; 10k templates
-            # can't complete inside SCAN_TIMEOUT_SECONDS. Skip the run
-            # rather than producing a misleading "timeout" row.
+        # CDN short-circuit. Falls through to the evasion-augmented run
+        # when a proxy pool is configured (see comment in
+        # _run_nuclei_scan_async — same logic, single source of truth in
+        # the EvasionConfig).
+        cdn_can_be_bypassed = (
+            adhoc_evasion_cfg.enabled
+            and adhoc_evasion_cfg.auto_on_cdn
+            and bool(adhoc_evasion_cfg.proxy_pool)
+        )
+        if pre.cdn and NUCLEI_SKIP_CDN_TARGETS and not cdn_can_be_bypassed:
             logger.info(
                 "nuclei_worker adhoc skipping CDN-fronted target=%s cdn=%s",
                 target, pre.cdn,
@@ -1102,6 +1244,31 @@ async def _run_nuclei_adhoc_async(
                         *base_cmd_tail,
                     ],
                 )
+            )
+
+        # Apply CDN-auto evasion to first attempt only. The adhoc path
+        # doesn't yet support a retry loop (the inline async closures
+        # capture mutable state); rebuilding it for retry support is a
+        # follow-up refactor. CDN-auto on first attempt covers the
+        # majority case where preflight detected an edge and the scan
+        # would otherwise have short-circuited via NUCLEI_SKIP_CDN_TARGETS.
+        adhoc_plan = decide_evasion(
+            config=adhoc_evasion_cfg,
+            attempt=0,
+            preflight_cdn=(pre.cdn if pre is not None else None),
+            prior_status=None,
+            plan_flags=(scan_plan or {}).get("plan", {}).get("flags") if scan_plan else None,
+            target_host=_target_hostname(target),
+        )
+        if adhoc_plan is not None:
+            commands = [
+                (label, apply_to_nuclei_cmd(cmd, adhoc_plan))
+                for label, cmd in commands
+            ]
+            logger.info(
+                "adhoc target %s running with evasion=%s proxy=%s",
+                target, adhoc_plan.label,
+                "yes" if adhoc_plan.proxy_url else "no",
             )
 
         findings_emitted = 0
@@ -1272,6 +1439,8 @@ async def _run_nuclei_adhoc_async(
             "requests_sent": nuclei_stats.get("requests_sent", 0),
             "duration_seconds": round(time.monotonic() - start, 2),
             "status": status,
+            "evasion_used": adhoc_plan is not None,
+            "evasion_label": adhoc_plan.label if adhoc_plan is not None else None,
             "findings": findings,
             "asset_id": str(asset_id) if asset_id else None,
             "stages_run": stages_run,

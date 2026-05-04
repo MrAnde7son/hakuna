@@ -98,7 +98,9 @@ def _detect_cdn_from_headers(headers) -> Optional[str]:
 
 
 def probe_http(
-    url: str, timeout: float = DEFAULT_PREFLIGHT_TIMEOUT,
+    url: str,
+    timeout: float = DEFAULT_PREFLIGHT_TIMEOUT,
+    proxy: Optional[str] = None,
 ) -> PreflightResult:
     """Probe an HTTP(S) URL for liveness.
 
@@ -106,6 +108,12 @@ def probe_http(
     (common on apps that only route HEAD through some paths). Any
     response — including 4xx / 5xx — marks the target reachable; the
     specialists can work with a server that refuses auth or errors out.
+
+    ``proxy`` routes the probe through a forward proxy (http/https/socks5
+    URL). Used by the evasion retry path: when a first preflight gets
+    blocked by an edge that filters by source IP, a re-probe through a
+    rotating proxy can confirm the target is actually live before we
+    spend the per-asset budget on a doomed nuclei run.
 
     Unreachable classifications:
       - ``dns_fail``         — hostname did not resolve
@@ -129,8 +137,11 @@ def probe_http(
 
     # Issue HEAD; on 405/501 retry once with GET. One httpx client so
     # keep-alive covers both calls.
+    client_kwargs: dict = dict(verify=False, follow_redirects=False, timeout=timeout)
+    if proxy:
+        client_kwargs["proxy"] = proxy
     try:
-        with httpx.Client(verify=False, follow_redirects=False, timeout=timeout) as client:
+        with httpx.Client(**client_kwargs) as client:
             resp = client.request("HEAD", url)
             if resp.status_code in (405, 501):
                 resp = client.request("GET", url)

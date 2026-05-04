@@ -332,6 +332,9 @@ const ASSET_FILTER_SCHEMA = {
   source: { default: '' },
   minSources: { default: '' },
   credentialed: { default: null, type: 'boolean' },
+  hasPort: { default: '' },
+  tech: { default: '' },
+  dnsRecordType: { default: '' },
   sort: { default: 'risk_score' },
   order: { default: 'desc' },
   page: { default: 1, type: 'number' },
@@ -473,7 +476,7 @@ export default function AssetInventory() {
     }
   }
 
-  const activeFilterCount = ['search', 'env', 'criticality', 'assetType', 'minRisk', 'maxRisk', 'minCritical', 'minHigh', 'serverRole', 'source', 'minSources']
+  const activeFilterCount = ['search', 'env', 'criticality', 'assetType', 'minRisk', 'maxRisk', 'minCritical', 'minHigh', 'serverRole', 'source', 'minSources', 'hasPort', 'tech', 'dnsRecordType']
     .filter(k => filters[k]).length + (filters.credentialed !== null ? 1 : 0)
 
   const load = () => {
@@ -493,6 +496,9 @@ export default function AssetInventory() {
       source: filters.source || undefined,
       min_sources: filters.minSources || undefined,
       credentialed: filters.credentialed !== null ? filters.credentialed : undefined,
+      has_port: filters.hasPort || undefined,
+      tech: filters.tech || undefined,
+      dns_record_type: filters.dnsRecordType || undefined,
       first_seen_after: firstSeenAfter || undefined,
       sort_by: sortBy,
       order: sortOrder,
@@ -938,6 +944,72 @@ export default function AssetInventory() {
         return <span style={{ fontSize: 11, fontWeight: 600, color: colors[v] || 'var(--text-secondary)', textTransform: 'uppercase' }}>{v}</span>
       },
     },
+    // EASM enrichment surfaced as asset properties (replaces the legacy
+    // EASM-PORT-* / EASM-TECH-* / EASM-DNS-RECORDS Info findings).
+    {
+      key: 'open_ports', label: t('assets.openPorts', 'Open Ports'),
+      render: (_, row) => {
+        const ports = row.easm_data?.open_ports
+        if (!ports?.length) return <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
+        const shown = ports.slice(0, 6)
+        const more = ports.length - shown.length
+        return (
+          <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap' }}>
+            {shown.map(p => (
+              <span key={p} style={{
+                fontSize: 10, fontWeight: 600, padding: '1px 5px', borderRadius: 4,
+                background: 'var(--surface-2)', color: 'var(--text-secondary)',
+                border: '1px solid var(--border)',
+              }}>{p}</span>
+            ))}
+            {more > 0 && <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>+{more}</span>}
+          </div>
+        )
+      },
+    },
+    {
+      key: 'tech_stack', label: t('assets.techStack', 'Tech Stack'),
+      render: (_, row) => {
+        const tech = row.easm_data?.tech_stack
+        if (!tech?.length) return <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
+        const shown = tech.slice(0, 4)
+        const more = tech.length - shown.length
+        return (
+          <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap' }}>
+            {shown.map(t => (
+              <span key={t} style={{
+                fontSize: 10, padding: '1px 5px', borderRadius: 4,
+                background: '#8b5cf622', color: '#8b5cf6', border: '1px solid #8b5cf644',
+              }}>{t}</span>
+            ))}
+            {more > 0 && <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>+{more}</span>}
+          </div>
+        )
+      },
+    },
+    {
+      key: 'dns_records', label: t('assets.dnsRecords', 'DNS Records'),
+      render: (_, row) => {
+        const dns = row.easm_data?.dns_records
+        if (!dns || (typeof dns === 'object' && !Object.keys(dns).length)) {
+          return <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
+        }
+        const types = Object.keys(dns)
+        return (
+          <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap' }}>
+            {types.map(rt => (
+              <span key={rt} style={{
+                fontSize: 10, fontWeight: 600, padding: '1px 5px', borderRadius: 4,
+                background: 'var(--surface-2)', color: 'var(--text-secondary)',
+                border: '1px solid var(--border)',
+              }} title={Array.isArray(dns[rt]) ? dns[rt].join(', ') : String(dns[rt])}>
+                {rt}
+              </span>
+            ))}
+          </div>
+        )
+      },
+    },
     // Dynamic user-defined custom field columns
     ...customFieldDefs.map(def => ({
       key: `custom_fields.${def.key}`,
@@ -961,7 +1033,10 @@ export default function AssetInventory() {
     },
   ]
 
-  const defaultHidden = new Set(['is_internet_facing', 'scan_start', 'biz_revenue_impact', 'sbom_risk', 'source_systems'])
+  const defaultHidden = new Set([
+    'is_internet_facing', 'scan_start', 'biz_revenue_impact', 'sbom_risk', 'source_systems',
+    'open_ports', 'tech_stack', 'dns_records',
+  ])
   const visibleColumns = allColumns.filter(c => {
     if (c.key === '_select' || c.key === '_actions') return true
     if (c._isCustomField) {
@@ -1181,6 +1256,41 @@ export default function AssetInventory() {
               style={{
                 width: 60, background: 'var(--bg-card)', border: '1px solid var(--border)',
                 color: 'var(--text-primary)', borderRadius: 6, padding: '7px 8px', fontSize: 13, outline: 'none',
+              }}
+            />
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{t('assets.easm', 'EASM')}</span>
+            <input
+              type="number" min={0} max={65535}
+              value={filters.hasPort}
+              onChange={e => setFilter('hasPort', e.target.value)}
+              placeholder={t('assets.port', 'port')}
+              style={{
+                width: 64, background: 'var(--bg-card)', border: '1px solid var(--border)',
+                color: 'var(--text-primary)', borderRadius: 6, padding: '7px 8px', fontSize: 13, outline: 'none',
+              }}
+            />
+            <input
+              type="text"
+              value={filters.tech}
+              onChange={e => setFilter('tech', e.target.value)}
+              placeholder={t('assets.tech', 'tech')}
+              style={{
+                width: 90, background: 'var(--bg-card)', border: '1px solid var(--border)',
+                color: 'var(--text-primary)', borderRadius: 6, padding: '7px 8px', fontSize: 13, outline: 'none',
+              }}
+            />
+            <input
+              type="text"
+              value={filters.dnsRecordType}
+              onChange={e => setFilter('dnsRecordType', e.target.value.toUpperCase())}
+              placeholder={t('assets.dns', 'DNS')}
+              style={{
+                width: 64, background: 'var(--bg-card)', border: '1px solid var(--border)',
+                color: 'var(--text-primary)', borderRadius: 6, padding: '7px 8px', fontSize: 13, outline: 'none',
+                textTransform: 'uppercase',
               }}
             />
           </div>

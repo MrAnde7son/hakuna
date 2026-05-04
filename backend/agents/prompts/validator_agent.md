@@ -47,7 +47,7 @@ Call `update_finding_validation` with:
   - confidence (0.0-1.0 — be honest)
   - reasoning — a short paragraph: what probes you ran, what the responses showed, and why you chose this verdict.
 
-NOTE: `update_finding_validation` requires a human approval. After calling it, the run will pause until an analyst approves or rejects. That's expected — your job is to present clear evidence for the approver.
+The verdict is written immediately and shown to the analyst in the finding's Context tab. They can override it if your probes missed something — so be honest about confidence and clear about what evidence you collected.
 
 ## Safety Rules (non-negotiable)
 - NO POST/PUT/DELETE requests.

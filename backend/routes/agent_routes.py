@@ -1223,14 +1223,14 @@ AGENT_TEMPLATES = [
     {
         "id": "validator_agent",
         "name": "Vulnerability Validator",
-        "description": "Autonomous validator for high/critical findings. Runs safe probes to confirm or refute exploitability, then requests a human approval before writing the verdict.",
+        "description": "Autonomous validator for high/critical findings. Runs safe probes to confirm or refute exploitability, then writes a verdict the analyst can review or override.",
         "icon": "shield-check",
         "system_prompt": ENHANCED_PROMPTS["validator_agent"],
         "tools": [
             # Probes
             "probe_url_status", "probe_tcp_connect",
             "fetch_response_headers", "check_response_body",
-            # Verdict writer (HITL-gated)
+            # Verdict writer
             "update_finding_validation",
             # Read-only context
             "get_finding_detail", "get_asset_profile",
@@ -1242,7 +1242,7 @@ AGENT_TEMPLATES = [
         "guardrails": {
             "max_steps": 10,
             "read_only": False,  # must write the verdict
-            "autonomy_level": "conservative",  # HITL required on update_finding_validation
+            "autonomy_level": "conservative",
         },
         "suggested_input": "Validate finding {finding_id} — determine whether it's truly exploitable and record your verdict.",
     },

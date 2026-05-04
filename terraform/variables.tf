@@ -99,6 +99,26 @@ variable "scanner_machine_type" {
   default     = "e2-standard-4"
 }
 
+# WAF / rate-limit evasion for the VM scanner. The proxy pool is the
+# highest-leverage piece — without it the feature still rotates UAs
+# and forges X-Forwarded-* headers, but those alone don't bypass an
+# IP-based rate limit. Set via terraform.tfvars (gitignored) or
+# `-var "vm_scanner_proxy_pool=..."` at apply time. The two boolean
+# triggers exist so ops can quickly disable the auto-fire branches
+# without redeploying code.
+variable "vm_scanner_proxy_pool" {
+  type        = string
+  description = "Comma-separated list of forward-proxy URLs (http://user:pw@host:port or socks5://host:port) the VM scanner rotates through when a CDN/WAF is detected or after a blocked/timeout retry. Empty disables proxy rotation; UA + forwarded-header tricks still fire."
+  default     = ""
+  sensitive   = true
+}
+
+variable "vm_scanner_evasion_enabled" {
+  type        = string
+  description = "Master kill switch for VM scanner evasion. Set to \"false\" to fall back to the pre-evasion shape (CDN short-circuit, no retry)."
+  default     = "true"
+}
+
 # ── Optional OSINT API keys (scanner degrades gracefully without them) ─────────
 
 variable "shodan_api_key" {

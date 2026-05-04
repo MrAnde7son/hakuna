@@ -123,7 +123,7 @@ def get_validation_status(
                     "status": r.status,
                     "created_at": iso_utc(r.created_at),
                     "steps": len(r.trace or []),
-                    "output": (r.output or "")[:500] if r.output else None,
+                    "output": (r.output or "")[:4000] if r.output else None,
                 }
                 for r in runs
             ]

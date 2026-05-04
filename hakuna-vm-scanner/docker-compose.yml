@@ -61,6 +61,18 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
       GROQ_API_KEY: ${GROQ_API_KEY:-}
+      # WAF / rate-limit evasion (see scanner/vm/evasion.py).
+      # HAKUNA_PROXY_POOL is a comma-separated list of proxy URLs
+      # (http://user:pw@host:port or socks5://host:port). When empty the
+      # feature still applies UA + X-Forwarded-* header tricks on CDN-
+      # detected targets and on retry after a stall, but proxy rotation —
+      # the highest-leverage piece — only kicks in once a pool is provided
+      # via the .env file or a shell override. ENABLED defaults true so a
+      # populated pool is the only knob ops needs to flip.
+      HAKUNA_EVASION_ENABLED: ${HAKUNA_EVASION_ENABLED:-true}
+      HAKUNA_PROXY_POOL: ${HAKUNA_PROXY_POOL:-}
+      HAKUNA_EVASION_AUTO_ON_CDN: ${HAKUNA_EVASION_AUTO_ON_CDN:-true}
+      HAKUNA_EVASION_AUTO_ON_RETRY: ${HAKUNA_EVASION_AUTO_ON_RETRY:-true}
     volumes:
       - ./scanner:/app/scanner
       - ./templates:/app/templates

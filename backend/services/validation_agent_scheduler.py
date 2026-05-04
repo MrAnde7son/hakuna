@@ -3,16 +3,15 @@
 Periodically finds critical/high findings that the static LLM validator
 (#11) flagged as `needs_review` and kicks off a validator-agent run for
 each one. The validator agent probes the target safely, collects evidence,
-and requests a human approval before writing a verdict.
+and writes a verdict to the finding's `llm_validation` block; analysts
+can review and override the verdict from the finding's Context tab.
 
 Scheduling is best-effort: at most `max_per_cycle` agent runs are launched
 per tick (default 5) so one org's backlog doesn't monopolize the worker.
 Each agent run is dispatched via services.job_manager so the scheduler
 doesn't block.
 
-The scheduler's per-org validator Agent is created lazily on first use —
-it has guardrails `autonomy_level=conservative` so the verdict writer
-tool (`update_finding_validation`) hits the HITL approval path.
+The scheduler's per-org validator Agent is created lazily on first use.
 """
 
 from __future__ import annotations

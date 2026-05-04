@@ -1059,74 +1059,7 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
         existing_plugins.add(f.plugin_id)
 
     findings_to_add = []
-
-    # ── Tech stack: one finding per technology ─────────────────────
-    for tech_name in (ea.get("tech_stack") or []):
-        pid = f"EASM-TECH-{tech_name.upper().replace(' ', '-')}"
-        if pid in existing_plugins:
-            continue
-        # Check for versioned tech — old versions get higher priority
-        tech_priority = 1.0
-        effort = "quick_win"
-        if ":" in tech_name:
-            tech_priority = 2.5  # versioned tech = worth reviewing
-            effort = "medium"
-        findings_to_add.append(Finding(
-            scan_id=scan_id, asset_id=asset.id,
-            source_type="easm", source_vuln_id=pid,
-            plugin_id=pid,
-            plugin_name=f"{tech_name} Detected",
-            severity=0, severity_label="Info", risk_factor="None",
-            priority_score=tech_priority, effort_level=effort,
-            owner_suggestion="SecOps",
-            synopsis=f"The web technology '{tech_name}' was detected on {hostname}.",
-            description=f"External attack surface scanning identified that {hostname} is running {tech_name}. "
-                        f"This information was gathered via HTTP response analysis.",
-            solution="No action required. Review if this technology should be publicly exposed.",
-            plugin_output=f"Detected technology: {tech_name}\nHost: {hostname}",
-            first_seen=now, last_seen=now,
-            **_easm_metadata_kwargs(pid),
-        ))
-
-    # ── Open ports: one finding per port ──────────────────────────
     services = ea.get("services") or {}
-    for port in (ea.get("open_ports") or []):
-        pid = f"EASM-PORT-{port}"
-        if pid in existing_plugins:
-            # Update last_seen on existing port finding
-            db.query(Finding).filter(
-                Finding.scan_id == scan_id,
-                Finding.asset_id == asset.id,
-                Finding.plugin_id == pid,
-            ).update({"last_seen": now})
-            continue
-        svc = services.get(str(port), {})
-        svc_name = svc.get("name", "unknown") if svc else "unknown"
-        svc_detail = f"{svc.get('product', '')} {svc.get('version', '')}".strip() if svc else ""
-        output_lines = [f"Port: {port}/tcp", f"State: open", f"Service: {svc_name}"]
-        if svc_detail:
-            output_lines.append(f"Product: {svc_detail}")
-        # Non-standard ports get higher priority
-        standard_ports = {80, 443, 22, 25, 53}
-        port_int = int(port) if isinstance(port, str) else port
-        port_priority = 2.0 if port_int not in standard_ports else 1.0
-        findings_to_add.append(Finding(
-            scan_id=scan_id, asset_id=asset.id,
-            source_type="easm", source_vuln_id=pid,
-            plugin_id=pid,
-            plugin_name=f"Open Port: {port}/tcp ({svc_name})",
-            severity=0, severity_label="Info", risk_factor="None",
-            priority_score=port_priority, effort_level="quick_win",
-            owner_suggestion="IT",
-            port=str(port), protocol="tcp",
-            synopsis=f"Port {port}/tcp is open on {hostname}.",
-            description=f"External port scanning identified that {hostname} has port {port}/tcp open "
-                        f"with service '{svc_name}'. This port is reachable from the internet.",
-            solution="Review if this port needs to be publicly accessible. Close unnecessary ports.",
-            plugin_output="\n".join(output_lines),
-            first_seen=now, last_seen=now,
-            **_easm_metadata_kwargs(pid),
-        ))
 
     # ── Exposed database ports ────────────────────────────────────
     # Flag the classic "internet-facing database" anti-pattern. open_ports is
@@ -1694,33 +1627,6 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
                 "last_seen": now,
                 "plugin_output": f"URL: {http_url}\nStatus: {http_status}\nTitle: {http_title}",
             })
-
-    # ── DNS records ───────────────────────────────────────────────
-    dns = ea.get("dns_records") or {}
-    if dns:
-        pid = "EASM-DNS-RECORDS"
-        if pid not in existing_plugins:
-            output_lines = [f"Host: {hostname}"]
-            for rtype, values in dns.items():
-                if isinstance(values, list):
-                    for v in values:
-                        output_lines.append(f"  {rtype}: {v}")
-                else:
-                    output_lines.append(f"  {rtype}: {values}")
-            findings_to_add.append(Finding(
-                scan_id=scan_id, asset_id=asset.id,
-                source_type="easm", source_vuln_id=pid,
-                plugin_id=pid,
-                plugin_name="DNS Records",
-                severity=0, severity_label="Info", risk_factor="None",
-                priority_score=0.5, effort_level="quick_win", owner_suggestion="IT",
-                synopsis=f"DNS records for {hostname}.",
-                description=f"External DNS resolution for {hostname} returned the following records.",
-                solution="No action required. Review DNS records for accuracy.",
-                plugin_output="\n".join(output_lines),
-                first_seen=now, last_seen=now,
-                **_easm_metadata_kwargs(pid),
-            ))
 
     # ── Pending upstream detections ───────────────────────────────
     # These plugin_ids are registered in services.easm_taxonomy so compliance

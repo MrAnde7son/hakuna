@@ -1,6 +1,7 @@
 """
 Asset endpoints — CRUD, relationships, graph, risk breakdown, sources.
 """
+import re
 from typing import Optional, List
 from datetime import datetime
 
@@ -16,6 +17,7 @@ import core.risk_config as risk_engine
 import services.dedup as dedup_engine
 import services.tags as tag_engine
 from services.asset_classifier import _is_private_ip
+from services.asset_properties import serialize_schema
 from models.models import (
     Asset, Finding, Scan, AssetRelationship, AssetObservation, FindingObservation,
     InventoryComputer, InventoryService, InventoryDatabaseInstance,
@@ -366,6 +368,9 @@ def list_assets(
     expand_children: bool = False,
     asset_type: Optional[str] = None,
     credentialed: Optional[bool] = None,
+    has_port: Optional[int] = None,
+    tech: Optional[str] = None,
+    dns_record_type: Optional[str] = None,
     sort_by: str = "risk_score",
     order: str = "desc",
     page: int = 1,
@@ -432,6 +437,21 @@ def list_assets(
         q = q.filter(cast(Asset.source_systems, Text).ilike(f'%"{source}"%'))
     if min_sources is not None:
         q = q.filter(func.json_array_length(Asset.source_systems) >= min_sources)
+    if has_port is not None:
+        # \b{port}\b inside the open_ports array — avoids 80 matching 8080.
+        q = q.filter(cast(Asset.easm_data, Text).op("~")(
+            rf'"open_ports"\s*:\s*\[[^\]]*\y{has_port}\y[^\]]*\]'
+        ))
+    if tech:
+        tech_re = re.escape(tech)
+        q = q.filter(cast(Asset.easm_data, Text).op("~*")(
+            rf'"tech_stack"\s*:\s*\[[^\]]*{tech_re}[^\]]*\]'
+        ))
+    if dns_record_type:
+        dns_re = re.escape(dns_record_type)
+        q = q.filter(cast(Asset.easm_data, Text).op("~*")(
+            rf'"dns_records"\s*:\s*\{{[^}}]*"{dns_re}"\s*:'
+        ))
     # Custom field filters: ?cf_<key>=<value>
     q = _apply_custom_field_filters(q, Asset, request)
     if tags:
@@ -486,6 +506,20 @@ def list_asset_types(
     rows = q.filter(Asset.asset_type.isnot(None)).distinct().all()
     types = sorted({r[0] for r in rows if r[0]})
     return {"types": types}
+
+
+@router.get("/api/assets/schema")
+def get_asset_schema(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    """Return the property registry that drives column picker, filters, and rule builder.
+
+    Static `Asset` columns + per-org `CustomFieldDefinition` entries are
+    merged into a single list, grouped, with operator hints per type.
+    """
+    return serialize_schema(db, list(org_ids or []))
 
 
 @router.get("/api/assets/{asset_id}")

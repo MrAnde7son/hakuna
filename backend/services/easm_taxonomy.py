@@ -9,9 +9,9 @@ services/easm.py:_generate_easm_findings so:
   - Adding a new EASM finding type requires touching one table, not
     threading metadata through 600 lines of inline emission code.
 
-Wildcard plugin IDs (e.g. EASM-PORT-443, EASM-TECH-NGINX, EASM-CVE-*)
-share the same metadata regardless of the discriminator suffix; the
-wildcard prefix is registered once.
+Wildcard plugin IDs (e.g. EASM-CVE-*, EASM-EXPOSED-DB-*) share the same
+metadata regardless of the discriminator suffix; the wildcard prefix is
+registered once.
 
 Stub entries for EASM-SUBDOMAIN-TAKEOVER, EASM-EXPOSED-ADMIN-PANEL,
 EASM-DIRECTORY-LISTING, and EASM-LEAKED-CREDENTIAL are present so
@@ -96,11 +96,6 @@ _EXACT: dict[str, EasmPluginMetadata] = {
         "cwe_ids": [],
         "references": [],
     },
-    "EASM-DNS-RECORDS": {
-        "family": "EASM: DNS",
-        "cwe_ids": [],
-        "references": [],
-    },
     # ── Stubs for emissions pending in hakuna-scanner ────────────
     "EASM-SUBDOMAIN-TAKEOVER": {
         "family": "EASM: Takeover",
@@ -138,16 +133,6 @@ _EXACT: dict[str, EasmPluginMetadata] = {
 # Prefix-match plugin IDs (everything after the prefix is a discriminator).
 # Order does not matter — these are mutually exclusive prefixes.
 _PREFIX: list[tuple[str, EasmPluginMetadata]] = [
-    ("EASM-TECH-", {
-        "family": "EASM: Web Technology",
-        "cwe_ids": [],
-        "references": [],
-    }),
-    ("EASM-PORT-", {
-        "family": "EASM: Port Scan",
-        "cwe_ids": [],
-        "references": [],
-    }),
     ("EASM-EXPOSED-DB-", {
         "family": "EASM: Exposed Service",
         "cwe_ids": ["CWE-284", "CWE-668"],

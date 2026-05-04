@@ -5673,9 +5673,9 @@ def check_response_body(db: Session, params: dict):
     "update_finding_validation",
     "Record a validator agent's verdict on a finding. Writes ctx_reachability, "
     "ctx_exploitability, and a full llm_validation JSON block with reasoning. "
-    "REQUIRES HITL approval — a human must confirm the verdict before it takes "
-    "effect. WHEN TO CALL: after you've run probes and reached a confident "
-    "conclusion about whether a finding is truly exploitable.",
+    "WHEN TO CALL: after you've run probes and reached a confident "
+    "conclusion about whether a finding is truly exploitable. The analyst can "
+    "review and override these fields from the finding's Context tab.",
     {
         "finding_id": {"type": "integer", "description": "Finding ID to update."},
         "verdict": {

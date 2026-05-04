@@ -5,7 +5,7 @@ import {
   ArrowLeft, Server, Bug, Database, Shield, Globe, Network, Users,
   ChevronDown, ChevronRight, AlertTriangle, Activity, Clock,
   ExternalLink, Package, Lock, Layers, Copy, Check,
-  Cloud, HardDrive, Router, Container, Siren
+  Cloud, HardDrive, Router, Container, Siren,
 } from 'lucide-react'
 import {
   getAsset, getAssetRiskBreakdown, getAssetSources, getFindings, getBlastRadius,
@@ -230,6 +230,94 @@ function TypeSpecificAttributesSection({ asset }) {
 }
 
 
+function EasmEnrichmentSection({ asset }) {
+  const { t } = useTranslation()
+  const ea = asset?.easm_data
+  if (!ea || typeof ea !== 'object') return null
+
+  const ports = Array.isArray(ea.open_ports) ? ea.open_ports : []
+  const services = ea.services && typeof ea.services === 'object' ? ea.services : {}
+  const tech = Array.isArray(ea.tech_stack) ? ea.tech_stack : []
+  const dns = ea.dns_records && typeof ea.dns_records === 'object' ? ea.dns_records : {}
+  const dnsTypes = Object.keys(dns)
+  const cdn = ea.cdn_provider
+  const waf = ea.waf
+  const httpStatus = ea.http_status
+  const httpTitle = ea.http_title
+  const httpUrl = ea.http_url
+
+  const hasContent = ports.length || tech.length || dnsTypes.length || cdn || waf || httpStatus || httpUrl
+  if (!hasContent) return null
+
+  const portChip = (p) => {
+    const svc = services[String(p)] || services[p] || {}
+    const label = svc.name ? `${p} (${svc.name})` : String(p)
+    return (
+      <span key={p} title={svc.product || svc.version ? `${svc.product || ''} ${svc.version || ''}`.trim() : undefined} style={{
+        display: 'inline-block', padding: '2px 7px', borderRadius: 4, fontSize: 11, fontWeight: 600,
+        background: 'var(--surface-2)', color: 'var(--text-secondary)', border: '1px solid var(--border)',
+      }}>{label}</span>
+    )
+  }
+
+  return (
+    <Section title={t('assetDetail.easmEnrichment', 'External Attack Surface')} icon={Globe}>
+      {ports.length > 0 && (
+        <KeyVal label={t('assets.openPorts', 'Open Ports')}>
+          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>{ports.map(portChip)}</div>
+        </KeyVal>
+      )}
+      {tech.length > 0 && (
+        <KeyVal label={t('assets.techStack', 'Tech Stack')}>
+          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+            {tech.map(t => (
+              <span key={t} style={{
+                display: 'inline-block', padding: '2px 7px', borderRadius: 4, fontSize: 11,
+                background: '#8b5cf622', color: '#8b5cf6', border: '1px solid #8b5cf644',
+              }}>{t}</span>
+            ))}
+          </div>
+        </KeyVal>
+      )}
+      {dnsTypes.length > 0 && (
+        <KeyVal label={t('assets.dnsRecords', 'DNS Records')}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {dnsTypes.map(rt => {
+              const values = Array.isArray(dns[rt]) ? dns[rt] : [dns[rt]]
+              return (
+                <div key={rt} style={{ display: 'flex', gap: 6, alignItems: 'flex-start' }}>
+                  <span style={{
+                    display: 'inline-block', minWidth: 36, padding: '1px 6px', borderRadius: 4,
+                    fontSize: 10, fontWeight: 700, textAlign: 'center',
+                    background: 'var(--surface-2)', color: 'var(--text-secondary)',
+                    border: '1px solid var(--border)',
+                  }}>{rt}</span>
+                  <span style={{ fontSize: 12, color: 'var(--text-secondary)', wordBreak: 'break-all' }}>
+                    {values.join(', ')}
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+        </KeyVal>
+      )}
+      {httpUrl && (
+        <KeyVal label="HTTP">
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <a href={httpUrl} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: 'var(--accent)' }}>
+              {httpUrl} {httpStatus ? <span style={{ color: 'var(--text-muted)' }}>({httpStatus})</span> : null}
+            </a>
+            {httpTitle && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{httpTitle}</span>}
+          </div>
+        </KeyVal>
+      )}
+      {cdn && <KeyVal label="CDN">{cdn}</KeyVal>}
+      {waf && <KeyVal label="WAF">{waf}</KeyVal>}
+    </Section>
+  )
+}
+
+
 // ─── Overview Tab ─────────────────────────────────────────
 function OverviewTab({ asset, blastRadius, onReload, riskComponents, assetRiskWeights }) {
   const { t } = useTranslation()
@@ -297,6 +385,8 @@ function OverviewTab({ asset, blastRadius, onReload, riskComponents, assetRiskWe
           <KeyVal label={t('assetDetail.credentialedScan')}>{asset.is_credentialed ? 'Yes' : 'No'}</KeyVal>
         )}
       </Section>
+
+      <EasmEnrichmentSection asset={asset} />
 
       {/* Type-specific attributes (asset_identity + asset_attributes).
           Renders generically for any asset_type — including customer-defined

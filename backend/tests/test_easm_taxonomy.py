@@ -35,14 +35,6 @@ class TestMetadataFor:
         assert "CWE-295" in m["cwe_ids"]
         assert m["references"]
 
-    def test_prefix_match_tech(self):
-        m = metadata_for("EASM-TECH-NGINX")
-        assert m["family"] == "EASM: Web Technology"
-        assert m["cwe_ids"] == []
-
-    def test_prefix_match_port(self):
-        assert metadata_for("EASM-PORT-443")["family"] == "EASM: Port Scan"
-
     def test_prefix_match_exposed_db(self):
         m = metadata_for("EASM-EXPOSED-DB-3306")
         assert m["family"] == "EASM: Exposed Service"
@@ -188,19 +180,6 @@ def _make_scan_and_asset(db, *, is_internet_facing=True):
 
 
 class TestGenerateEasmFindingsTaxonomy:
-    def test_tech_finding_carries_family_and_ctx(self, db_session):
-        scan, asset = _make_scan_and_asset(db_session)
-        ea = {"hostname": "external.example.com", "tech_stack": ["nginx"]}
-        _generate_easm_findings(db_session, scan.id, asset, ea)
-
-        f = db_session.query(Finding).filter(
-            Finding.plugin_id == "EASM-TECH-NGINX"
-        ).one()
-        assert f.plugin_family == "EASM: Web Technology"
-        assert f.cwe_ids == []
-        assert f.ctx_reachability == "internet_facing"
-        assert f.ctx_accessibility == "public"
-
     def test_exposed_db_carries_cwes(self, db_session):
         scan, asset = _make_scan_and_asset(db_session)
         ea = {
@@ -283,10 +262,14 @@ class TestGenerateEasmFindingsTaxonomy:
         # EASM by definition treats every asset as internet-facing — the
         # registry-level helper unconditionally seeds internet_facing/public.
         # Asset.is_internet_facing flag isn't read by the helper.
-        ea = {"hostname": "external.example.com", "tech_stack": ["nginx"]}
+        ea = {
+            "hostname": "external.example.com",
+            "open_ports": [3306],
+            "services": {"3306": {"name": "mysql", "product": "MySQL"}},
+        }
         _generate_easm_findings(db_session, scan.id, asset, ea)
         f = db_session.query(Finding).filter(
-            Finding.plugin_id == "EASM-TECH-NGINX"
+            Finding.plugin_id == "EASM-EXPOSED-DB-3306"
         ).one()
         assert f.ctx_reachability == "internet_facing"
         assert f.ctx_accessibility == "public"

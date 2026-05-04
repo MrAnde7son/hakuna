@@ -217,6 +217,13 @@ resource "google_compute_instance" "scanners" {
           # from env + integration_configs. On GCE the scanner SA's ADC
           # satisfies auth; only the project id has to be passed in.
           GOOGLE_CLOUD_PROJECT: "$${PROJECT_ID}"
+          # WAF / rate-limit evasion — see scanner/vm/evasion.py. The
+          # proxy pool is the only piece with a real cost (paid bandwidth,
+          # provider rate caps); the header-only branch is free. With pool
+          # empty, evasion still applies UA + forwarded-header tricks on
+          # CDN-detected targets and on retry after a stall.
+          HAKUNA_EVASION_ENABLED: "${var.vm_scanner_evasion_enabled}"
+          HAKUNA_PROXY_POOL: "${var.vm_scanner_proxy_pool}"
         depends_on:
           cloud-sql-proxy:
             condition: service_healthy
