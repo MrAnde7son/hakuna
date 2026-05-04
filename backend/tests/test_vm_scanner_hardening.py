@@ -125,6 +125,29 @@ class TestClassifyNucleiPluginFamily:
             {"template_id": "opaque", "tags": []}
         ) == "Nuclei"
 
+    def test_vpn_appliance_curated_path(self):
+        # Curated templates under custom/vpn-appliance/ must classify into
+        # the VPN Appliance family so they pick up the family weight.
+        assert _classify_nuclei_plugin_family(
+            {"template_id": "custom/vpn-appliance/ivanti-cs-cve-2024-21887"}
+        ) == "VPN Appliance"
+
+    def test_vpn_appliance_tag_wins_over_cve_path(self):
+        # A public Nuclei template like http/cves/2024/CVE-2024-21887 would
+        # otherwise match "cves/" and become generic CVE — the vpn-appliance
+        # tag pre-pass exists to prevent that loss of context.
+        assert _classify_nuclei_plugin_family(
+            {
+                "template_id": "http/cves/2024/CVE-2024-21887",
+                "tags": ["vpn-appliance", "ivanti", "cve", "rce"],
+            }
+        ) == "VPN Appliance"
+
+    def test_vpn_appliance_tag_in_nested_path(self):
+        assert _classify_nuclei_plugin_family(
+            {"template_id": "scanner/custom/vpn-appliance/fortios-cve-2024-21762.yaml"}
+        ) == "VPN Appliance"
+
 
 # ─── Context seeding ───────────────────────────────────────────
 

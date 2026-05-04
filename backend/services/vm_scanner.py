@@ -1199,6 +1199,10 @@ _CWE_RE = re.compile(r"CWE-\d+", re.IGNORECASE)
 # prefixes come first so `http/default-logins/*` matches DefaultLogin, not HTTP.
 # Compliance mappings key off these families, so values must stay stable.
 _NUCLEI_FAMILY_RULES: list[tuple[str, str]] = [
+    # Curated remote-access appliance set under custom/vpn-appliance/.
+    # Listed first so a template like custom/vpn-appliance/cves/ivanti-...
+    # routes to "VPN Appliance" rather than the generic "CVE" family.
+    ("/vpn-appliance/", "VPN Appliance"),
     ("cves/", "CVE"),
     ("/default-logins/", "DefaultLogin"),
     ("/misconfiguration/", "Misconfiguration"),
@@ -1216,6 +1220,10 @@ _NUCLEI_FAMILY_RULES: list[tuple[str, str]] = [
 ]
 
 _NUCLEI_TAG_FAMILY_FALLBACKS: dict[str, str] = {
+    # Tag-based fallback so public templates with `tags: vpn-appliance` (or
+    # tags: vpn,...) classify into the VPN Appliance family even when the
+    # template path is opaque. Listed before generic "cve" so it wins.
+    "vpn-appliance": "VPN Appliance",
     "cve": "CVE",
     "default-login": "DefaultLogin",
     "misconfig": "Misconfiguration",
@@ -1264,18 +1272,26 @@ def _classify_nuclei_plugin_family(f: dict) -> str:
     literal string "Nuclei" so legacy consumers don't see NULL.
     """
     template_id = (f.get("template_id") or "").lower()
+    raw_tags = f.get("tags") or []
+    tag_set: set[str] = set()
+    if isinstance(raw_tags, list):
+        tag_set = {t.lower() for t in raw_tags if isinstance(t, str)}
+
+    # VPN/remote-access appliance pre-pass. A public CVE template like
+    # `http/cves/2024/CVE-2024-21887` would otherwise match "cves/" and
+    # collapse into the generic CVE family — losing the family weight that
+    # makes internet-facing VPN findings outrank everything else.
+    if "vpn-appliance" in tag_set:
+        return "VPN Appliance"
+
     for needle, family in _NUCLEI_FAMILY_RULES:
         if needle in template_id or template_id.startswith(needle.lstrip("/")):
             return family
 
-    tags = f.get("tags") or []
-    if isinstance(tags, list):
-        for tag in tags:
-            if not isinstance(tag, str):
-                continue
-            family = _NUCLEI_TAG_FAMILY_FALLBACKS.get(tag.lower())
-            if family:
-                return family
+    for tag in tag_set:
+        family = _NUCLEI_TAG_FAMILY_FALLBACKS.get(tag)
+        if family:
+            return family
 
     return "Nuclei"
 
@@ -1322,6 +1338,43 @@ def _seed_nuclei_context(f: dict, asset: Asset, authenticated: bool) -> dict:
         "ctx_accessibility": accessible,
         "ctx_exploitability": "easily_exploitable",
     }
+
+
+_AGENT_SPECIALIST_FAMILY: dict[str, str] = {
+    "injection": "Agent: Injection",
+    "xss": "Agent: XSS",
+    "ssrf": "Agent: SSRF",
+    "authn": "Agent: AuthN",
+    "authz": "Agent: AuthZ",
+    "csrf": "Agent: CSRF",
+    "files": "Agent: File Inclusion",
+    "upload": "Agent: File Upload",
+    "session": "Agent: Session",
+}
+
+
+def _agent_specialist_family(f: dict) -> str:
+    """Map an agent-worker finding to a per-specialist plugin_family.
+
+    The worker tags every payload with ["agent", <category>] and uses a
+    `agent-<category>-<digest>` template_id, so we read the category from
+    tags first and fall back to the template_id prefix. Unknown categories
+    collapse to bare "Agent" so a new specialist doesn't disappear from
+    family filters before this map is updated.
+    """
+    tags = f.get("tags") or []
+    category = ""
+    for t in tags:
+        if isinstance(t, str) and t and t != "agent":
+            category = t.lower()
+            break
+    if not category:
+        tid = (f.get("template_id") or "").lower()
+        if tid.startswith("agent-"):
+            rest = tid.split("-", 2)
+            if len(rest) >= 2:
+                category = rest[1]
+    return _AGENT_SPECIALIST_FAMILY.get(category, "Agent")
 
 
 def _extract_nuclei_cves(f: dict) -> list[str]:
@@ -1690,7 +1743,7 @@ def _import_nuclei_job_findings(db: Session, scan: Scan, job_result: dict) -> di
         # the template_id string at rule-eval time.
         _finding_type = (f.get("type") or "").lower()
         if _finding_type == "agent-vuln":
-            plugin_family = "Agent"
+            plugin_family = _agent_specialist_family(f)
         elif _finding_type == "api-fuzz":
             plugin_family = "Schemathesis"
         elif _finding_type == "content-discovery":

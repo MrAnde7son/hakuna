@@ -32,6 +32,27 @@
     "rockwellautomation:compactlogix":      ["ethernet-ip", "cip", "rockwell", "plc", "ot"],
     "schneider-electric:modicon":           ["modbus", "plc", "ot"],
 
+    "ivanti:connect_secure":               ["vpn-appliance", "vpn", "ivanti"],
+    "ivanti:policy_secure":                ["vpn-appliance", "vpn", "ivanti"],
+    "pulsesecure:pulse_connect_secure":    ["vpn-appliance", "vpn", "ivanti"],
+    "fortinet:fortios":                    ["vpn-appliance", "vpn", "fortinet", "fortios"],
+    "fortinet:fortigate":                  ["vpn-appliance", "vpn", "fortinet", "fortios"],
+    "fortinet:fortiproxy":                 ["vpn-appliance", "vpn", "fortinet"],
+    "citrix:netscaler_adc":                ["vpn-appliance", "vpn", "citrix", "netscaler"],
+    "citrix:netscaler_gateway":            ["vpn-appliance", "vpn", "citrix", "netscaler"],
+    "citrix:application_delivery_controller": ["vpn-appliance", "vpn", "citrix", "netscaler"],
+    "paloaltonetworks:pan-os":             ["vpn-appliance", "vpn", "paloalto", "globalprotect"],
+    "paloaltonetworks:globalprotect":      ["vpn-appliance", "vpn", "paloalto", "globalprotect"],
+    "cisco:adaptive_security_appliance":   ["vpn-appliance", "vpn", "cisco", "asa"],
+    "cisco:asa":                           ["vpn-appliance", "vpn", "cisco", "asa"],
+    "cisco:firepower_threat_defense":      ["vpn-appliance", "vpn", "cisco", "ftd"],
+    "cisco:anyconnect_secure_mobility_client": ["vpn-appliance", "vpn", "cisco", "anyconnect"],
+    "sonicwall:sonicos":                   ["vpn-appliance", "vpn", "sonicwall"],
+    "sonicwall:sma_100":                   ["vpn-appliance", "vpn", "sonicwall"],
+    "checkpoint:gaia":                     ["vpn-appliance", "vpn", "checkpoint"],
+    "f5:big-ip_access_policy_manager":     ["vpn-appliance", "vpn", "f5"],
+    "f5:big-ip":                           ["vpn-appliance", "vpn", "f5"],
+
     "ollama:ollama":          ["ollama", "llm", "ai", "llm-security", "ai-dos"],
     "qdrant:qdrant":          ["vectordb", "qdrant", "ai"],
     "milvus:milvus":          ["vectordb", "milvus", "ai"],
@@ -97,7 +118,9 @@
   "port_gates": {
     "web": { "ports": [80, 443, 8080, 8443], "tags": ["http", "ssl"] },
     "smb": { "ports": [445],                  "tags": ["smb"] },
-    "db":  { "ports": [3306, 5432, 6379, 27017], "tags": ["db"] }
+    "db":  { "ports": [3306, 5432, 6379, 27017], "tags": ["db"] },
+    "vpn_web":     { "ports": [443, 4433, 4443, 8443, 10443],   "tags": ["vpn-appliance"] },
+    "vpn_ipsec":   { "ports": [500, 4500],                       "tags": ["ipsec"] }
   },
   "spec_gates": {
     "api_fuzz": {

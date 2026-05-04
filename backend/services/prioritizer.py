@@ -42,6 +42,10 @@ PLUGIN_FAMILY_WEIGHTS = {
     "Service detection": 0.7,
     "Settings": 0.5,
     "Policy Compliance": 0.8,
+    # Internet-facing remote-access appliances. Heavily weighted because the
+    # exploit chain is "scan → public PoC → ransomware" with days, not months,
+    # of patch latency. CISA KEV is dominated by this surface.
+    "VPN Appliance": 1.5,
 }
 
 EXPLOIT_MATURITY_MULTIPLIERS = {
@@ -134,6 +138,8 @@ OWNER_MAP = {
     "Policy Compliance": "GRC",
     # VM — vulnerability management team owns findings from the VM scanners they operate
     "Nuclei": "VM",
+    # Networking owns perimeter remote-access appliances
+    "VPN Appliance": "Networking",
     # SecOps — residual hardening / misc security controls
     "RPC": "SecOps",
     "General": "SecOps",

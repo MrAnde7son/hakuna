@@ -64,8 +64,9 @@
       "name": "FortiGate SSL VPN",
       "cpe_vendor": "fortinet",
       "cpe_product": "fortios",
-      "match_status": [200],
-      "body_pattern": "FortiGate|fortigate|/remote/login"
+      "match_status": [200, 302],
+      "body_pattern": "FortiGate|fortigate|/remote/login|sslvpn_login",
+      "version_pattern": "(?:FortiGate|FortiOS)[^0-9]*(?P<version>[0-9]+\\.[0-9]+\\.[0-9]+)"
     },
     {
       "path": "/global-protect/login.esp",
@@ -73,7 +74,8 @@
       "cpe_vendor": "paloaltonetworks",
       "cpe_product": "globalprotect",
       "match_status": [200],
-      "body_pattern": "GlobalProtect|global-protect"
+      "body_pattern": "GlobalProtect|global-protect|panGPHIP",
+      "version_pattern": "PAN-OS (?P<version>[0-9]+\\.[0-9]+(?:\\.[0-9]+)?(?:-h[0-9]+)?)"
     },
     {
       "path": "/dana-na/auth/url_default/welcome.cgi",
@@ -81,7 +83,59 @@
       "cpe_vendor": "ivanti",
       "cpe_product": "connect_secure",
       "match_status": [200, 302],
-      "body_pattern": "welcome\\.cgi|Pulse Secure|Ivanti"
+      "body_pattern": "welcome\\.cgi|Pulse Secure|Ivanti|dana-na",
+      "version_pattern": "(?:Ivanti Connect Secure|Pulse Connect Secure)[^0-9]*(?P<version>[0-9]+\\.[0-9]+(?:\\.[0-9]+)?(?:R[0-9.]+)?)"
+    },
+    {
+      "path": "/logon/LogonPoint/tmindex.html",
+      "name": "Citrix NetScaler Gateway",
+      "cpe_vendor": "citrix",
+      "cpe_product": "netscaler_adc",
+      "match_status": [200, 302],
+      "body_pattern": "_ctxs_AuthRedirect|Citrix Gateway|NetScaler|/logon/LogonPoint/",
+      "version_pattern": "NetScaler[^0-9]*(?P<version>[0-9]+\\.[0-9]+(?:[.-][0-9]+)*)"
+    },
+    {
+      "path": "/vpn/index.html",
+      "name": "Citrix Gateway VPN",
+      "cpe_vendor": "citrix",
+      "cpe_product": "netscaler_gateway",
+      "match_status": [200, 302],
+      "body_pattern": "Citrix Gateway|NetScaler|VPN/login"
+    },
+    {
+      "path": "/+CSCOE+/logon.html",
+      "name": "Cisco ASA / AnyConnect SSL VPN",
+      "cpe_vendor": "cisco",
+      "cpe_product": "adaptive_security_appliance",
+      "match_status": [200, 302],
+      "body_pattern": "\\+CSCOE\\+|\\+webvpn\\+|Cisco AnyConnect|SSL VPN Service",
+      "version_pattern": "(?:Cisco AnyConnect|ASA)[^0-9]*(?P<version>[0-9]+\\.[0-9]+(?:\\.[0-9]+)*)"
+    },
+    {
+      "path": "/cgi-bin/welcome",
+      "name": "SonicWall SMA / NetExtender",
+      "cpe_vendor": "sonicwall",
+      "cpe_product": "sonicos",
+      "match_status": [200, 302],
+      "body_pattern": "SonicWall|NetExtender|sslvpn",
+      "version_pattern": "(?:SonicOS|SonicWall)[^0-9]*(?P<version>[0-9]+\\.[0-9]+(?:\\.[0-9]+)?(?:-[0-9]+)?)"
+    },
+    {
+      "path": "/sslvpn/Login/Login",
+      "name": "Check Point Mobile Access Portal",
+      "cpe_vendor": "checkpoint",
+      "cpe_product": "gaia",
+      "match_status": [200, 302],
+      "body_pattern": "Mobile Access Portal|Check Point|/sslvpn/Login/"
+    },
+    {
+      "path": "/my.policy",
+      "name": "F5 BIG-IP APM",
+      "cpe_vendor": "f5",
+      "cpe_product": "big-ip_access_policy_manager",
+      "match_status": [200, 302],
+      "body_pattern": "BIG-IP|F5 Networks|/my.policy"
     },
     {
       "path": "/manage/",
