@@ -1617,6 +1617,15 @@ export const createCompensatingControl = (controlId, body) => request(
   `/compliance/controls/${controlId}/compensating-controls`,
   { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
 )
+
+export const createCampaignFromControl = (controlId, body = {}) => request(
+  `/compliance/controls/${controlId}/campaign`,
+  { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
+)
+export const createCampaignFromFramework = (slug, body = {}) => request(
+  `/compliance/frameworks/${slug}/campaign`,
+  { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
+)
 export const deleteCompensatingControl = (id) => request(
   `/compliance/compensating-controls/${id}`, { method: 'DELETE' },
 )

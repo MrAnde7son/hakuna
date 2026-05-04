@@ -1534,6 +1534,30 @@ class CampaignFinding(Base):
     finding = relationship("Finding")
 
 
+class CampaignComplianceControl(Base):
+    """Links a campaign to compliance controls it remediates. One campaign can
+    bundle several controls (e.g. an entire HIPAA section); one control may be
+    referenced by multiple campaigns over time. The org_id is denormalised so
+    per-tenant queries don't need a 2-hop join through campaigns.
+    """
+    __tablename__ = "campaign_compliance_controls"
+
+    id = Column(Integer, primary_key=True, index=True)
+    campaign_id = Column(Integer, ForeignKey("campaigns.id", ondelete="CASCADE"),
+                         nullable=False, index=True)
+    control_id = Column(Integer, ForeignKey("compliance_controls.id", ondelete="CASCADE"),
+                        nullable=False, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"),
+                    nullable=False, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("campaign_id", "control_id",
+                         name="uq_campaign_compliance_control"),
+        Index("ix_campaign_compliance_control_org", "org_id"),
+    )
+
+
 # ─────────────────────────────────────────────────────────
 # Workflow Engine Models (n8n-style automation)
 # ─────────────────────────────────────────────────────────

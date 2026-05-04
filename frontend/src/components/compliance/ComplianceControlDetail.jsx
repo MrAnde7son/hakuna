@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
-import { ShieldCheck, Plus, Trash2, ExternalLink } from 'lucide-react'
+import { ShieldCheck, Plus, Trash2, ExternalLink, Target } from 'lucide-react'
 import {
   PageHeader, Card, Table, Button, Pill, EmptyState, ErrorBanner,
   SkeletonTable, Spinner, useToast, useConfirm, SeverityBadge,
@@ -9,6 +9,7 @@ import {
 import {
   getComplianceControl, getComplianceControlFindings,
   createCompensatingControl, deleteCompensatingControl,
+  createCampaignFromControl,
 } from '../../api.js'
 
 function stateColor(state) {
@@ -149,15 +150,48 @@ export default function ComplianceControlDetail() {
   useEffect(() => { load() }, [id])
 
   const removeCC = async (ccId) => {
-    const ok = await confirm({
-      title: t('compliance.control_detail.deleteCC'),
-      message: t('compliance.control_detail.deleteCCConfirm'),
-      confirmLabel: t('compliance.control_detail.deleteCC'),
-    })
+    const ok = await confirm(
+      t('compliance.control_detail.deleteCCConfirm'),
+      {
+        title: t('compliance.control_detail.deleteCC'),
+        confirmLabel: t('compliance.control_detail.deleteCC'),
+      },
+    )
     if (!ok) return
     await deleteCompensatingControl(ccId)
     toast(t('compliance.compensatingDeleted'))
     await load()
+  }
+
+  const [creatingCampaign, setCreatingCampaign] = useState(false)
+  const failingCount = findings.filter(f => f.verdict === 'failing').length
+  const onCreateCampaign = async () => {
+    const ok = await confirm(
+      t(
+        'compliance.control_detail.createCampaignConfirm',
+        {
+          defaultValue: 'A new draft campaign will be created with {{count}} failing finding(s) under {{ref}}. Continue?',
+          count: failingCount,
+          ref: control?.ref,
+        },
+      ),
+      {
+        title: t('compliance.control_detail.createCampaignTitle', 'Create remediation campaign'),
+        confirmLabel: t('compliance.control_detail.createCampaign', 'Create campaign'),
+        destructive: false,
+      },
+    )
+    if (!ok) return
+    setCreatingCampaign(true)
+    try {
+      const res = await createCampaignFromControl(control.id, {})
+      toast.success(t('compliance.control_detail.campaignCreated', { defaultValue: 'Campaign created' }))
+      navigate(`/campaigns/${res.id}`)
+    } catch (e) {
+      toast.error(e.message || 'Failed to create campaign')
+    } finally {
+      setCreatingCampaign(false)
+    }
   }
 
   return (
@@ -288,10 +322,18 @@ export default function ComplianceControlDetail() {
 
             {/* Findings */}
             <Card style={{ padding: 0 }}>
-              <div style={{ padding: '12px 14px', borderBottom: '1px solid var(--border)' }}>
+              <div style={{
+                padding: '12px 14px', borderBottom: '1px solid var(--border)',
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
+              }}>
                 <div style={{ fontSize: 13, fontWeight: 700 }}>
                   {t('compliance.findings.header')} ({findings.length})
                 </div>
+                {failingCount > 0 && (
+                  <Button variant="primary" size="sm" disabled={creatingCampaign} onClick={onCreateCampaign}>
+                    {creatingCampaign ? <Spinner /> : <><Target size={13} /> {t('compliance.control_detail.createCampaign', 'Create remediation campaign')}</>}
+                  </Button>
+                )}
               </div>
               {findings.length === 0
                 ? <EmptyState icon={ShieldCheck} title={t('compliance.findings.noFindings')} sub="" />

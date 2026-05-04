@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
-import { ShieldCheck, FileDown, Plus, Settings, Activity, AlertTriangle, CheckCircle2 } from 'lucide-react'
+import { ShieldCheck, FileDown, Plus, Settings, Activity, AlertTriangle, CheckCircle2, Target } from 'lucide-react'
 import {
   PageHeader, Card, StatCard, Table, Button, Pill, EmptyState, ErrorBanner,
   SkeletonTable, Spinner, useToast, useConfirm, Input,
@@ -10,6 +10,7 @@ import {
   getComplianceFrameworks, subscribeFramework, unsubscribeFramework,
   updateFrameworkScope, getComplianceControls,
   createComplianceReport, listComplianceReports, downloadComplianceReport,
+  createCampaignFromFramework,
   getTags,
 } from '../../api.js'
 
@@ -499,6 +500,7 @@ function ReportsTab({ slug, framework, t, toast }) {
 
 function FrameworkOverview({ slug, frameworks, onUpdateScope, t, toast }) {
   const navigate = useNavigate()
+  const confirm = useConfirm()
   const [searchParams, setSearchParams] = useSearchParams()
   const tab = searchParams.get('tab') || 'controls'
 
@@ -507,6 +509,41 @@ function FrameworkOverview({ slug, frameworks, onUpdateScope, t, toast }) {
   const [controls, setControls] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [creatingCampaign, setCreatingCampaign] = useState(false)
+
+  const failingControlCount = useMemo(
+    () => controls.filter(c => c.state === 'failing' || c.state === 'partial').length,
+    [controls],
+  )
+
+  const onLaunchFrameworkCampaign = async () => {
+    const ok = await confirm(
+      t(
+        'compliance.framework_campaign.confirm',
+        {
+          defaultValue: 'A draft campaign will be created bundling all {{count}} failing control(s) of {{framework}}. Continue?',
+          count: failingControlCount,
+          framework: framework?.name || slug,
+        },
+      ),
+      {
+        title: t('compliance.framework_campaign.title', 'Launch framework campaign'),
+        confirmLabel: t('compliance.framework_campaign.create', 'Create campaign'),
+        destructive: false,
+      },
+    )
+    if (!ok) return
+    setCreatingCampaign(true)
+    try {
+      const res = await createCampaignFromFramework(slug, {})
+      toast.success(t('compliance.framework_campaign.created', { defaultValue: 'Campaign created' }))
+      navigate(`/campaigns/${res.id}`)
+    } catch (e) {
+      toast.error(e.message || 'Failed to create campaign')
+    } finally {
+      setCreatingCampaign(false)
+    }
+  }
 
   const load = async () => {
     setLoading(true); setError(null)
@@ -561,6 +598,22 @@ function FrameworkOverview({ slug, frameworks, onUpdateScope, t, toast }) {
         active={tab}
         onChange={(k) => setSearchParams({ tab: k })}
       />
+
+      {tab === 'controls' && failingControlCount > 0 && (
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8 }}>
+          <Button variant="primary" size="sm" disabled={creatingCampaign} onClick={onLaunchFrameworkCampaign}>
+            {creatingCampaign ? <Spinner /> : (
+              <>
+                <Target size={13} />
+                {t('compliance.framework_campaign.button', {
+                  defaultValue: 'Remediate {{count}} failing controls',
+                  count: failingControlCount,
+                })}
+              </>
+            )}
+          </Button>
+        </div>
+      )}
 
       {tab === 'controls' && (
         <ControlsTab

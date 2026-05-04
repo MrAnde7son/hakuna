@@ -27,6 +27,9 @@ from core.database import get_db
 from core.time_utils import iso_utc
 from models.models import (
     Asset,
+    Campaign,
+    CampaignComplianceControl,
+    CampaignFinding,
     ComplianceCompensatingControl,
     ComplianceControl,
     ComplianceControlMapping,
@@ -83,6 +86,20 @@ class CompensatingControlCreate(BaseModel):
 class ReportCreate(BaseModel):
     framework_slug: str
     format: str = "csv"  # csv | json (pdf deferred — see services/compliance_report)
+
+
+class CampaignFromControlCreate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    owner_id: Optional[int] = None
+    also_include_control_ids: Optional[List[int]] = None  # bundle multiple controls
+
+
+class CampaignFromFrameworkCreate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    owner_id: Optional[int] = None
+    only_failing: bool = True  # if False, include compensating-control verdicts too
 
 
 # ─────────────────────────────────────────────
@@ -527,6 +544,245 @@ def list_findings_under_control(
         "total": total,
         "page": page,
         "page_size": page_size,
+    }
+
+
+# ─────────────────────────────────────────────
+# Spin up a remediation Campaign from compliance controls
+# ─────────────────────────────────────────────
+
+
+def _materialize_campaign_from_controls(
+    db: Session,
+    org_id: int,
+    control_ids: List[int],
+    only_failing: bool,
+) -> tuple[list[dict], int]:
+    """Build the Campaign.query JSON and pre-compute the finding set from
+    ComplianceFindingStatus. Returns (query_conditions, finding_id_count).
+
+    The query is the union of the selected controls' mapping rules — used as
+    a stored snapshot so the campaign survives a YAML re-release that
+    renumbers mappings. The finding set is materialised now (option a:
+    point-in-time) by pulling failing rows from compliance_finding_status.
+    """
+    mappings = (
+        db.query(ComplianceControlMapping)
+        .filter(ComplianceControlMapping.control_id.in_(control_ids))
+        .all()
+    )
+
+    flat: list[dict] = []
+    for m in mappings:
+        rule = m.rule or {}
+        conds = rule.get("conditions") if isinstance(rule, dict) else None
+        if isinstance(conds, list):
+            flat.extend(conds)
+        elif isinstance(rule, list):
+            flat.extend(rule)
+
+    verdicts = ["failing"] if only_failing else [
+        "failing", "satisfied_by_compensating",
+    ]
+    finding_ids = [
+        row.finding_id
+        for row in (
+            db.query(ComplianceFindingStatus.finding_id)
+            .filter(
+                ComplianceFindingStatus.org_id == org_id,
+                ComplianceFindingStatus.control_id.in_(control_ids),
+                ComplianceFindingStatus.verdict.in_(verdicts),
+            )
+            .distinct()
+            .all()
+        )
+    ]
+    return flat, finding_ids
+
+
+def _create_campaign_for_controls(
+    db: Session,
+    user: User,
+    org_id: int,
+    controls: List[ComplianceControl],
+    name: Optional[str],
+    description: Optional[str],
+    owner_id: Optional[int],
+    only_failing: bool = True,
+) -> Campaign:
+    if not controls:
+        raise HTTPException(400, "no controls provided")
+
+    control_ids = [c.id for c in controls]
+    query_conds, finding_ids = _materialize_campaign_from_controls(
+        db, org_id, control_ids, only_failing,
+    )
+
+    framework = (
+        db.query(ComplianceFramework)
+        .filter_by(id=controls[0].framework_id)
+        .first()
+    )
+    if not name:
+        if len(controls) == 1:
+            name = f"{framework.name} {controls[0].ref} — {controls[0].title}"
+        else:
+            refs = ", ".join(c.ref for c in controls[:4])
+            more = f" +{len(controls) - 4}" if len(controls) > 4 else ""
+            name = f"{framework.name} compliance — {refs}{more}"
+    name = name[:240]
+
+    campaign = Campaign(
+        org_id=org_id,
+        name=name,
+        description=description,
+        query=query_conds,
+        query_logic="OR",  # mappings are alternative detection signals — any match qualifies
+        owner_id=owner_id,
+        status="draft",
+        finding_count=len(finding_ids),
+    )
+    db.add(campaign)
+    db.flush()
+
+    for ctrl in controls:
+        db.add(CampaignComplianceControl(
+            campaign_id=campaign.id,
+            control_id=ctrl.id,
+            org_id=org_id,
+        ))
+
+    for fid in finding_ids:
+        db.add(CampaignFinding(campaign_id=campaign.id, finding_id=fid))
+
+    log_audit(
+        db, "create", "campaign", campaign.id,
+        entity_name=campaign.name,
+        changes={
+            "name": campaign.name,
+            "compliance_control_ids": control_ids,
+            "compliance_framework": framework.slug if framework else None,
+            "finding_count": len(finding_ids),
+            "source": "compliance",
+        },
+        actor=user,
+    )
+    db.commit()
+    db.refresh(campaign)
+    return campaign
+
+
+@router.post("/api/compliance/controls/{control_id}/campaign")
+def create_campaign_from_control(
+    control_id: int,
+    body: CampaignFromControlCreate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permission("page_compliance")),
+):
+    """Spin up a remediation campaign scoped to one compliance control —
+    optionally bundling sibling controls via ``also_include_control_ids``.
+    The campaign's finding set is frozen at creation time (point-in-time
+    snapshot) from ``compliance_finding_status``."""
+    org_id = user.org_id
+    if not org_id:
+        raise HTTPException(400, "user has no org_id")
+
+    primary = db.query(ComplianceControl).filter_by(id=control_id).first()
+    if primary is None:
+        raise HTTPException(404, "control not found")
+
+    extra_ids = list(body.also_include_control_ids or [])
+    all_ids = [control_id] + [i for i in extra_ids if i != control_id]
+
+    controls = (
+        db.query(ComplianceControl)
+        .filter(ComplianceControl.id.in_(all_ids))
+        .all()
+    )
+    found_ids = {c.id for c in controls}
+    missing = [i for i in all_ids if i not in found_ids]
+    if missing:
+        raise HTTPException(404, f"controls not found: {missing}")
+
+    # Cross-framework bundling is rejected — confuses both the audit story
+    # and the campaign-name auto-generation.
+    framework_ids = {c.framework_id for c in controls}
+    if len(framework_ids) > 1:
+        raise HTTPException(
+            400, "all bundled controls must belong to the same framework",
+        )
+
+    # Order the primary control first so name/description default uses it.
+    controls.sort(key=lambda c: 0 if c.id == control_id else 1)
+
+    campaign = _create_campaign_for_controls(
+        db, user, org_id, controls,
+        name=body.name, description=body.description, owner_id=body.owner_id,
+    )
+    return {
+        "id": campaign.id,
+        "name": campaign.name,
+        "status": campaign.status,
+        "finding_count": campaign.finding_count,
+        "control_ids": [c.id for c in controls],
+    }
+
+
+@router.post("/api/compliance/frameworks/{slug}/campaign")
+def create_campaign_from_framework(
+    slug: str,
+    body: CampaignFromFrameworkCreate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permission("page_compliance")),
+):
+    """Bundle every failing control of a framework into a single campaign.
+    Useful for "remediate all of HIPAA" style audit pushes."""
+    org_id = user.org_id
+    if not org_id:
+        raise HTTPException(400, "user has no org_id")
+
+    fw = _get_framework_or_404(db, slug)
+
+    failing_states = ["failing", "partial"]
+    statuses = (
+        db.query(ComplianceControlStatus.control_id)
+        .filter(
+            ComplianceControlStatus.org_id == org_id,
+            ComplianceControlStatus.state.in_(failing_states),
+        )
+        .all()
+    )
+    failing_control_ids = {row.control_id for row in statuses}
+    if not failing_control_ids:
+        raise HTTPException(
+            400, "no failing controls in this framework for this org",
+        )
+
+    controls = (
+        db.query(ComplianceControl)
+        .filter(
+            ComplianceControl.framework_id == fw.id,
+            ComplianceControl.id.in_(failing_control_ids),
+        )
+        .order_by(ComplianceControl.ref)
+        .all()
+    )
+    if not controls:
+        raise HTTPException(400, "no failing controls match this framework")
+
+    name = body.name or f"{fw.name} — failing controls remediation"
+    campaign = _create_campaign_for_controls(
+        db, user, org_id, controls,
+        name=name, description=body.description, owner_id=body.owner_id,
+        only_failing=body.only_failing,
+    )
+    return {
+        "id": campaign.id,
+        "name": campaign.name,
+        "status": campaign.status,
+        "finding_count": campaign.finding_count,
+        "control_ids": [c.id for c in controls],
+        "control_count": len(controls),
     }
 
 

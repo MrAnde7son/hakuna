@@ -19,6 +19,7 @@ from core.time_utils import iso_utc
 from models.models import (
     User, Scan, Asset, Finding, FindingTicket,
     Campaign, CampaignFinding, AssetOwnership,
+    CampaignComplianceControl, ComplianceControl, ComplianceFramework,
 )
 import services.campaign_query as cq
 import services.tags as tag_engine
@@ -82,6 +83,69 @@ class AdvancedSearchBody(BaseModel):
 
 
 # ─── Helpers ───
+
+
+def _compliance_controls_for_campaign(db: Session, campaign: Campaign) -> list[dict]:
+    """Return the compliance controls a campaign remediates, with per-control
+    progress (total findings vs. resolved/won't-fix). Empty list if the
+    campaign isn't linked to any controls."""
+    from models.models import ComplianceFindingStatus
+
+    cc_links = (
+        db.query(CampaignComplianceControl)
+        .filter(CampaignComplianceControl.campaign_id == campaign.id)
+        .all()
+    )
+    if not cc_links:
+        return []
+
+    ctrl_ids = [l.control_id for l in cc_links]
+    ctrls = {
+        c.id: c for c in
+        db.query(ComplianceControl).filter(ComplianceControl.id.in_(ctrl_ids)).all()
+    }
+    fw_ids = {c.framework_id for c in ctrls.values()}
+    fws = {
+        f.id: f for f in
+        db.query(ComplianceFramework).filter(ComplianceFramework.id.in_(fw_ids)).all()
+    } if fw_ids else {}
+
+    cf_status_by_fid = {cf.finding_id: (cf.status or "open") for cf in campaign.findings}
+
+    per_control: dict[int, dict] = {cid: {"total": 0, "resolved": 0} for cid in ctrl_ids}
+    if cf_status_by_fid and campaign.org_id is not None:
+        cfs_rows = (
+            db.query(ComplianceFindingStatus.control_id, ComplianceFindingStatus.finding_id)
+            .filter(
+                ComplianceFindingStatus.org_id == campaign.org_id,
+                ComplianceFindingStatus.control_id.in_(ctrl_ids),
+                ComplianceFindingStatus.finding_id.in_(cf_status_by_fid.keys()),
+            )
+            .all()
+        )
+        for cid, fid in cfs_rows:
+            agg = per_control.setdefault(cid, {"total": 0, "resolved": 0})
+            agg["total"] += 1
+            if cf_status_by_fid.get(fid) in ("resolved", "wont_fix"):
+                agg["resolved"] += 1
+
+    out = []
+    for link in cc_links:
+        ctrl = ctrls.get(link.control_id)
+        if not ctrl:
+            continue
+        fw = fws.get(ctrl.framework_id)
+        agg = per_control.get(link.control_id, {"total": 0, "resolved": 0})
+        out.append({
+            "control_id": ctrl.id,
+            "ref": ctrl.ref,
+            "title": ctrl.title,
+            "framework_slug": fw.slug if fw else None,
+            "framework_name": fw.name if fw else None,
+            "total": agg["total"],
+            "resolved": agg["resolved"],
+        })
+    return out
 
 
 def _serialize_finding(f: Finding, asset: Asset = None) -> dict:
@@ -416,6 +480,9 @@ def get_campaign(campaign_id: int, db: Session = Depends(get_db), org_ids: Optio
             status_counts["open"] += 1
 
     owner = db.query(User).filter(User.id == campaign.owner_id).first() if campaign.owner_id else None
+
+    compliance_controls = _compliance_controls_for_campaign(db, campaign)
+
     return {
         "id": campaign.id,
         "name": campaign.name,
@@ -435,6 +502,7 @@ def get_campaign(campaign_id: int, db: Session = Depends(get_db), org_ids: Optio
         "owner_groups": owner_groups,
         "slack_channel_id": campaign.slack_channel_id,
         "slack_channel_name": campaign.slack_channel_name,
+        "compliance_controls": compliance_controls,
     }
 
 
