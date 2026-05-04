@@ -1,0 +1,335 @@
+# NIST SP 800-53 Revision 5 — initial mapping pack.
+#
+# Scope: control families with strong overlap to Hakuna's detection surface
+# (RA, SI, SC, CA, CM, AC, AU). Policy/people/contingency families are
+# included as testability=manual_only so they appear in the framework view.
+# 800-53 is the spine that 800-171, CMMC, FedRAMP and StateRAMP crosswalk
+# into — keep this pack accurate and the others stay cheap to maintain.
+
+framework:
+  slug: nist_800_53_r5
+  name: NIST SP 800-53
+  version: "Rev. 5"
+  authority: NIST
+  published_at: 2020-09-23
+  description: |
+    NIST SP 800-53 Revision 5 — Security and Privacy Controls for
+    Information Systems and Organizations. Foundational US Federal
+    catalogue used as the source of truth for FedRAMP, StateRAMP, CMMC,
+    and most US public-sector procurement requirements.
+  categories: [Federal, Controls Catalogue]
+  mapping_schema_version: 1
+
+release:
+  tag: "2026.05.04-v1"
+  notes: |
+    Initial 800-53 r5 mapping pack covering RA-5, SI-2, SI-3, SI-4, SI-7,
+    SC-7, SC-8, SC-13, CA-2, CA-7, CM-6, CM-7, AC-3, AC-17, AU-6.
+    Manual-only controls included so they surface as not_applicable.
+
+controls:
+
+  # ── RA: Risk Assessment ────────────────────────────────────
+  - ref: "RA-5"
+    title: Vulnerability Monitoring and Scanning
+    domain: Vulnerability Management
+    testability: automated
+    canonical_guidance: |
+      The system must be scanned for vulnerabilities and identified
+      vulnerabilities remediated. KEV-listed findings past SLA, or any
+      unresolved High+ CVE, are evidence the RA-5 process is not closing.
+    mappings:
+      - key: nist_800_53_r5_ra_5_kev_breached_sla
+        when:
+          logic: AND
+          conditions:
+            - field: finding.is_kev
+              op: is_true
+            - field: finding.sla_status
+              op: in
+              value: [breached, at_risk]
+            - field: finding.workflow_status
+              op: not_in
+              value: [resolved, false_positive]
+      - key: nist_800_53_r5_ra_5_unresolved_high_cve
+        when:
+          logic: AND
+          conditions:
+            - field: finding.has_cve
+              op: is_true
+            - field: finding.severity
+              op: gte
+              value: 3
+            - field: finding.workflow_status
+              op: not_in
+              value: [resolved, false_positive, accepted_risk]
+
+  # ── SI: System and Information Integrity ───────────────────
+  - ref: "SI-2"
+    title: Flaw Remediation
+    domain: Patch Management
+    testability: automated
+    canonical_guidance: |
+      Identified system flaws must be remediated within defined timeframes.
+      Patch Management family findings at High+ severity past SLA fail.
+    mappings:
+      - key: nist_800_53_r5_si_2_patch_mgmt_breached
+        when:
+          logic: AND
+          conditions:
+            - field: finding.plugin_family
+              op: eq
+              value: "Patch Management"
+            - field: finding.severity
+              op: gte
+              value: 3
+            - field: finding.sla_status
+              op: in
+              value: [breached, at_risk]
+            - field: finding.workflow_status
+              op: neq
+              value: resolved
+
+  - ref: "SI-3"
+    title: Malicious Code Protection
+    domain: Endpoint Protection
+    testability: automated
+    canonical_guidance: |
+      Malicious-code protection mechanisms must be employed at entry/exit
+      points. Assets with no AV/EDR evidence fail this control.
+    mappings:
+      - key: nist_800_53_r5_si_3_no_av_or_edr
+        when:
+          logic: OR
+          conditions:
+            - field: inventory.no_av
+              op: is_true
+            - field: inventory.no_edr
+              op: is_true
+
+  - ref: "SI-4"
+    title: System Monitoring
+    domain: Detection
+    testability: automated
+    canonical_guidance: |
+      The system must be monitored to detect attacks and indicators of
+      potential attacks. Active SIEM critical alerts and ATT&CK TTP matches
+      indicate either successful attacker activity or monitoring gaps that
+      need RA-driven follow-up.
+    mappings:
+      - key: nist_800_53_r5_si_4_siem_critical_alerts
+        when:
+          logic: AND
+          conditions:
+            - field: siem.critical_alert_count
+              op: gte
+              value: 1
+      - key: nist_800_53_r5_si_4_attack_ttp_observed
+        when:
+          logic: AND
+          conditions:
+            - field: finding.has_ttps
+              op: is_true
+            - field: finding.workflow_status
+              op: not_in
+              value: [resolved, false_positive]
+
+  - ref: "SI-7"
+    title: Software, Firmware, and Information Integrity
+    domain: Integrity
+    testability: partial
+    canonical_guidance: |
+      Integrity verification tools must detect unauthorized changes.
+      Hardcoded credentials (CWE-798) and missing-integrity-check findings
+      (CWE-353, CWE-345) indicate gaps.
+    mappings:
+      - key: nist_800_53_r5_si_7_integrity_or_creds
+        when:
+          logic: AND
+          conditions:
+            - field: finding.cwe
+              op: contains_any
+              value: ["CWE-345", "CWE-353", "CWE-798"]
+            - field: finding.workflow_status
+              op: neq
+              value: resolved
+
+  # ── SC: System and Communications Protection ───────────────
+  - ref: "SC-7"
+    title: Boundary Protection
+    domain: Network Security
+    testability: automated
+    canonical_guidance: |
+      The system must monitor and control communications at external
+      boundaries. EASM-discovered exposed services on internet-facing
+      assets are direct evidence the boundary control is incomplete.
+    mappings:
+      - key: nist_800_53_r5_sc_7_easm_exposed_service
+        when:
+          logic: AND
+          conditions:
+            - field: finding.plugin_family
+              op: eq
+              value: "EASM: Exposed Service"
+            - field: finding.workflow_status
+              op: not_in
+              value: [resolved, false_positive]
+
+  - ref: "SC-8"
+    title: Transmission Confidentiality and Integrity
+    domain: Cryptography
+    testability: automated
+    canonical_guidance: |
+      Transmitted information must be protected. Cleartext (CWE-319) and
+      broken/risky crypto (CWE-326, CWE-327) findings fail SC-8.
+    mappings:
+      - key: nist_800_53_r5_sc_8_transit_crypto
+        when:
+          logic: AND
+          conditions:
+            - field: finding.cwe
+              op: contains_any
+              value: ["CWE-319", "CWE-326", "CWE-327"]
+            - field: finding.workflow_status
+              op: neq
+              value: resolved
+
+  - ref: "SC-13"
+    title: Cryptographic Protection
+    domain: Cryptography
+    testability: automated
+    canonical_guidance: |
+      Approved cryptography must be used. CWE-311 (missing encryption) and
+      CWE-326/327 (weak/broken crypto) findings fail this control.
+    mappings:
+      - key: nist_800_53_r5_sc_13_weak_or_missing_crypto
+        when:
+          logic: AND
+          conditions:
+            - field: finding.cwe
+              op: contains_any
+              value: ["CWE-311", "CWE-326", "CWE-327"]
+            - field: finding.workflow_status
+              op: neq
+              value: resolved
+
+  # ── CA: Assessment, Authorization, and Monitoring ──────────
+  - ref: "CA-2"
+    title: Control Assessments
+    domain: Assessment
+    testability: manual_only
+    canonical_guidance: |
+      Assessments are evidence-based. Mark satisfied via compensating-
+      control note linking to the latest assessment report.
+    mappings: []
+
+  - ref: "CA-7"
+    title: Continuous Monitoring
+    domain: Continuous Monitoring
+    testability: automated
+    canonical_guidance: |
+      Ongoing monitoring of controls must be maintained. Regression of
+      previously-resolved findings indicates the ConMon loop is not
+      preserving control effectiveness.
+    mappings:
+      - key: nist_800_53_r5_ca_7_regressions_present
+        when:
+          logic: AND
+          conditions:
+            - field: finding.is_regression
+              op: is_true
+            - field: finding.workflow_status
+              op: not_in
+              value: [resolved, false_positive]
+
+  # ── CM: Configuration Management ───────────────────────────
+  - ref: "CM-6"
+    title: Configuration Settings
+    domain: Configuration Management
+    testability: manual_only
+    canonical_guidance: |
+      Baseline configuration enforcement is evidence-based. Mark satisfied
+      via compensating-control note linking to baseline + drift records.
+    mappings: []
+
+  - ref: "CM-7"
+    title: Least Functionality
+    domain: Hardening
+    testability: automated
+    canonical_guidance: |
+      Only essential capabilities must be configured. EASM-discovered
+      services on assets that should not expose them indicate excess
+      functionality is enabled.
+    mappings:
+      - key: nist_800_53_r5_cm_7_excess_exposed_service
+        when:
+          logic: AND
+          conditions:
+            - field: finding.plugin_family
+              op: eq
+              value: "EASM: Exposed Service"
+            - field: inventory.is_internet_facing
+              op: is_true
+            - field: finding.workflow_status
+              op: neq
+              value: resolved
+
+  # ── AC: Access Control ─────────────────────────────────────
+  - ref: "AC-3"
+    title: Access Enforcement
+    domain: Access Control
+    testability: partial
+    canonical_guidance: |
+      Approved authorizations must be enforced. Hardcoded creds (CWE-798)
+      and missing-authentication (CWE-306) findings fail AC-3.
+    mappings:
+      - key: nist_800_53_r5_ac_3_auth_failures
+        when:
+          logic: AND
+          conditions:
+            - field: finding.cwe
+              op: contains_any
+              value: ["CWE-306", "CWE-798", "CWE-862", "CWE-863"]
+            - field: finding.workflow_status
+              op: neq
+              value: resolved
+
+  - ref: "AC-17"
+    title: Remote Access
+    domain: Remote Access
+    testability: automated
+    canonical_guidance: |
+      Remote access must be authorised, monitored, and protected. Exposed
+      RDP/SSH/admin services on internet-facing assets fail this control.
+    mappings:
+      - key: nist_800_53_r5_ac_17_remote_admin_exposed
+        when:
+          logic: AND
+          conditions:
+            - field: finding.plugin_family
+              op: eq
+              value: "EASM: Exposed Service"
+            - field: inventory.is_internet_facing
+              op: is_true
+            - field: finding.workflow_status
+              op: neq
+              value: resolved
+
+  # ── AU: Audit and Accountability ───────────────────────────
+  - ref: "AU-6"
+    title: Audit Record Review, Analysis, and Reporting
+    domain: Audit Logging
+    testability: automated
+    canonical_guidance: |
+      Audit records must be reviewed and analysed. Critical SIEM alerts
+      that remain open imply review/triage is not keeping pace.
+    mappings:
+      - key: nist_800_53_r5_au_6_open_critical_alerts
+        when:
+          logic: AND
+          conditions:
+            - field: siem.has_active_alerts
+              op: is_true
+            - field: siem.critical_alert_count
+              op: gte
+              value: 1

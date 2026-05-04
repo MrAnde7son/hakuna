@@ -72,18 +72,26 @@ class TestComplianceFramework:
         assert fw.categories == []
         assert fw.mapping_schema_version == 1
 
-    def test_slug_is_unique(self, db_session):
-        db_session.add(ComplianceFramework(slug="dup", name="A", version="1"))
+    def test_slug_version_org_uniqueness_enforced(self, db_session, test_org):
+        # The portable UNIQUE(slug, version, org_id) blocks duplicate triples.
+        # Two NULL org_ids don't collide on this constraint (SQL standard:
+        # NULL != NULL); Postgres prod adds a partial UNIQUE(slug) WHERE
+        # org_id IS NULL via migration 060 to lock that down for builtins.
+        db_session.add(ComplianceFramework(
+            slug="dup", name="A", version="1", org_id=test_org.id,
+        ))
         db_session.flush()
-        db_session.add(ComplianceFramework(slug="dup", name="B", version="2"))
+        db_session.add(ComplianceFramework(
+            slug="dup", name="B", version="1", org_id=test_org.id,
+        ))
         with pytest.raises(IntegrityError):
             db_session.flush()
 
-    def test_slug_version_uniqueness_constraint_named(self, db_session):
-        # Compound unique constraint exists alongside the slug-only unique.
-        # Smoke check that the constraint name matches what the loader expects.
+    def test_slug_version_org_uniqueness_constraint_named(self, db_session):
+        # Constraint was widened to include org_id in migration 060 so a
+        # tenant-imported pack can co-exist with a global pack of the same slug.
         names = {c.name for c in ComplianceFramework.__table__.constraints}
-        assert "uq_compliance_framework_slug_version" in names
+        assert "uq_compliance_framework_slug_version_org" in names
 
 
 # ─── ComplianceControl ────────────────────────────────────────
@@ -120,21 +128,38 @@ class TestComplianceControl:
 # ─── ComplianceControlMapping ─────────────────────────────────
 
 class TestComplianceControlMapping:
-    def test_mapping_key_globally_unique(self, db_session):
+    def test_mapping_key_unique_per_control(self, db_session):
+        # Migration 060 narrowed the constraint to (control_id, mapping_key)
+        # so two tenants can import the same pack without collisions. Within
+        # a single control, the key still has to be unique.
         fw = _seed_framework(db_session)
         c1 = _seed_control(db_session, fw, ref="A")
-        c2 = _seed_control(db_session, fw, ref="B")
         db_session.add(ComplianceControlMapping(
             control_id=c1.id, mapping_key="dup", rule={"logic": "AND", "conditions": []},
         ))
         db_session.flush()
-        # Duplicate key under a *different* control still must fail — mapping_key
-        # is the cross-control identity used by compliance_finding_status.
         db_session.add(ComplianceControlMapping(
-            control_id=c2.id, mapping_key="dup", rule={"logic": "AND", "conditions": []},
+            control_id=c1.id, mapping_key="dup", rule={"logic": "AND", "conditions": []},
         ))
         with pytest.raises(IntegrityError):
             db_session.flush()
+
+    def test_mapping_key_can_repeat_under_different_controls(self, db_session):
+        # Same key under two different controls is now allowed — that's what
+        # lets a tenant import a builtin pack as their own without colliding.
+        fw = _seed_framework(db_session)
+        c1 = _seed_control(db_session, fw, ref="A")
+        c2 = _seed_control(db_session, fw, ref="B")
+        db_session.add(ComplianceControlMapping(
+            control_id=c1.id, mapping_key="shared",
+            rule={"logic": "AND", "conditions": []},
+        ))
+        db_session.add(ComplianceControlMapping(
+            control_id=c2.id, mapping_key="shared",
+            rule={"logic": "AND", "conditions": []},
+        ))
+        # Should not raise.
+        db_session.flush()
 
     def test_default_rule_version(self, db_session):
         fw = _seed_framework(db_session)

@@ -1,0 +1,225 @@
+# Digital Operational Resilience Act (DORA) — initial mapping pack.
+#
+# Scope: Regulation (EU) 2022/2554 ICT risk management requirements that
+# financial entities must demonstrate. Many DORA articles are governance-
+# heavy (Article 5 governance, Article 17 incident reporting) and ship as
+# testability=manual_only. Articles 8–10 (ICT risk, protection, detection)
+# carry the technical evidence Hakuna can produce.
+
+framework:
+  slug: dora
+  name: DORA
+  version: "Regulation (EU) 2022/2554"
+  authority: European Parliament & Council
+  published_at: 2022-12-14
+  description: |
+    Digital Operational Resilience Act — EU regulation for the ICT risk
+    management of financial entities. In force from 17 January 2025.
+    Covers ICT risk management, incident reporting, resilience testing,
+    third-party risk, and information sharing.
+  categories: [EU, Financial Services]
+  mapping_schema_version: 1
+
+release:
+  tag: "2026.05.04-v1"
+  notes: |
+    Initial DORA mapping pack covering Articles 6 (ICT risk management
+    framework), 8 (identification), 9 (protection and prevention),
+    10 (detection), and 25 (testing of ICT tools and systems).
+
+controls:
+
+  # ── Article 5: Governance ──────────────────────────────────
+  - ref: "Art.5"
+    title: Governance and Organisation
+    domain: Governance
+    testability: manual_only
+    canonical_guidance: |
+      Governance arrangements are evidence-based. Mark satisfied via a
+      compensating-control note linking to the management body's approved
+      ICT strategy and accountability records.
+    mappings: []
+
+  # ── Article 6: ICT Risk Management Framework ───────────────
+  - ref: "Art.6"
+    title: ICT Risk Management Framework
+    domain: Risk Management
+    testability: automated
+    canonical_guidance: |
+      Financial entities must maintain a sound, comprehensive ICT risk
+      management framework. Unresolved KEV-listed CVEs past SLA on
+      production assets indicate the framework is not closing the loop.
+    mappings:
+      - key: dora_art_6_kev_breached_sla
+        when:
+          logic: AND
+          conditions:
+            - field: finding.is_kev
+              op: is_true
+            - field: finding.sla_status
+              op: in
+              value: [breached, at_risk]
+            - field: finding.workflow_status
+              op: not_in
+              value: [resolved, false_positive]
+
+  # ── Article 8: Identification ──────────────────────────────
+  - ref: "Art.8"
+    title: Identification
+    domain: Asset Management
+    testability: manual_only
+    canonical_guidance: |
+      Asset identification and classification is evidence-based and
+      depends on completeness of CMDB/inventory. Mark satisfied via a
+      compensating-control note linking to the asset register.
+    mappings: []
+
+  # ── Article 9: Protection and Prevention ───────────────────
+  - ref: "Art.9.1"
+    title: ICT Security Tools, Policies and Procedures
+    domain: Protection
+    testability: automated
+    canonical_guidance: |
+      Financial entities must continuously monitor and control the
+      security of ICT systems. EASM-discovered exposed services on
+      internet-facing assets indicate prevention controls are incomplete.
+    mappings:
+      - key: dora_art_9_1_easm_exposed
+        when:
+          logic: AND
+          conditions:
+            - field: finding.plugin_family
+              op: eq
+              value: "EASM: Exposed Service"
+            - field: inventory.is_internet_facing
+              op: is_true
+            - field: finding.workflow_status
+              op: not_in
+              value: [resolved, false_positive]
+
+  - ref: "Art.9.2"
+    title: Network and Cryptographic Controls
+    domain: Cryptography
+    testability: automated
+    canonical_guidance: |
+      Network security and cryptographic controls must be implemented to
+      protect data in transit. CWE-319/326/327 findings fail this article.
+    mappings:
+      - key: dora_art_9_2_weak_crypto
+        when:
+          logic: AND
+          conditions:
+            - field: finding.cwe
+              op: contains_any
+              value: ["CWE-319", "CWE-326", "CWE-327"]
+            - field: finding.workflow_status
+              op: neq
+              value: resolved
+
+  - ref: "Art.9.4"
+    title: Endpoint Protection and Patch Management
+    domain: Patch Management
+    testability: automated
+    canonical_guidance: |
+      Vulnerabilities must be remediated and endpoints protected. Patch
+      Management family findings at High+ past SLA, or assets missing
+      AV/EDR, fail this article.
+    mappings:
+      - key: dora_art_9_4_patch_breached
+        when:
+          logic: AND
+          conditions:
+            - field: finding.plugin_family
+              op: eq
+              value: "Patch Management"
+            - field: finding.severity
+              op: gte
+              value: 3
+            - field: finding.sla_status
+              op: in
+              value: [breached, at_risk]
+            - field: finding.workflow_status
+              op: neq
+              value: resolved
+      - key: dora_art_9_4_endpoint_missing
+        when:
+          logic: OR
+          conditions:
+            - field: inventory.no_av
+              op: is_true
+            - field: inventory.no_edr
+              op: is_true
+
+  # ── Article 10: Detection ──────────────────────────────────
+  - ref: "Art.10"
+    title: Detection
+    domain: Detection
+    testability: automated
+    canonical_guidance: |
+      Mechanisms must promptly detect anomalous activities. Active
+      critical SIEM alerts and observed ATT&CK TTPs indicate detection
+      is producing signal that is not yet being acted on.
+    mappings:
+      - key: dora_art_10_open_critical_alerts
+        when:
+          logic: AND
+          conditions:
+            - field: siem.has_active_alerts
+              op: is_true
+            - field: siem.critical_alert_count
+              op: gte
+              value: 1
+      - key: dora_art_10_attack_ttps
+        when:
+          logic: AND
+          conditions:
+            - field: finding.has_ttps
+              op: is_true
+            - field: finding.workflow_status
+              op: not_in
+              value: [resolved, false_positive]
+
+  # ── Article 11: Response and Recovery ──────────────────────
+  - ref: "Art.11"
+    title: Response and Recovery
+    domain: Incident Response
+    testability: manual_only
+    canonical_guidance: |
+      IR and BCP/DR effectiveness is evidence-based. Mark satisfied via
+      a compensating-control note linking to the IR plan and recovery
+      test records.
+    mappings: []
+
+  # ── Article 17: ICT-Related Incident Reporting ─────────────
+  - ref: "Art.17"
+    title: ICT-Related Incident Management Process
+    domain: Incident Reporting
+    testability: manual_only
+    canonical_guidance: |
+      Incident classification and reporting timelines are evidence-based.
+      Mark satisfied via a compensating-control note linking to the
+      incident register.
+    mappings: []
+
+  # ── Article 25: Testing of ICT Tools and Systems ───────────
+  - ref: "Art.25"
+    title: Testing of ICT Tools and Systems
+    domain: Security Testing
+    testability: automated
+    canonical_guidance: |
+      Resilience testing must identify weaknesses, deficiencies and gaps.
+      Unresolved High+ CVEs on production assets indicate testing did not
+      drive remediation.
+    mappings:
+      - key: dora_art_25_unresolved_high_cve
+        when:
+          logic: AND
+          conditions:
+            - field: finding.has_cve
+              op: is_true
+            - field: finding.severity
+              op: gte
+              value: 3
+            - field: finding.workflow_status
+              op: not_in
+              value: [resolved, false_positive, accepted_risk]

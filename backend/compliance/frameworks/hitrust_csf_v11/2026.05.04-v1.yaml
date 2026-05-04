@@ -1,0 +1,226 @@
+# HITRUST CSF v11 — initial mapping pack.
+#
+# Scope: control objectives most US healthcare buyers expect HITRUST
+# certification to cover. HITRUST is a "common security framework" that
+# crosswalks HIPAA, NIST 800-53, ISO 27001, and PCI — many controls are
+# evidence-based and ship as testability=manual_only.
+
+framework:
+  slug: hitrust_csf_v11
+  name: HITRUST CSF
+  version: "v11"
+  authority: HITRUST Alliance
+  published_at: 2023-01-19
+  description: |
+    HITRUST Common Security Framework v11. Risk-based, prescriptive
+    framework that harmonises HIPAA, NIST, ISO, and PCI requirements.
+    Widely required by US healthcare prospects and payers.
+  categories: [Healthcare, Common Framework]
+  mapping_schema_version: 1
+
+release:
+  tag: "2026.05.04-v1"
+  notes: |
+    Initial HITRUST v11 mapping pack covering control categories 01
+    (Access Control), 06 (Compliance), 09 (Communications and Operations
+    Management), and 10 (Information Systems Acquisition).
+
+controls:
+
+  # ── 01: Access Control ─────────────────────────────────────
+  - ref: "01.j"
+    title: User Authentication for External Connections
+    domain: Access Control
+    testability: automated
+    canonical_guidance: |
+      Strong authentication must be required for external access. Exposed
+      remote-admin services on internet-facing assets fail this objective.
+    mappings:
+      - key: hitrust_csf_v11_01_j_remote_admin_exposed
+        when:
+          logic: AND
+          conditions:
+            - field: finding.plugin_family
+              op: eq
+              value: "EASM: Exposed Service"
+            - field: inventory.is_internet_facing
+              op: is_true
+            - field: finding.workflow_status
+              op: neq
+              value: resolved
+
+  - ref: "01.q"
+    title: User Identification and Authentication
+    domain: Access Control
+    testability: partial
+    canonical_guidance: |
+      Authentication weaknesses (CWE-306 missing auth, CWE-798 hardcoded
+      creds, CWE-862 missing authorization) fail this objective.
+    mappings:
+      - key: hitrust_csf_v11_01_q_auth_weaknesses
+        when:
+          logic: AND
+          conditions:
+            - field: finding.cwe
+              op: contains_any
+              value: ["CWE-306", "CWE-798", "CWE-862", "CWE-863"]
+            - field: finding.workflow_status
+              op: neq
+              value: resolved
+
+  # ── 06: Compliance ─────────────────────────────────────────
+  - ref: "06.h"
+    title: Technical Compliance Checking
+    domain: Compliance Monitoring
+    testability: automated
+    canonical_guidance: |
+      Information systems must be checked for compliance with security
+      standards. Regression of resolved findings indicates technical
+      compliance is drifting.
+    mappings:
+      - key: hitrust_csf_v11_06_h_regressions
+        when:
+          logic: AND
+          conditions:
+            - field: finding.is_regression
+              op: is_true
+            - field: finding.workflow_status
+              op: not_in
+              value: [resolved, false_positive]
+
+  # ── 09: Communications and Operations Management ───────────
+  - ref: "09.j"
+    title: Controls Against Malicious Code
+    domain: Endpoint Protection
+    testability: automated
+    canonical_guidance: |
+      Detection, prevention, and recovery controls must protect against
+      malicious code. Assets missing AV or EDR fail.
+    mappings:
+      - key: hitrust_csf_v11_09_j_no_av_or_edr
+        when:
+          logic: OR
+          conditions:
+            - field: inventory.no_av
+              op: is_true
+            - field: inventory.no_edr
+              op: is_true
+
+  - ref: "09.m"
+    title: Network Controls
+    domain: Network Security
+    testability: automated
+    canonical_guidance: |
+      Networks must be adequately managed and controlled. EASM-discovered
+      exposed services on internet-facing PHI-bearing assets fail.
+    mappings:
+      - key: hitrust_csf_v11_09_m_easm_exposed
+        when:
+          logic: AND
+          conditions:
+            - field: finding.plugin_family
+              op: eq
+              value: "EASM: Exposed Service"
+            - field: finding.workflow_status
+              op: not_in
+              value: [resolved, false_positive]
+
+  - ref: "09.s"
+    title: Information Exchange Policies and Procedures
+    domain: Cryptography
+    testability: automated
+    canonical_guidance: |
+      Information exchanges must be protected. Cleartext (CWE-319) and
+      broken/risky crypto (CWE-326, CWE-327) findings fail this objective.
+    mappings:
+      - key: hitrust_csf_v11_09_s_transit_crypto
+        when:
+          logic: AND
+          conditions:
+            - field: finding.cwe
+              op: contains_any
+              value: ["CWE-319", "CWE-326", "CWE-327"]
+            - field: finding.workflow_status
+              op: neq
+              value: resolved
+
+  - ref: "09.aa"
+    title: Audit Logging
+    domain: Audit Logging
+    testability: automated
+    canonical_guidance: |
+      Audit logs must be produced and reviewed. Open critical SIEM alerts
+      indicate review is not keeping pace with what's being logged.
+    mappings:
+      - key: hitrust_csf_v11_09_aa_open_critical_alerts
+        when:
+          logic: AND
+          conditions:
+            - field: siem.has_active_alerts
+              op: is_true
+            - field: siem.critical_alert_count
+              op: gte
+              value: 1
+
+  - ref: "09.ab"
+    title: Monitoring System Use
+    domain: Detection
+    testability: automated
+    canonical_guidance: |
+      Procedures must be established to monitor use of information
+      processing facilities. Observed ATT&CK TTPs indicate attacker
+      interest the monitoring stack should be acting on.
+    mappings:
+      - key: hitrust_csf_v11_09_ab_attack_ttps
+        when:
+          logic: AND
+          conditions:
+            - field: finding.has_ttps
+              op: is_true
+            - field: finding.workflow_status
+              op: not_in
+              value: [resolved, false_positive]
+
+  # ── 10: Information Systems Acquisition, Development, and Maintenance ──
+  - ref: "10.k"
+    title: Change Control Procedures
+    domain: Change Management
+    testability: manual_only
+    canonical_guidance: |
+      Change management is evidence-based. Mark satisfied via
+      compensating-control note linking to CAB records.
+    mappings: []
+
+  - ref: "10.m"
+    title: Control of Technical Vulnerabilities
+    domain: Vulnerability Management
+    testability: automated
+    canonical_guidance: |
+      Technical vulnerabilities must be evaluated and addressed. KEV-listed
+      findings past SLA, or unresolved High+ CVEs on PHI-bearing assets,
+      fail this objective.
+    mappings:
+      - key: hitrust_csf_v11_10_m_kev_breached
+        when:
+          logic: AND
+          conditions:
+            - field: finding.is_kev
+              op: is_true
+            - field: finding.sla_status
+              op: in
+              value: [breached, at_risk]
+            - field: finding.workflow_status
+              op: not_in
+              value: [resolved, false_positive]
+      - key: hitrust_csf_v11_10_m_unresolved_high_cve
+        when:
+          logic: AND
+          conditions:
+            - field: finding.has_cve
+              op: is_true
+            - field: finding.severity
+              op: gte
+              value: 3
+            - field: finding.workflow_status
+              op: not_in
+              value: [resolved, false_positive, accepted_risk]

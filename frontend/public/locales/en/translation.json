@@ -1214,6 +1214,33 @@
     "unsubscribed_toast": "Unsubscribed from {{framework}}",
     "compensatingCreated": "Compensating control added",
     "compensatingDeleted": "Compensating control removed",
-    "reportGenerated": "Report generated"
+    "reportGenerated": "Report generated",
+    "imported": "Imported",
+    "export": {
+      "label": "Export YAML",
+      "tooltip": "Download the framework as a YAML file",
+      "success": "Exported {{framework}}"
+    },
+    "import": {
+      "button": "Import YAML",
+      "title": "Import compliance framework",
+      "hint": "Upload a framework YAML file or paste the contents below. Imports are private to your organization and validated against the rule engine catalog before any database write.",
+      "fileLabel": "Upload file",
+      "pasteLabel": "Or paste YAML",
+      "chooseFile": "Choose file…",
+      "submit": "Import framework",
+      "submitting": "Importing…",
+      "empty": "Paste a YAML body or upload a file before importing.",
+      "success": "Imported {{slug}} ({{controls}} controls)",
+      "loaded": "Loaded",
+      "updated": "Updated existing import",
+      "skipped": "Already imported (no changes)"
+    },
+    "deleteImported": {
+      "tooltip": "Delete this imported framework",
+      "confirmTitle": "Delete {{framework}}?",
+      "confirmBody": "This removes the imported framework, its controls, mappings, and any per-control compliance state for your org. Subscriptions to this framework will be deleted. Built-in packs are not affected. This cannot be undone.",
+      "success": "Deleted {{framework}}"
+    }
   }
 }

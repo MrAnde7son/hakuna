@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
-import { ShieldCheck, FileDown, Plus, Settings, Activity, AlertTriangle, CheckCircle2, Target } from 'lucide-react'
+import { ShieldCheck, FileDown, FileUp, Plus, Settings, Activity, AlertTriangle, CheckCircle2, Target, Trash2, Upload } from 'lucide-react'
 import {
   PageHeader, Card, StatCard, Table, Button, Pill, EmptyState, ErrorBanner,
   SkeletonTable, Spinner, useToast, useConfirm, Input,
@@ -11,6 +11,7 @@ import {
   updateFrameworkScope, getComplianceControls,
   createComplianceReport, listComplianceReports, downloadComplianceReport,
   createCampaignFromFramework,
+  exportComplianceFramework, importComplianceFramework, deleteImportedFramework,
   getTags,
 } from '../../api.js'
 
@@ -77,10 +78,154 @@ function TabBar({ tabs, active, onChange }) {
 }
 
 // ────────────────────────────────────────────────────────────────
+// Import-framework modal — paste YAML or upload .yaml/.yml file
+// ────────────────────────────────────────────────────────────────
+
+function ImportFrameworkModal({ onClose, onImported, t, toast }) {
+  const fileInputRef = useRef(null)
+  const [yamlText, setYamlText] = useState('')
+  const [filename, setFilename] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState(null)
+  const [result, setResult] = useState(null)
+
+  const handleFile = async (file) => {
+    if (!file) return
+    setFilename(file.name)
+    setError(null)
+    try {
+      const text = await file.text()
+      setYamlText(text)
+    } catch (e) {
+      setError(`Could not read file: ${e.message || e}`)
+    }
+  }
+
+  const handleSubmit = async () => {
+    setError(null); setResult(null)
+    if (!yamlText.trim()) { setError(t('compliance.import.empty')); return }
+    setSubmitting(true)
+    try {
+      const r = await importComplianceFramework(yamlText)
+      setResult(r)
+      toast(t('compliance.import.success', {
+        slug: r.framework_slug,
+        controls: r.controls_loaded ?? 0,
+      }))
+      onImported(r)
+    } catch (e) {
+      setError(e.message || 'Import failed')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const inp = {
+    width: '100%', background: 'var(--bg)', border: '1px solid var(--border)',
+    color: 'var(--text-primary)', borderRadius: 6, padding: '7px 10px',
+    fontSize: 12, outline: 'none', boxSizing: 'border-box',
+    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+  }
+  const lbl = { fontSize: 11, color: 'var(--text-muted)', display: 'block', marginBottom: 4 }
+
+  return (
+    <div
+      style={{
+        position: 'fixed', inset: 0, zIndex: 1000,
+        background: 'rgba(0,0,0,0.55)', display: 'flex',
+        alignItems: 'center', justifyContent: 'center',
+      }}
+      onClick={e => { if (e.target === e.currentTarget) onClose() }}
+    >
+      <div style={{
+        background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 12,
+        padding: 24, width: 640, maxWidth: '95vw', maxHeight: '90vh',
+        display: 'flex', flexDirection: 'column', gap: 14, overflow: 'hidden',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-primary)' }}>
+            {t('compliance.import.title')}
+          </span>
+          <button onClick={onClose} style={{
+            background: 'none', border: 'none', cursor: 'pointer',
+            color: 'var(--text-muted)', display: 'flex',
+          }}>✕</button>
+        </div>
+
+        <div style={{
+          fontSize: 12, color: 'var(--text-muted)',
+          background: 'var(--bg-secondary)', borderRadius: 6,
+          padding: '8px 12px', border: '1px solid var(--border)',
+        }}>
+          {t('compliance.import.hint')}
+        </div>
+
+        <div>
+          <label style={lbl}>{t('compliance.import.fileLabel')}</label>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".yaml,.yml,application/x-yaml,text/yaml"
+              style={{ display: 'none' }}
+              onChange={e => handleFile(e.target.files?.[0])}
+            />
+            <Button variant="ghost" size="sm" onClick={() => fileInputRef.current?.click()}>
+              <Upload size={13} /> {t('compliance.import.chooseFile')}
+            </Button>
+            {filename && (
+              <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{filename}</span>
+            )}
+          </div>
+        </div>
+
+        <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+          <label style={lbl}>{t('compliance.import.pasteLabel')}</label>
+          <textarea
+            value={yamlText}
+            onChange={e => setYamlText(e.target.value)}
+            placeholder={'framework:\n  slug: my_framework\n  name: My Framework\n  ...'}
+            rows={14}
+            style={{ ...inp, resize: 'vertical', minHeight: 200 }}
+          />
+        </div>
+
+        {error && (
+          <div style={{
+            fontSize: 12, color: 'var(--danger)', background: 'var(--danger-subtle)',
+            borderRadius: 6, padding: '8px 12px',
+            whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+          }}>
+            {error}
+          </div>
+        )}
+        {result && !error && (
+          <div style={{
+            fontSize: 12, color: 'var(--success)', background: 'var(--success-subtle)',
+            borderRadius: 6, padding: '8px 12px',
+          }}>
+            ✓ {t(`compliance.import.${result.status}`, result.status)} —{' '}
+            <span style={{ fontFamily: 'ui-monospace, monospace' }}>{result.framework_slug}</span>
+            {result.controls_loaded != null && ` · ${result.controls_loaded} ${t('compliance.controls').toLowerCase()}`}
+          </div>
+        )}
+
+        <div style={{ display: 'flex', gap: 8, paddingTop: 4 }}>
+          <Button onClick={handleSubmit} disabled={submitting || !yamlText.trim()} style={{ flex: 1 }}>
+            {submitting ? <><Spinner size={12} /> {t('compliance.import.submitting')}</> : t('compliance.import.submit')}
+          </Button>
+          <Button variant="ghost" onClick={onClose}>{t('common.cancel', 'Cancel')}</Button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ────────────────────────────────────────────────────────────────
 // Framework picker (root /compliance)
 // ────────────────────────────────────────────────────────────────
 
-function FrameworkPicker({ frameworks, onPick, onSubscribe, onUnsubscribe, t, toast }) {
+function FrameworkPicker({ frameworks, onPick, onSubscribe, onUnsubscribe, onExport, onDeleteImported, t, toast }) {
   if (!frameworks || frameworks.length === 0) {
     return (
       <EmptyState
@@ -106,14 +251,17 @@ function FrameworkPicker({ frameworks, onPick, onSubscribe, onUnsubscribe, t, to
                 </div>
               )}
             </div>
-            <div onClick={e => e.stopPropagation()}>
+            <div onClick={e => e.stopPropagation()} style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'flex-end' }}>
+              {fw.source === 'imported' && (
+                <Pill label={t('compliance.imported')} color="var(--accent, #6366f1)" />
+              )}
               {fw.subscribed
                 ? <Pill label={t('compliance.subscribed')} color="var(--success, #16a34a)" />
                 : <Pill label={t('compliance.notSubscribed')} color="var(--text-muted)" />
               }
             </div>
           </div>
-          <div style={{ display: 'flex', gap: 8, marginTop: 14 }} onClick={e => e.stopPropagation()}>
+          <div style={{ display: 'flex', gap: 8, marginTop: 14, flexWrap: 'wrap' }} onClick={e => e.stopPropagation()}>
             {fw.subscribed ? (
               <Button
                 variant="ghost"
@@ -140,6 +288,25 @@ function FrameworkPicker({ frameworks, onPick, onSubscribe, onUnsubscribe, t, to
             <Button variant="ghost" size="sm" onClick={() => onPick(fw.slug)}>
               {t('compliance.controls')} →
             </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => onExport(fw)}
+              title={t('compliance.export.tooltip')}
+            >
+              <FileDown size={13} /> {t('compliance.export.label')}
+            </Button>
+            {fw.source === 'imported' && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => onDeleteImported(fw)}
+                style={{ color: 'var(--danger, #dc2626)' }}
+                title={t('compliance.deleteImported.tooltip')}
+              >
+                <Trash2 size={13} />
+              </Button>
+            )}
           </div>
         </Card>
       ))}
@@ -651,10 +818,12 @@ export default function Compliance() {
   const navigate = useNavigate()
   const { slug } = useParams()
   const toast = useToast()
+  const confirm = useConfirm()
 
   const [frameworks, setFrameworks] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [showImport, setShowImport] = useState(false)
 
   const load = async () => {
     setLoading(true); setError(null)
@@ -675,6 +844,36 @@ export default function Compliance() {
     await updateFrameworkScope(s, body)
     await load()
   }
+  const handleExport = async (fw) => {
+    try {
+      await exportComplianceFramework(fw.slug)
+      toast(t('compliance.export.success', { framework: fw.name }))
+    } catch (e) {
+      toast(e.message || 'Export failed')
+    }
+  }
+  const handleDeleteImported = async (fw) => {
+    const ok = await confirm(
+      t('compliance.deleteImported.confirmBody'),
+      {
+        title: t('compliance.deleteImported.confirmTitle', { framework: fw.name }),
+        confirmLabel: t('common.delete', 'Delete'),
+        destructive: true,
+      },
+    )
+    if (!ok) return
+    try {
+      await deleteImportedFramework(fw.slug)
+      toast(t('compliance.deleteImported.success', { framework: fw.name }))
+      await load()
+    } catch (e) {
+      toast(e.message || 'Delete failed')
+    }
+  }
+  const handleImported = async () => {
+    await load()
+    setShowImport(false)
+  }
 
   const currentFramework = slug ? frameworks.find(f => f.slug === slug) : null
 
@@ -686,6 +885,11 @@ export default function Compliance() {
           ? <Button variant="ghost" size="sm" onClick={() => navigate('/compliance')}>← {t('compliance.frameworks')}</Button>
           : t('compliance.subtitle')
         }
+        action={!slug && (
+          <Button variant="primary" size="sm" onClick={() => setShowImport(true)}>
+            <FileUp size={13} /> {t('compliance.import.button')}
+          </Button>
+        )}
       />
 
       {error && <ErrorBanner error={error} onRetry={load} onDismiss={() => setError(null)} />}
@@ -708,11 +912,22 @@ export default function Compliance() {
               onPick={(s) => navigate(`/compliance/${s}`)}
               onSubscribe={handleSubscribe}
               onUnsubscribe={handleUnsubscribe}
+              onExport={handleExport}
+              onDeleteImported={handleDeleteImported}
               t={t}
               toast={toast}
             />
           )
       }
+
+      {showImport && (
+        <ImportFrameworkModal
+          onClose={() => setShowImport(false)}
+          onImported={handleImported}
+          t={t}
+          toast={toast}
+        />
+      )}
     </div>
   )
 }

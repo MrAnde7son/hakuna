@@ -2833,7 +2833,12 @@ class ComplianceFramework(Base):
     __tablename__ = "compliance_frameworks"
 
     id = Column(Integer, primary_key=True, index=True)
-    slug = Column(String, unique=True, nullable=False, index=True)  # "pci_dss_4_0", "soc2_2017_tsc"
+    # Slug is unique per (org_id, slug) — global builtin packs (org_id NULL) and
+    # tenant-imported packs (org_id NOT NULL) share this column. Migration 060
+    # enforces the partial unique indexes that make this safe; declaring
+    # unique=True at the column level would re-create the simple-unique that
+    # the migration tears down.
+    slug = Column(String, nullable=False, index=True)               # "pci_dss_4_0", "soc2_2017_tsc"
     name = Column(String, nullable=False)                           # "PCI DSS"
     version = Column(String, nullable=False)                        # "4.0.1"
     authority = Column(String, nullable=True)                       # "PCI SSC"
@@ -2843,6 +2848,12 @@ class ComplianceFramework(Base):
     # Bumped when control_mappings.rule schema changes — the loader compares to
     # the value in the YAML so we can refuse stale tenant evaluator cache.
     mapping_schema_version = Column(Integer, default=1, nullable=False)
+    # Tenancy — NULL for built-in YAML packs, set for tenant-imported packs.
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"),
+                    nullable=True, index=True)
+    created_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"),
+                        nullable=True)
+    source = Column(String(32), nullable=False, default="builtin")  # "builtin" | "imported"
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -2852,7 +2863,8 @@ class ComplianceFramework(Base):
                             cascade="all, delete-orphan")
 
     __table_args__ = (
-        UniqueConstraint("slug", "version", name="uq_compliance_framework_slug_version"),
+        UniqueConstraint("slug", "version", "org_id",
+                         name="uq_compliance_framework_slug_version_org"),
     )
 
 
@@ -2900,9 +2912,10 @@ class ComplianceControlMapping(Base):
     id = Column(Integer, primary_key=True, index=True)
     control_id = Column(Integer, ForeignKey("compliance_controls.id", ondelete="CASCADE"),
                         nullable=False, index=True)
-    # Stable key from YAML — survives renumbering / re-release. Globally unique
-    # across all frameworks so compliance_finding_status doesn't have to also
-    # carry control_id when joining.
+    # Stable key from YAML — survives renumbering / re-release. Unique per
+    # control so two tenants importing the same pack don't collide; the
+    # downstream compliance_finding_status row already carries control_id
+    # so its (finding_id, control_id, mapping_key) UNIQUE is unambiguous.
     mapping_key = Column(String, nullable=False)
     rule = Column(JSON, nullable=False)                             # rule_engine condition list
     rule_version = Column(Integer, default=1, nullable=False)       # bumped when rule body changes
@@ -2913,7 +2926,8 @@ class ComplianceControlMapping(Base):
     control = relationship("ComplianceControl", back_populates="mappings")
 
     __table_args__ = (
-        UniqueConstraint("mapping_key", name="uq_compliance_control_mapping_key"),
+        UniqueConstraint("control_id", "mapping_key",
+                         name="uq_compliance_control_mapping_control_key"),
     )
 
 

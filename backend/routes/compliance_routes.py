@@ -12,8 +12,9 @@ from datetime import datetime
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi.responses import PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from core.audit import log_audit
@@ -49,6 +50,8 @@ from services.compliance_evaluator import (
     evaluate as evaluate_compliance,
     revoke_compensating_control,
 )
+from services.compliance_export import framework_to_yaml
+from services.compliance_loader import load_framework_from_yaml_text
 from services.compliance_report import (
     SUPPORTED_FORMATS as REPORT_SUPPORTED_FORMATS,
     generate_report,
@@ -123,6 +126,9 @@ def _framework_to_dict(
         "description": fw.description,
         "categories": fw.categories or [],
         "mapping_schema_version": fw.mapping_schema_version,
+        "org_id": fw.org_id,
+        "source": fw.source or "builtin",
+        "created_by": fw.created_by,
         "subscribed": subscribed,
         "scope_tag_expr": scope_tag_expr,
     }
@@ -237,8 +243,35 @@ def _resolve_org_id(user: User, x_org_context: Optional[str] = None) -> int:
     return user.org_id
 
 
-def _get_framework_or_404(db: Session, slug: str) -> ComplianceFramework:
-    fw = db.query(ComplianceFramework).filter_by(slug=slug).first()
+def _get_framework_or_404(
+    db: Session,
+    slug: str,
+    *,
+    org_id: Optional[int] = None,
+) -> ComplianceFramework:
+    """Resolve a framework by slug for the caller's org.
+
+    A tenant may have imported a private framework that shares a slug with a
+    global builtin (e.g. their own "iso_27001_2022" with extra controls).
+    Prefer the tenant copy when present; otherwise fall back to the global
+    pack. Tenant-private frameworks belonging to other orgs are never
+    returned.
+    """
+    if org_id is not None:
+        tenant_fw = (
+            db.query(ComplianceFramework)
+            .filter(ComplianceFramework.slug == slug,
+                    ComplianceFramework.org_id == org_id)
+            .first()
+        )
+        if tenant_fw is not None:
+            return tenant_fw
+    fw = (
+        db.query(ComplianceFramework)
+        .filter(ComplianceFramework.slug == slug,
+                ComplianceFramework.org_id.is_(None))
+        .first()
+    )
     if fw is None:
         raise HTTPException(404, f"Framework {slug!r} not found")
     return fw
@@ -255,17 +288,23 @@ def list_frameworks(
     user: User = Depends(require_permission("page_compliance")),
     org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
-    """List every canonical framework, with each org's current subscription state.
+    """List frameworks visible to the caller's org.
 
-    Frameworks themselves are global (no org_id) — the per-org subscription
-    layer adds the ``subscribed`` boolean for the caller's primary org.
+    Visible = built-in global packs (org_id IS NULL) + this org's imported
+    private packs. Other tenants' private packs are filtered out at the
+    query level. The per-org subscription layer adds the ``subscribed``
+    boolean for the caller's primary org.
     """
-    frameworks = (
-        db.query(ComplianceFramework)
-        .order_by(ComplianceFramework.name)
-        .all()
-    )
     org_id = user.org_id
+    fw_q = db.query(ComplianceFramework)
+    if org_id is not None:
+        fw_q = fw_q.filter(or_(
+            ComplianceFramework.org_id.is_(None),
+            ComplianceFramework.org_id == org_id,
+        ))
+    else:
+        fw_q = fw_q.filter(ComplianceFramework.org_id.is_(None))
+    frameworks = fw_q.order_by(ComplianceFramework.name).all()
     sub_by_fw: dict[int, OrgFrameworkSubscription] = {}
     if org_id:
         sub_by_fw = {
@@ -293,7 +332,7 @@ def subscribe_to_framework(
 ):
     """Enable a framework for the user's org. Idempotent — re-calling with
     a new scope_rule updates the existing subscription rather than failing."""
-    fw = _get_framework_or_404(db, slug)
+    fw = _get_framework_or_404(db, slug, org_id=user.org_id)
     org_id = user.org_id
     if not org_id:
         raise HTTPException(400, "user has no org_id")
@@ -334,7 +373,7 @@ def unsubscribe_from_framework(
     db: Session = Depends(get_db),
     user: User = Depends(require_permission("page_compliance")),
 ):
-    fw = _get_framework_or_404(db, slug)
+    fw = _get_framework_or_404(db, slug, org_id=user.org_id)
     org_id = user.org_id
     sub = (
         db.query(OrgFrameworkSubscription)
@@ -357,7 +396,7 @@ def update_scope(
     db: Session = Depends(get_db),
     user: User = Depends(require_permission("page_compliance")),
 ):
-    fw = _get_framework_or_404(db, slug)
+    fw = _get_framework_or_404(db, slug, org_id=user.org_id)
     org_id = user.org_id
     sub = (
         db.query(OrgFrameworkSubscription)
@@ -381,6 +420,121 @@ def update_scope(
 
 
 # ─────────────────────────────────────────────
+# Import / Export — tenant-private framework packs
+# ─────────────────────────────────────────────
+
+
+class FrameworkImport(BaseModel):
+    """Body for POST /import. We accept the YAML as a string in JSON rather
+    than multipart so the same endpoint works from API clients without a
+    file picker. Frontend file uploads should read the file and POST the
+    contents here."""
+    yaml_text: str = Field(min_length=10)
+
+
+@router.get("/api/compliance/frameworks/{slug}/export")
+def export_framework(
+    slug: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permission("page_compliance")),
+):
+    """Serialize a framework + controls + mappings back to YAML.
+
+    Round-trips through POST /api/compliance/frameworks/import. Visible to
+    any caller with page_compliance — exporting the global packs is by
+    design (auditors often want to inspect the rules), and tenant-private
+    packs are already org-scoped via _get_framework_or_404.
+    """
+    fw = _get_framework_or_404(db, slug, org_id=user.org_id)
+    yaml_body = framework_to_yaml(db, fw)
+    filename = f"compliance_{fw.slug}_{fw.version}.yaml".replace(" ", "_")
+    return PlainTextResponse(
+        content=yaml_body,
+        media_type="application/x-yaml",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.post("/api/compliance/frameworks/import")
+def import_framework(
+    body: FrameworkImport,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permission("page_compliance")),
+):
+    """Load a tenant-private framework from YAML.
+
+    Imports always land at org_id=user.org_id; never as a global builtin.
+    Re-importing the same YAML (same SHA) under the same tenant is a
+    no-op and returns status="skipped". Validation errors return 400 with
+    the exact mapping/field that failed so the uploader can fix it.
+    """
+    org_id = user.org_id
+    if not org_id:
+        raise HTTPException(400, "user has no org_id")
+
+    result = load_framework_from_yaml_text(
+        db, body.yaml_text, org_id=org_id, created_by=user.id,
+    )
+
+    status = result.get("status")
+    if status in ("parse_error", "schema_error", "validation_error"):
+        raise HTTPException(400, result.get("error") or status)
+    if status not in ("loaded", "updated", "skipped"):
+        raise HTTPException(500, f"unexpected loader status: {status!r}")
+
+    log_audit(
+        db, "import", "compliance_framework",
+        result.get("framework_id"),
+        entity_name=result.get("framework_slug"),
+        changes={
+            "status": status,
+            "release_tag": result.get("release_tag"),
+            "controls_loaded": result.get("controls_loaded"),
+        },
+        actor=user,
+    )
+    db.commit()
+    return result
+
+
+@router.delete("/api/compliance/frameworks/{slug}/imported")
+def delete_imported_framework(
+    slug: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permission("page_compliance")),
+):
+    """Delete a tenant-imported framework.
+
+    Refuses to touch builtin packs even if the slug matches — those live in
+    YAML on disk and the on-boot loader would re-create them anyway. The
+    cascade on framework_id removes controls, mappings, releases, and via
+    the tenant-tables' cascades the per-org status / report rows.
+    """
+    org_id = user.org_id
+    if not org_id:
+        raise HTTPException(400, "user has no org_id")
+
+    fw = (
+        db.query(ComplianceFramework)
+        .filter(ComplianceFramework.slug == slug,
+                ComplianceFramework.org_id == org_id)
+        .first()
+    )
+    if fw is None:
+        raise HTTPException(
+            404,
+            f"No imported framework {slug!r} for this org "
+            "(builtin packs cannot be deleted via the API)",
+        )
+    fw_id = fw.id
+    db.delete(fw)
+    log_audit(db, "delete", "compliance_framework", fw_id,
+              entity_name=slug, actor=user)
+    db.commit()
+    return {"status": "deleted", "framework_slug": slug}
+
+
+# ─────────────────────────────────────────────
 # Controls
 # ─────────────────────────────────────────────
 
@@ -397,7 +551,7 @@ def list_controls(
     user: User = Depends(require_permission("page_compliance")),
 ):
     """List controls under a framework with the caller-org's status per row."""
-    fw = _get_framework_or_404(db, slug)
+    fw = _get_framework_or_404(db, slug, org_id=user.org_id)
     org_id = user.org_id
 
     q = db.query(ComplianceControl).filter(ComplianceControl.framework_id == fw.id)
@@ -741,7 +895,7 @@ def create_campaign_from_framework(
     if not org_id:
         raise HTTPException(400, "user has no org_id")
 
-    fw = _get_framework_or_404(db, slug)
+    fw = _get_framework_or_404(db, slug, org_id=org_id)
 
     failing_states = ["failing", "partial"]
     statuses = (
@@ -976,7 +1130,7 @@ def create_report(
     org_id = user.org_id
     if not org_id:
         raise HTTPException(400, "user has no org_id")
-    fw = _get_framework_or_404(db, body.framework_slug)
+    fw = _get_framework_or_404(db, body.framework_slug, org_id=org_id)
 
     # Confirm the org actually subscribes to the framework — generating a
     # report for a framework you don't run would be misleading (zero data).

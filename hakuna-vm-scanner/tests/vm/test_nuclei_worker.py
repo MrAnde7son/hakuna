@@ -20,6 +20,7 @@ from scanner.vm.nuclei_worker import (
     _resolve_target,
     _result_to_finding,
     _run_nuclei_adhoc_async,
+    _stall_watchdog,
     run_nuclei_adhoc,
     run_nuclei_scan,
 )
@@ -325,3 +326,68 @@ class TestAdhocCdnShortCircuit:
                 assert str(e) == "proceeded past cdn check"
             else:
                 raise AssertionError("expected short-circuit to be bypassed")
+
+
+class TestStallWatchdog:
+    """The watchdog kills nuclei when it loaded templates but sent zero
+    requests for the grace window — the WAF/edge-block signature where
+    preflight passes but every subsequent connection from the scanner
+    IP gets dropped silently."""
+
+    def _fake_proc(self, returncode_box):
+        """A minimal stand-in for asyncio.subprocess.Process."""
+        class _P:
+            def __init__(self):
+                self.killed = False
+
+            @property
+            def returncode(self):
+                return returncode_box["rc"]
+
+            def kill(self):
+                self.killed = True
+                returncode_box["rc"] = -9
+        return _P()
+
+    def test_kills_when_loaded_but_no_requests(self):
+        rc_box = {"rc": None}
+        proc = self._fake_proc(rc_box)
+        stderr_chunks = [
+            "[INF] Templates loaded for current scan: 10054",
+        ]
+        # Tiny grace + tiny poll interval so the test runs in <1s but
+        # still exercises the real watchdog timing path.
+        stalled = asyncio.run(_stall_watchdog(
+            proc, stderr_chunks, grace_seconds=0.1, target_for_log="t",
+            poll_interval=0.05,
+        ))
+        assert stalled is True
+        assert proc.killed is True
+
+    def test_no_kill_when_requests_flowing(self):
+        rc_box = {"rc": None}
+        proc = self._fake_proc(rc_box)
+        stderr_chunks = [
+            "[INF] Templates loaded for current scan: 10054",
+            "| Duration: 00:00:05 | Matched: 0 | Requests: 50/600 | Templates: 30/389 |",
+        ]
+
+        async def _stop_proc_after_polls():
+            # Let the watchdog poll a few times against a buffer that shows
+            # requests flowing, then mark the proc as exited so the loop
+            # terminates and we can assert the watchdog returned False.
+            await asyncio.sleep(0.2)
+            rc_box["rc"] = 0
+
+        async def _runner():
+            return await asyncio.gather(
+                _stall_watchdog(
+                    proc, stderr_chunks, grace_seconds=10,
+                    target_for_log="t", poll_interval=0.05,
+                ),
+                _stop_proc_after_polls(),
+            )
+
+        stalled, _ = asyncio.run(_runner())
+        assert stalled is False
+        assert proc.killed is False

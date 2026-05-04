@@ -54,6 +54,7 @@ from scanner.vm.config import (
     NUCLEI_RATE_LIMIT,
     NUCLEI_RETRIES,
     NUCLEI_SKIP_CDN_TARGETS,
+    NUCLEI_STALL_GRACE_SECONDS,
     NUCLEI_TIMEOUT,
     SCAN_TIMEOUT_SECONDS,
     TEMPLATES_DIR,
@@ -182,6 +183,49 @@ def _parse_nuclei_stats(stderr_lines: list[str]) -> dict:
         if m:
             stats["results_found"] = int(m.group(1))
     return stats
+
+
+async def _stall_watchdog(
+    proc: asyncio.subprocess.Process,
+    stderr_chunks: list[str],
+    grace_seconds: int,
+    target_for_log: str,
+    poll_interval: float = 5.0,
+) -> bool:
+    """Kill ``proc`` when nuclei loaded templates but sent zero requests
+    for ``grace_seconds``. Returns True iff the proc was killed by the
+    watchdog. The classic WAF/edge-block signature: preflight HEAD
+    succeeds, nuclei loads its full template set, but every subsequent
+    connection from the scanner IP is silently dropped — so the run sits
+    at requests=0 until SCAN_TIMEOUT_SECONDS expires. Polls every
+    ``poll_interval`` seconds against the same stderr buffer
+    ``drain_stderr`` is filling.
+    """
+    if grace_seconds <= 0:
+        return False
+    stalled_since: float | None = None
+    while proc.returncode is None:
+        await asyncio.sleep(poll_interval)
+        stats = _parse_nuclei_stats(stderr_chunks)
+        loaded = stats.get("templates_loaded", 0)
+        sent = stats.get("requests_sent", 0)
+        if loaded > 0 and sent == 0:
+            if stalled_since is None:
+                stalled_since = time.monotonic()
+            elif time.monotonic() - stalled_since >= grace_seconds:
+                logger.warning(
+                    "nuclei stall watchdog firing for %s: templates_loaded=%d "
+                    "requests_sent=0 for %ds — assuming WAF/edge block, killing scan",
+                    target_for_log, loaded, grace_seconds,
+                )
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()
+                return True
+        else:
+            # Reset whenever we observe progress — a slow start that
+            # eventually sends requests is not a stall.
+            stalled_since = None
+    return False
 
 
 def _run_async(coro):
@@ -590,7 +634,9 @@ async def _run_nuclei_scan_async(
                 break
             cmd = entry["cmd"]
             logger.info("nuclei cmd: %s", _redacted_cmd_for_log(cmd))
-            run_result = await _run_one_nuclei(cmd, timeout_seconds=int(remaining))
+            run_result = await _run_one_nuclei(
+                cmd, timeout_seconds=int(remaining), target_for_log=target or asset_id,
+            )
 
             findings.extend(run_result["findings"])
             templates_run.update(run_result["templates_run"])
@@ -600,6 +646,15 @@ async def _run_nuclei_scan_async(
             # been logged and accumulating them across commands would be
             # misleading (templates_loaded is per-invocation).
             nuclei_stats = run_result["nuclei_stats"] or nuclei_stats
+            if run_result.get("stalled"):
+                # Watchdog killed the run — preflight passed but every
+                # request from the scanner IP was dropped (typical WAF/
+                # edge behaviour). Distinct from "timeout" so the UI can
+                # tell ops "your target is blocking us" vs "we ran out
+                # of budget."
+                logger.error("nuclei stalled (WAF/edge block) for asset %s target=%s", asset_id, target)
+                status = "blocked"
+                break
             if run_result.get("timed_out"):
                 # Don't retry — the same template set hits the same wall on
                 # the next attempt. Surface the partial stats we just
@@ -650,7 +705,9 @@ async def _run_nuclei_scan_async(
     return result_payload
 
 
-async def _run_one_nuclei(cmd: list[str], timeout_seconds: int) -> dict:
+async def _run_one_nuclei(
+    cmd: list[str], timeout_seconds: int, target_for_log: str = ""
+) -> dict:
     """Execute a single Nuclei subprocess and return its parsed output.
 
     Encapsulates the stdout/stderr drain + JSONL parsing loop so callers
@@ -680,6 +737,9 @@ async def _run_one_nuclei(cmd: list[str], timeout_seconds: int) -> dict:
             stderr_chunks.append(line.decode("utf-8", errors="replace").strip())
 
     stderr_task = asyncio.create_task(drain_stderr())
+    watchdog_task = asyncio.create_task(
+        _stall_watchdog(proc, stderr_chunks, NUCLEI_STALL_GRACE_SECONDS, target_for_log or "asset")
+    )
 
     async def consume():
         assert proc.stdout is not None
@@ -714,6 +774,10 @@ async def _run_one_nuclei(cmd: list[str], timeout_seconds: int) -> dict:
         with contextlib.suppress(Exception):
             await stderr_task
 
+    stalled = False
+    with contextlib.suppress(Exception):
+        stalled = await watchdog_task
+
     return {
         "findings": findings,
         "templates_run": templates_run,
@@ -722,6 +786,7 @@ async def _run_one_nuclei(cmd: list[str], timeout_seconds: int) -> dict:
         "nuclei_stats": _parse_nuclei_stats(stderr_chunks),
         "exit_code": proc.returncode if proc.returncode is not None else -1,
         "timed_out": timed_out,
+        "stalled": stalled,
     }
 
 
@@ -1083,6 +1148,9 @@ async def _run_nuclei_adhoc_async(
                         _sink.append(line.decode("utf-8", errors="replace").strip())
 
                 stderr_task = asyncio.create_task(drain_stderr(proc, cmd_stderr))
+                watchdog_task = asyncio.create_task(
+                    _stall_watchdog(proc, cmd_stderr, NUCLEI_STALL_GRACE_SECONDS, target)
+                )
 
                 async def consume():
                     nonlocal findings_emitted, findings_persisted
@@ -1132,6 +1200,20 @@ async def _run_nuclei_adhoc_async(
                 await asyncio.wait_for(consume(), timeout=int(remaining))
                 stages_run.append(label)
 
+                stalled = False
+                with contextlib.suppress(Exception):
+                    stalled = await watchdog_task
+                if stalled:
+                    logger.error(
+                        "nuclei adhoc %s stalled (WAF/edge block) for target %s",
+                        label, target,
+                    )
+                    cmd_stats = _parse_nuclei_stats(cmd_stderr)
+                    nuclei_stats = cmd_stats or nuclei_stats
+                    stderr_chunks.extend(cmd_stderr)
+                    status = "blocked"
+                    break
+
                 exit_code = proc.returncode or 0
                 cmd_stats = _parse_nuclei_stats(cmd_stderr)
                 # Stats from the most recent command win — each -t selection
@@ -1161,6 +1243,8 @@ async def _run_nuclei_adhoc_async(
                         await proc.wait()
                 with contextlib.suppress(Exception):
                     await stderr_task
+                with contextlib.suppress(Exception):
+                    await watchdog_task
                 logger.error("nuclei adhoc %s timed out for target %s", label, target)
                 cmd_stats = _parse_nuclei_stats(cmd_stderr)
                 nuclei_stats = cmd_stats or nuclei_stats

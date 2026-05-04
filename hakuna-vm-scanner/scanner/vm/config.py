@@ -52,6 +52,16 @@ NUCLEI_SKIP_CDN_TARGETS = os.environ.get(
     "NUCLEI_SKIP_CDN_TARGETS", "true"
 ).lower() in {"1", "true", "yes"}
 
+# Stall watchdog: when nuclei reports `templates_loaded > 0` but
+# `requests_sent == 0` for this many seconds, abort the scan early and
+# surface status="blocked". Targets behind a WAF/edge that silently
+# drops scanner traffic look "reachable" to preflight (one HEAD passes)
+# but every subsequent connection from the scanner IP gets dropped — so
+# nuclei sits at 0 requests for the full SCAN_TIMEOUT_SECONDS budget.
+# Distinct from NUCLEI_SKIP_CDN_TARGETS, which only fires when the
+# preflight response carries a known CDN-vendor header.
+NUCLEI_STALL_GRACE_SECONDS = int(os.environ.get("NUCLEI_STALL_GRACE_SECONDS", "90"))
+
 # ── Content discovery (ffuf) ────────────────────────────────────
 # On by default. Ops can disable globally by setting
 # CONTENT_DISCOVERY_ENABLED=false — useful for deployments where

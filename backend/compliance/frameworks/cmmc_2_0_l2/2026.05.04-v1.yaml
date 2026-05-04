@@ -1,0 +1,232 @@
+# Cybersecurity Maturity Model Certification (CMMC) 2.0 — Level 2 mapping pack.
+#
+# Scope: CMMC 2.0 Level 2 inherits 800-171 requirements. We mirror the
+# 800-171 r3 control structure but use CMMC L2 practice IDs (e.g. AC.L2-3.1.12)
+# so reports can be issued under the CMMC label that DIB customers expect.
+
+framework:
+  slug: cmmc_2_0_l2
+  name: CMMC 2.0
+  version: "Level 2"
+  authority: DoD CIO
+  published_at: 2024-12-16
+  description: |
+    Cybersecurity Maturity Model Certification 2.0, Level 2 (Advanced).
+    Required for DoD contractors handling CUI. Practices align 1:1 with
+    NIST SP 800-171 controls; this pack uses the CMMC practice identifiers.
+  categories: [Federal, DIB, CUI]
+  mapping_schema_version: 1
+
+release:
+  tag: "2026.05.04-v1"
+  notes: |
+    Initial CMMC 2.0 Level 2 mapping pack — mirrors the 800-171 r3 pack
+    using CMMC practice IDs across AC, AU, CM, RA, SC, and SI domains.
+
+controls:
+
+  # ── AC: Access Control ─────────────────────────────────────
+  - ref: "AC.L2-3.1.12"
+    title: Control Remote Access Sessions
+    domain: Remote Access
+    testability: automated
+    canonical_guidance: |
+      Monitor and control remote-access sessions. Exposed remote-admin
+      services on internet-facing assets fail this practice.
+    mappings:
+      - key: cmmc_2_0_l2_ac_3_1_12_remote_admin_exposed
+        when:
+          logic: AND
+          conditions:
+            - field: finding.plugin_family
+              op: eq
+              value: "EASM: Exposed Service"
+            - field: inventory.is_internet_facing
+              op: is_true
+            - field: finding.workflow_status
+              op: neq
+              value: resolved
+
+  # ── AU: Audit and Accountability ───────────────────────────
+  - ref: "AU.L2-3.3.5"
+    title: Audit Correlation
+    domain: Audit Logging
+    testability: automated
+    canonical_guidance: |
+      Audit records must be reviewed and analysed. Open critical SIEM
+      alerts indicate review/correlation is not being completed.
+    mappings:
+      - key: cmmc_2_0_l2_au_3_3_5_open_critical_alerts
+        when:
+          logic: AND
+          conditions:
+            - field: siem.has_active_alerts
+              op: is_true
+            - field: siem.critical_alert_count
+              op: gte
+              value: 1
+
+  # ── CM: Configuration Management ───────────────────────────
+  - ref: "CM.L2-3.4.1"
+    title: System Baselining
+    domain: Configuration Management
+    testability: manual_only
+    canonical_guidance: |
+      Baseline maintenance is evidence-based. Mark satisfied via
+      compensating-control note linking to baseline + drift records.
+    mappings: []
+
+  - ref: "CM.L2-3.4.6"
+    title: Least Functionality
+    domain: Hardening
+    testability: automated
+    canonical_guidance: |
+      Only essential capabilities must be enabled. Excess EASM-exposed
+      services on internet-facing assets fail this practice.
+    mappings:
+      - key: cmmc_2_0_l2_cm_3_4_6_excess_services
+        when:
+          logic: AND
+          conditions:
+            - field: finding.plugin_family
+              op: eq
+              value: "EASM: Exposed Service"
+            - field: inventory.is_internet_facing
+              op: is_true
+            - field: finding.workflow_status
+              op: neq
+              value: resolved
+
+  # ── RA: Risk Assessment ────────────────────────────────────
+  - ref: "RA.L2-3.11.2"
+    title: Vulnerability Scan
+    domain: Vulnerability Management
+    testability: automated
+    canonical_guidance: |
+      Vulnerabilities must be scanned for and remediated. KEV-listed
+      findings past SLA, or unresolved High+ CVEs, fail.
+    mappings:
+      - key: cmmc_2_0_l2_ra_3_11_2_kev_breached
+        when:
+          logic: AND
+          conditions:
+            - field: finding.is_kev
+              op: is_true
+            - field: finding.sla_status
+              op: in
+              value: [breached, at_risk]
+            - field: finding.workflow_status
+              op: not_in
+              value: [resolved, false_positive]
+      - key: cmmc_2_0_l2_ra_3_11_2_unresolved_high_cve
+        when:
+          logic: AND
+          conditions:
+            - field: finding.has_cve
+              op: is_true
+            - field: finding.severity
+              op: gte
+              value: 3
+            - field: finding.workflow_status
+              op: not_in
+              value: [resolved, false_positive, accepted_risk]
+
+  # ── SC: System and Communications Protection ───────────────
+  - ref: "SC.L2-3.13.1"
+    title: Boundary Protection
+    domain: Network Security
+    testability: automated
+    canonical_guidance: |
+      External communications must be monitored and controlled. EASM-
+      discovered exposed services indicate boundary control is incomplete.
+    mappings:
+      - key: cmmc_2_0_l2_sc_3_13_1_boundary_easm
+        when:
+          logic: AND
+          conditions:
+            - field: finding.plugin_family
+              op: eq
+              value: "EASM: Exposed Service"
+            - field: finding.workflow_status
+              op: not_in
+              value: [resolved, false_positive]
+
+  - ref: "SC.L2-3.13.8"
+    title: Data in Transit
+    domain: Cryptography
+    testability: automated
+    canonical_guidance: |
+      Cryptography must protect CUI during transmission. Cleartext or
+      weak-crypto findings fail this practice.
+    mappings:
+      - key: cmmc_2_0_l2_sc_3_13_8_transit_crypto
+        when:
+          logic: AND
+          conditions:
+            - field: finding.cwe
+              op: contains_any
+              value: ["CWE-319", "CWE-326", "CWE-327"]
+            - field: finding.workflow_status
+              op: neq
+              value: resolved
+
+  # ── SI: System and Information Integrity ───────────────────
+  - ref: "SI.L2-3.14.1"
+    title: Flaw Remediation
+    domain: Patch Management
+    testability: automated
+    canonical_guidance: |
+      System flaws must be remediated within defined timeframes. Patch
+      Management findings at High+ severity past SLA fail.
+    mappings:
+      - key: cmmc_2_0_l2_si_3_14_1_patch_breached
+        when:
+          logic: AND
+          conditions:
+            - field: finding.plugin_family
+              op: eq
+              value: "Patch Management"
+            - field: finding.severity
+              op: gte
+              value: 3
+            - field: finding.sla_status
+              op: in
+              value: [breached, at_risk]
+            - field: finding.workflow_status
+              op: neq
+              value: resolved
+
+  - ref: "SI.L2-3.14.2"
+    title: Malicious Code Protection
+    domain: Endpoint Protection
+    testability: automated
+    canonical_guidance: |
+      Malicious-code protection mechanisms must be employed. Assets
+      missing AV or EDR fail this practice.
+    mappings:
+      - key: cmmc_2_0_l2_si_3_14_2_no_av_or_edr
+        when:
+          logic: OR
+          conditions:
+            - field: inventory.no_av
+              op: is_true
+            - field: inventory.no_edr
+              op: is_true
+
+  - ref: "SI.L2-3.14.6"
+    title: Monitor Communications for Attacks
+    domain: Detection
+    testability: automated
+    canonical_guidance: |
+      Communications must be monitored to detect attacks. Observed ATT&CK
+      TTPs indicate active attacker interest or detection gaps.
+    mappings:
+      - key: cmmc_2_0_l2_si_3_14_6_attack_ttps
+        when:
+          logic: AND
+          conditions:
+            - field: finding.has_ttps
+              op: is_true
+            - field: finding.workflow_status
+              op: not_in
+              value: [resolved, false_positive]

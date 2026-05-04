@@ -1641,6 +1641,45 @@ export const listComplianceReports = (params = {}) => {
 }
 export const getComplianceReport = (runId) => request(`/compliance/reports/${runId}`)
 
+// Framework import / export — tenant-private packs.
+// Export streams YAML; the response Content-Disposition carries the filename.
+export const exportComplianceFramework = async (slug) => {
+  const headers = {}
+  const token = getStoredToken()
+  if (token) headers['Authorization'] = `Bearer ${token}`
+  const orgContext = getOrgContext()
+  if (orgContext) headers['X-Org-Context'] = orgContext
+  const res = await fetch(`${BASE}/compliance/frameworks/${slug}/export`, { headers })
+  if (!res.ok) {
+    let detail = ''
+    try { detail = (await res.json()).detail || '' } catch { /* not json */ }
+    throw new Error(detail || `Export failed (${res.status})`)
+  }
+  const blob = await res.blob()
+  const blobUrl = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = blobUrl
+  a.download = `compliance_${slug}.yaml`
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(blobUrl)
+}
+
+export const importComplianceFramework = (yamlText) => request(
+  '/compliance/frameworks/import',
+  {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ yaml_text: yamlText }),
+  },
+)
+
+export const deleteImportedFramework = (slug) => request(
+  `/compliance/frameworks/${slug}/imported`,
+  { method: 'DELETE' },
+)
+
 // Download a report artifact (CSV/JSON) — mirrors exportDownload's blob-link flow.
 export const downloadComplianceReport = async (runId, frameworkSlug = 'framework', fmt = 'csv') => {
   const headers = {}

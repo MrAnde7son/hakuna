@@ -160,9 +160,23 @@ def _coerce_published_at(raw: Any) -> Optional[datetime]:
 # Idempotent upserts
 # ──────────────────────────────────────────────────────────────
 
-def _upsert_framework(db: Session, fw_block: dict) -> ComplianceFramework:
+def _upsert_framework(
+    db: Session,
+    fw_block: dict,
+    *,
+    org_id: Optional[int] = None,
+    created_by: Optional[int] = None,
+    source: str = "builtin",
+) -> ComplianceFramework:
     slug = fw_block["slug"]
-    fw = db.query(ComplianceFramework).filter_by(slug=slug).first()
+    # Slug uniqueness is per-org since migration 060 — match exactly the same
+    # (slug, org_id) row so a tenant import can never overwrite a builtin.
+    fw = (
+        db.query(ComplianceFramework)
+        .filter(ComplianceFramework.slug == slug,
+                ComplianceFramework.org_id == org_id)
+        .first()
+    )
     if fw is None:
         fw = ComplianceFramework(
             slug=slug,
@@ -173,6 +187,9 @@ def _upsert_framework(db: Session, fw_block: dict) -> ComplianceFramework:
             description=fw_block.get("description"),
             categories=list(fw_block.get("categories") or []),
             mapping_schema_version=int(fw_block.get("mapping_schema_version", 1)),
+            org_id=org_id,
+            created_by=created_by,
+            source=source,
         )
         db.add(fw)
         db.flush()
@@ -227,7 +244,11 @@ def _normalize_rule(when_block: dict) -> dict:
 def _upsert_mapping(db: Session, ctrl: ComplianceControl, mapping_block: dict) -> ComplianceControlMapping:
     key = mapping_block["key"]
     rule = _normalize_rule(mapping_block["when"])
-    existing = db.query(ComplianceControlMapping).filter_by(mapping_key=key).first()
+    existing = (
+        db.query(ComplianceControlMapping)
+        .filter_by(control_id=ctrl.id, mapping_key=key)
+        .first()
+    )
     if existing is None:
         m = ComplianceControlMapping(
             control_id=ctrl.id,
@@ -239,10 +260,8 @@ def _upsert_mapping(db: Session, ctrl: ComplianceControl, mapping_block: dict) -
         db.add(m)
         db.flush()
         return m
-    # Re-link the mapping to the (possibly new) control_id and bump
-    # rule_version when the rule body actually changed.
-    if existing.control_id != ctrl.id:
-        existing.control_id = ctrl.id
+    # Bump rule_version when the rule body actually changed; control_id is
+    # already part of the lookup key, so no relink is needed.
     if existing.rule != rule:
         existing.rule = rule
         existing.rule_version = (existing.rule_version or 1) + 1
@@ -335,6 +354,115 @@ def _audit_log(db: Session, action: str, fw: ComplianceFramework, payload: dict)
 # ──────────────────────────────────────────────────────────────
 # Public API
 # ──────────────────────────────────────────────────────────────
+
+def load_framework_from_yaml_text(
+    db: Session,
+    yaml_text: str,
+    *,
+    org_id: int,
+    created_by: Optional[int] = None,
+    catalog_map: Optional[dict[str, set[str]]] = None,
+) -> dict:
+    """Load a tenant-imported framework from a YAML string.
+
+    Thin wrapper around the same parse → validate → upsert path used for
+    on-disk packs, with two differences:
+      - org_id is required (an import always belongs to a tenant)
+      - source is recorded as "imported" so the UI can label it
+
+    Returns the same status dict as load_framework_from_path.
+    """
+    if not org_id:
+        return {"status": "schema_error", "error": "org_id required for imported framework"}
+
+    catalog_map = catalog_map or _flatten_catalog(CONDITION_CATALOG)
+    sha256 = hashlib.sha256(yaml_text.encode("utf-8")).hexdigest()
+
+    try:
+        doc = yaml.safe_load(yaml_text)
+    except yaml.YAMLError as exc:
+        return {"status": "parse_error", "error": str(exc)}
+
+    if not isinstance(doc, dict) or "framework" not in doc:
+        return {"status": "schema_error",
+                "error": "top-level YAML must contain a `framework` block"}
+
+    fw_block = doc["framework"]
+    release_block = doc.get("release") or {}
+    controls_block = doc.get("controls") or []
+
+    if not fw_block.get("slug"):
+        return {"status": "schema_error", "error": "framework.slug is required"}
+
+    for ctrl_block in controls_block:
+        for mapping_block in (ctrl_block.get("mappings") or []):
+            err = _validate_rule(mapping_block.get("when") or {}, catalog_map)
+            if err:
+                return {
+                    "status": "validation_error",
+                    "framework_slug": fw_block["slug"],
+                    "error": (
+                        f"mapping {mapping_block.get('key')!r} under control "
+                        f"{ctrl_block.get('ref')!r}: {err}"
+                    ),
+                }
+
+    # Existing tenant-private framework with this slug?
+    existing = (
+        db.query(ComplianceFramework)
+        .filter(ComplianceFramework.slug == fw_block["slug"],
+                ComplianceFramework.org_id == org_id)
+        .first()
+    )
+    is_new = existing is None
+    if existing is not None:
+        last_release = (
+            db.query(ComplianceFrameworkRelease)
+            .filter_by(framework_id=existing.id)
+            .order_by(ComplianceFrameworkRelease.released_at.desc())
+            .first()
+        )
+        if last_release and last_release.mapping_file_sha256 == sha256:
+            return {
+                "status": "skipped", "framework_slug": existing.slug,
+                "release_tag": last_release.release_tag,
+            }
+
+    fw = _upsert_framework(
+        db, fw_block,
+        org_id=org_id, created_by=created_by, source="imported",
+    )
+    keep_refs: set[str] = set()
+    for ctrl_block in controls_block:
+        ctrl = _upsert_control(db, fw, ctrl_block)
+        keep_refs.add(ctrl.ref)
+        keep_keys: set[str] = set()
+        for mapping_block in (ctrl_block.get("mappings") or []):
+            m = _upsert_mapping(db, ctrl, mapping_block)
+            keep_keys.add(m.mapping_key)
+        _delete_stale_mappings(db, ctrl, keep_keys)
+    _delete_stale_controls(db, fw, keep_refs)
+
+    release_tag = release_block.get("tag") or f"sha256:{sha256[:12]}"
+    _record_release(db, fw, release_tag=release_tag,
+                    release_notes=release_block.get("notes"), sha256=sha256)
+
+    status = "loaded" if is_new else "updated"
+    _audit_log(db, action=f"import_{status}", fw=fw, payload={
+        "release_tag": release_tag,
+        "sha256": sha256,
+        "controls_count": len(controls_block),
+        "org_id": org_id,
+        "created_by": created_by,
+    })
+    db.commit()
+
+    return {
+        "status": status, "framework_slug": fw.slug,
+        "framework_id": fw.id, "release_tag": release_tag,
+        "controls_loaded": len(controls_block),
+    }
+
 
 def load_framework_from_path(
     db: Session,
