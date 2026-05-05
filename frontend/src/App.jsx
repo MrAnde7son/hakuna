@@ -1219,7 +1219,8 @@ function AppShell() {
           >
             <GettingStartedPanel />
             <FirstScanBanner />
-            <SubscriptionBanner />
+            {/* TODO: Re-enable Stripe billing UI once US incorporation is complete and we're ready to charge users. */}
+            {/* <SubscriptionBanner /> */}
             <ErrorBoundary fullPage title="Page failed to load">
             <Suspense fallback={<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '60vh', color: 'var(--muted)' }}>Loading...</div>}>
               <Routes>

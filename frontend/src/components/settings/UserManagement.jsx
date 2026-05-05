@@ -442,7 +442,8 @@ export default function UserManagement() {
         )}
       </div>
 
-      <SubscriptionSection />
+      {/* TODO: Re-enable Stripe checkout / subscription UI once US incorporation is complete and we have paying users. */}
+      {/* <SubscriptionSection /> */}
     </div>
   )
 }
