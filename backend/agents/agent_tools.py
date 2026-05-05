@@ -5762,6 +5762,7 @@ _SQL_TABLE_ORG_FILTER = {
     "scans":               "direct",
     "assets":              "via_scan",
     "findings":            "via_scan",
+    "audit_logs":          "direct",
     "tags":                "direct",
     "tag_assignments":     None,       # safe — joins to tags/findings which are filtered
     "campaigns":           "direct",

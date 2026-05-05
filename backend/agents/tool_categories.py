@@ -255,8 +255,14 @@ TOOL_CATEGORIES = {
     },
     "audit_log": {
         "keywords": [
-            "audit log", "audit trail", "who changed", "who deleted",
-            "history of changes", "activity log", "change log",
+            "audit log", "audit trail", "activity log", "change log",
+            "history of changes",
+            "who changed", "who deleted", "who created", "who updated",
+            "who initiated", "who started", "who ran", "who triggered",
+            "who uploaded", "who launched", "who imported", "who modified",
+            "who enabled", "who disabled", "who assigned", "who removed",
+            "initiated by", "triggered by", "uploaded by", "created by",
+            "started by", "launched by", "imported by", "modified by",
         ],
         "tools": ["query_audit_log"],
     },
