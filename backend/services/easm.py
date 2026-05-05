@@ -787,6 +787,35 @@ async def cancel_easm_scan(hakuna_org_id: str, scan_id: str) -> tuple[bool, Opti
     return False, err or (f"HTTP {status}" if status else "Scanner unreachable")
 
 
+async def trigger_github_npm_scan(
+    hakuna_org_id: str,
+    target_domain: str,
+    *,
+    mode: str = "discovery",
+    enable_keyword_search: bool = True,
+    confidence_threshold: float = 0.3,
+) -> Optional[dict]:
+    """Run GitHub/npm attribution for a domain on hakuna-scanner.
+
+    Synchronous: the scanner runs the engine inline and returns the unified
+    DiscoveryResult. We override the default 30s client timeout because
+    discovery hits dozens of GitHub/npm endpoints and can legitimately take
+    several minutes when the rate limit kicks in.
+    """
+    payload = {
+        "target_domain": target_domain,
+        "mode": mode,
+        "confidence_threshold": confidence_threshold,
+        "enable_keyword_search": enable_keyword_search,
+    }
+    return await _hakuna_request(
+        "POST",
+        f"/orgs/{hakuna_org_id}/github-attribution",
+        json=payload,
+        timeout=httpx.Timeout(600.0, connect=5.0),
+    )
+
+
 async def get_easm_assets(
     hakuna_org_id: str,
     limit: int = 1000,
@@ -2018,6 +2047,12 @@ def _import_assets_for_domain(
         elif a.hostname:
             existing_by_hostname[a.hostname] = a
 
+    # Pre-build the (kind, identity) lookup used by _promote_easm_subassets so
+    # the per-host promotion stays idempotent within a scan without an extra
+    # query per asset. asset_identity is a JSON column (not JSONB) so we
+    # filter in Python rather than via SQL JSON path.
+    existing_subassets = _build_subasset_lookup(scan.id, db)
+
     for ea in easm_assets:
         raw_hostname = ea.get("hostname", "") or ""
         raw_ip = ea.get("ip", "") or ""
@@ -2172,7 +2207,479 @@ def _import_assets_for_domain(
         findings_created += fcount
         new_finding_ids.extend(fids)
 
+        # Promote scanner classifications into first-class child assets
+        # (ai_agent / mcp_server / cloud_storage_bucket). Non-fatal: a
+        # failure here must not break asset ingest for the parent host.
+        try:
+            child_ids = _promote_easm_subassets(
+                db, scan, asset, ea, now, existing_subassets,
+            )
+            if child_ids:
+                new_asset_ids.extend(child_ids)
+                created += len(child_ids)
+        except Exception:
+            logger.exception("subasset promotion failed for asset %s", asset.id)
+            db.rollback()
+
     return created, findings_created, new_asset_ids, new_finding_ids
+
+
+# ── First-class child-asset promotion (ai_agent / mcp_server / bucket) ──
+
+# Asset kinds the EASM ingest promotes from scanner classifier output.
+# These sit "on top of" the host (one host can serve multiple AI apps),
+# linked back via ``asset_attributes.parent_asset_id``.
+_PROMOTE_AS_CHILD = {"ai_agent", "mcp_server"}
+
+# CNAME suffixes that identify cloud storage buckets. We match on
+# substring rather than exact suffix because providers expose multiple
+# variants (regional endpoints, website endpoints, dualstack hostnames)
+# whose only stable signal is the suffix family.
+_BUCKET_CNAME_PATTERNS: list[tuple[str, str]] = [
+    (".s3.amazonaws.com", "aws_s3"),
+    (".s3-website", "aws_s3"),
+    (".s3-accelerate.amazonaws.com", "aws_s3"),
+    (".s3.dualstack.", "aws_s3"),
+    (".s3.", "aws_s3"),
+    (".storage.googleapis.com", "gcs"),
+    (".blob.core.windows.net", "azure_blob"),
+    (".web.core.windows.net", "azure_blob"),
+    (".r2.cloudflarestorage.com", "cloudflare_r2"),
+    (".digitaloceanspaces.com", "do_spaces"),
+]
+
+
+def _detect_bucket_from_cname(cname: str) -> Optional[tuple[str, str]]:
+    """Return (provider, bucket_name) if cname matches a bucket pattern.
+
+    The bucket name is the leftmost label of the CNAME — the only
+    component that's stable across provider URL formats.
+    """
+    if not cname:
+        return None
+    cname_lower = str(cname).lower().rstrip(".")
+    for suffix, provider in _BUCKET_CNAME_PATTERNS:
+        if suffix in cname_lower:
+            bucket_name = cname_lower.split(".", 1)[0]
+            if bucket_name and bucket_name != cname_lower:
+                return provider, bucket_name
+    return None
+
+
+def _build_subasset_lookup(scan_id: int, db: Session) -> dict[tuple, Asset]:
+    """Build a (asset_type, identity-tuple) → Asset lookup for this scan.
+
+    Mirrors the pattern in ``_import_github_npm_assets``. Lets the
+    promotion path stay idempotent within a scan without a per-asset
+    JSON-column query (assets.asset_identity is JSON, not JSONB, so
+    SQL-side path filtering is unreliable).
+    """
+    out: dict[tuple, Asset] = {}
+    rows = db.query(Asset).filter(
+        Asset.scan_id == scan_id,
+        Asset.asset_type.in_(("ai_agent", "mcp_server", "cloud_storage_bucket")),
+    ).all()
+    for a in rows:
+        ident = a.asset_identity or {}
+        if a.asset_type in _PROMOTE_AS_CHILD:
+            out[(a.asset_type, ident.get("url"))] = a
+        elif a.asset_type == "cloud_storage_bucket":
+            out[(a.asset_type, ident.get("provider"), ident.get("bucket_name"))] = a
+    return out
+
+
+def _promote_easm_subassets(
+    db: Session,
+    scan: Scan,
+    host_asset: Asset,
+    ea: dict,
+    now: datetime,
+    existing: dict[tuple, Asset],
+) -> list[int]:
+    """Create first-class child Assets from scanner classifier output.
+
+    Two promotion paths today:
+
+    * ``asset_type`` in {ai_agent, mcp_server} — child sits on the host,
+      keyed by URL, parent_asset_id back-references the host.
+    * ``dns_records.CNAME`` matches a known bucket suffix —
+      cloud_storage_bucket asset keyed by (provider, bucket_name).
+
+    Idempotent within a scan via the pre-built ``existing`` lookup.
+    Returns IDs of newly created rows only.
+    """
+    new_ids: list[int] = []
+    asset_type = (ea.get("asset_type") or "").lower()
+    hostname = host_asset.hostname or host_asset.fqdn
+
+    # ── ai_agent / mcp_server ─────────────────────────────────────
+    if asset_type in _PROMOTE_AS_CHILD and hostname:
+        url = (ea.get("http_url") or f"https://{hostname}").strip()
+        identity = {"url": url, "host": hostname}
+        attributes = {
+            "parent_asset_id": host_asset.id,
+            "service": asset_type,
+            "tech_stack": ea.get("tech_stack") or [],
+        }
+        key = (asset_type, url)
+        a = existing.get(key)
+        if a:
+            a.asset_attributes = {**(a.asset_attributes or {}), **attributes}
+            a.last_seen = now
+            sources = a.source_systems or []
+            if "easm" not in sources:
+                a.source_systems = sources + ["easm"]
+        else:
+            a = Asset(
+                scan_id=scan.id,
+                hostname=hostname,
+                ip=host_asset.ip,
+                asset_type=asset_type,
+                asset_identity=identity,
+                asset_attributes=attributes,
+                is_internet_facing=host_asset.is_internet_facing,
+                environment_tag=host_asset.environment_tag or "external",
+                criticality=host_asset.criticality or 5,
+                first_seen=now,
+                last_seen=now,
+                source_systems=["easm"],
+            )
+            db.add(a)
+            db.flush()
+            existing[key] = a
+            new_ids.append(a.id)
+
+    # ── cloud_storage_bucket ──────────────────────────────────────
+    dns_records = ea.get("dns_records") or {}
+    cnames = dns_records.get("CNAME") or dns_records.get("cname") or []
+    if isinstance(cnames, str):
+        cnames = [cnames]
+    for cname in cnames:
+        match = _detect_bucket_from_cname(cname)
+        if not match:
+            continue
+        provider, bucket_name = match
+        bucket_fqdn = str(cname).lower().rstrip(".")
+        identity = {"provider": provider, "bucket_name": bucket_name}
+        attributes = {
+            "parent_asset_id": host_asset.id,
+            "fronting_host": hostname,
+            "cname": bucket_fqdn,
+        }
+        key = ("cloud_storage_bucket", provider, bucket_name)
+        a = existing.get(key)
+        if a:
+            a.asset_attributes = {**(a.asset_attributes or {}), **attributes}
+            a.last_seen = now
+            sources = a.source_systems or []
+            if "easm" not in sources:
+                a.source_systems = sources + ["easm"]
+        else:
+            a = Asset(
+                scan_id=scan.id,
+                hostname=bucket_fqdn,
+                fqdn=bucket_fqdn,
+                asset_type="cloud_storage_bucket",
+                asset_identity=identity,
+                asset_attributes=attributes,
+                is_internet_facing=True,
+                environment_tag="external",
+                criticality=5,
+                first_seen=now,
+                last_seen=now,
+                source_systems=["easm"],
+            )
+            db.add(a)
+            db.flush()
+            existing[key] = a
+            new_ids.append(a.id)
+        # First matching CNAME wins — a host typically fronts at most one bucket.
+        break
+
+    return new_ids
+
+
+# ── GitHub/npm attribution ingest ───────────────────────────────────
+
+# severity strings emitted by hakuna-scanner ExposedFile/WorkflowRisk records
+# → numeric levels matching Finding.severity (4=Critical … 0=Info).
+_GH_SEVERITY_MAP: dict[str, tuple[int, str, str, float]] = {
+    "critical": (4, "Critical", "Critical", 9.0),
+    "high":     (3, "High",     "High",     7.5),
+    "medium":   (2, "Medium",   "Medium",   5.0),
+    "low":      (1, "Low",      "Low",      3.0),
+    "info":     (0, "Info",     "None",     1.0),
+}
+
+
+def _split_repo_full_name(full_name: str) -> tuple[str, str]:
+    """Split "owner/repo" into ("owner", "repo"); empty strings on malformed input."""
+    if not full_name or "/" not in full_name:
+        return "", full_name or ""
+    owner, _, repo = full_name.partition("/")
+    return owner, repo
+
+
+def _import_github_npm_assets(
+    db: Session, scan: Scan, result: dict, domain: str,
+) -> Tuple[int, int, list, list]:
+    """Upsert code_repo / github_org / github_user / npm_package assets from a
+    DiscoveryResult, plus exposed-file findings on the matching repo assets.
+
+    Returns ``(asset_count, finding_count, new_asset_ids, new_finding_ids)``.
+    Idempotent within a scan: existing assets matched by (asset_type, identity)
+    are updated in place; existing findings keyed by (plugin_id, asset_id) are
+    refreshed. Cross-scan dedup runs later via the standard dedup_config.
+    """
+    attributed = (result or {}).get("attributed_assets") or {}
+    vulns = (result or {}).get("vulnerabilities") or {}
+    now = datetime.utcnow()
+
+    new_asset_ids: list[int] = []
+    new_finding_ids: list[int] = []
+    asset_count = 0
+
+    # Build lookup of existing assets in this scan by (asset_type, identity-tuple)
+    existing: dict[tuple[str, tuple], Asset] = {}
+    for a in db.query(Asset).filter(Asset.scan_id == scan.id).all():
+        if not a.asset_type or not a.asset_identity:
+            continue
+        ident = a.asset_identity or {}
+        if a.asset_type == "code_repo":
+            key = (a.asset_type, (ident.get("provider"), ident.get("org"), ident.get("repo")))
+        elif a.asset_type in ("github_org", "github_user"):
+            key = (a.asset_type, (ident.get("provider"), ident.get("login")))
+        elif a.asset_type == "npm_package":
+            key = (a.asset_type, (ident.get("registry"), ident.get("name")))
+        else:
+            continue
+        existing[key] = a
+
+    def _upsert(asset_type: str, identity: dict, attributes: dict) -> Asset:
+        nonlocal asset_count
+        if asset_type == "code_repo":
+            key = (asset_type, (identity.get("provider"), identity.get("org"), identity.get("repo")))
+        elif asset_type in ("github_org", "github_user"):
+            key = (asset_type, (identity.get("provider"), identity.get("login")))
+        else:  # npm_package
+            key = (asset_type, (identity.get("registry"), identity.get("name")))
+
+        a = existing.get(key)
+        if a:
+            a.asset_attributes = {**(a.asset_attributes or {}), **attributes}
+            a.last_seen = now
+            sources = a.source_systems or []
+            if "easm" not in sources:
+                a.source_systems = sources + ["easm"]
+        else:
+            a = Asset(
+                scan_id=scan.id,
+                asset_type=asset_type,
+                asset_identity=identity,
+                asset_attributes=attributes,
+                is_internet_facing=True,
+                environment_tag="external",
+                criticality=5,
+                first_seen=now,
+                last_seen=now,
+                source_systems=["easm"],
+            )
+            db.add(a)
+            db.flush()
+            existing[key] = a
+            new_asset_ids.append(a.id)
+        record_observation(
+            db, asset_id=a.id, source_system="easm",
+            raw_fields={"asset_type": asset_type, "identity": identity, "attributes": attributes},
+            scan_id=scan.id, org_id=scan.org_id,
+        )
+        asset_count += 1
+        return a
+
+    # ── github_org assets ─────────────────────────────────────────
+    for org in attributed.get("github_orgs") or []:
+        login = org.get("login")
+        if not login:
+            continue
+        _upsert(
+            "github_org",
+            {"provider": "github", "login": login},
+            {
+                "url": org.get("url"),
+                "blog": org.get("blog"),
+                "email": org.get("email"),
+                "is_verified_domain": bool(org.get("is_verified_domain")),
+                "domain_match": org.get("domain_match"),
+                "confidence_score": org.get("confidence_score"),
+                "reasons": org.get("reasons") or [],
+                "discovered_for_domain": domain,
+            },
+        )
+
+    # ── github_user assets ────────────────────────────────────────
+    for user in attributed.get("github_users") or []:
+        login = user.get("login")
+        if not login:
+            continue
+        _upsert(
+            "github_user",
+            {"provider": "github", "login": login},
+            {
+                "url": user.get("url"),
+                "email": user.get("email"),
+                "confidence_score": user.get("confidence_score"),
+                "reasons": user.get("reasons") or [],
+                "discovered_for_domain": domain,
+            },
+        )
+
+    # ── code_repo assets ──────────────────────────────────────────
+    repo_assets_by_full_name: dict[str, Asset] = {}
+    for repo in attributed.get("github_repos") or []:
+        full_name = repo.get("full_name") or ""
+        owner, name = _split_repo_full_name(full_name)
+        if not owner or not name:
+            continue
+        a = _upsert(
+            "code_repo",
+            {"provider": "github", "org": owner, "repo": name},
+            {
+                "full_name": full_name,
+                "url": repo.get("url"),
+                "clone_url": repo.get("clone_url"),
+                "default_branch": repo.get("default_branch") or "main",
+                "owner_login": repo.get("owner_login"),
+                "owner_type": repo.get("owner_type"),
+                "is_fork": bool(repo.get("is_fork")),
+                "archived": bool(repo.get("archived")),
+                "stars": repo.get("stars") or 0,
+                "language": repo.get("language"),
+                "pushed_at": repo.get("pushed_at"),
+                "confidence_score": repo.get("confidence_score"),
+                "reasons": repo.get("reasons") or [],
+                "discovered_for_domain": domain,
+            },
+        )
+        repo_assets_by_full_name[full_name] = a
+
+    # ── npm_package assets ────────────────────────────────────────
+    for pkg in attributed.get("npm_packages") or []:
+        name = pkg.get("name")
+        if not name:
+            continue
+        _upsert(
+            "npm_package",
+            {"registry": "npm", "name": name},
+            {
+                "version": pkg.get("version"),
+                "maintainers": pkg.get("maintainers") or [],
+                "repository_url": pkg.get("repository_url"),
+                "homepage": pkg.get("homepage"),
+                "last_published": pkg.get("last_published"),
+                "confidence_score": pkg.get("confidence_score"),
+                "reasons": pkg.get("reasons") or [],
+                "discovered_for_domain": domain,
+            },
+        )
+
+    # ── exposed_files findings on code_repo assets ────────────────
+    # Each ExposedFile becomes one Finding on the parent code_repo asset.
+    # We use a stable plugin_id per rule_id so multiple files of the same
+    # type on one repo dedup, but different rule types coexist.
+    findings_to_add: list[Finding] = []
+    # Pre-fetch existing easm-source findings on repo assets in this scan to
+    # detect duplicates and refresh in place rather than re-inserting.
+    repo_asset_ids = [a.id for a in repo_assets_by_full_name.values()]
+    existing_findings: dict[tuple[int, str], Finding] = {}
+    if repo_asset_ids:
+        for f in db.query(Finding).filter(
+            Finding.scan_id == scan.id,
+            Finding.asset_id.in_(repo_asset_ids),
+            Finding.source_type == "easm",
+        ).all():
+            existing_findings[(f.asset_id, f.plugin_id)] = f
+
+    finding_count = 0
+    for ef in vulns.get("exposed_files") or []:
+        repo_full_name = ef.get("repo") or ""
+        asset = repo_assets_by_full_name.get(repo_full_name)
+        if not asset:
+            continue
+        rule_id = (ef.get("rule_id") or "unknown").upper()
+        pid = f"EASM-EXPOSED-FILE-{rule_id}"
+        sev_key = (ef.get("severity") or "medium").lower()
+        sev, sev_label, risk, priority = _GH_SEVERITY_MAP.get(
+            sev_key, _GH_SEVERITY_MAP["medium"],
+        )
+        path = ef.get("path") or ""
+        url = ef.get("url") or ""
+        detail = ef.get("detail") or ""
+        plugin_output = "\n".join(filter(None, [
+            f"Repository: {repo_full_name}",
+            f"Path: {path}",
+            f"URL: {url}",
+            f"Detail: {detail}" if detail else "",
+        ]))
+        existing = existing_findings.get((asset.id, pid))
+        if existing:
+            existing.severity = sev
+            existing.severity_label = sev_label
+            existing.risk_factor = risk
+            existing.priority_score = priority
+            existing.last_seen = now
+            existing.plugin_output = plugin_output
+            finding_count += 1
+            continue
+
+        findings_to_add.append(Finding(
+            scan_id=scan.id, asset_id=asset.id,
+            source_type="easm", source_vuln_id=pid,
+            plugin_id=pid,
+            plugin_name=f"Exposed {rule_id} file in public repository",
+            plugin_family="EASM: Other",
+            severity=sev, severity_label=sev_label, risk_factor=risk,
+            priority_score=priority, effort_level="medium",
+            owner_suggestion="AppSec",
+            synopsis=(
+                f"A well-known sensitive file ({path}) is publicly accessible in "
+                f"GitHub repository {repo_full_name}."
+            ),
+            description=(
+                f"The file path '{path}' was found in the public repository "
+                f"{repo_full_name}. Files matching the rule '{rule_id}' commonly "
+                f"contain credentials, infrastructure secrets, or other sensitive "
+                f"data that should not be published. Only the file's presence at a "
+                f"known path was recorded — content was not retrieved."
+            ),
+            solution=(
+                "Review the file and rotate any credentials or secrets it contains. "
+                "Remove the file from the repository and rewrite history "
+                "(e.g. `git filter-repo`) so the leaked content is not retrievable "
+                "from the commit log. Add the path to .gitignore and consider "
+                "enabling secret scanning / push protection on the repository."
+            ),
+            plugin_output=plugin_output,
+            first_seen=now, last_seen=now,
+        ))
+        finding_count += 1
+
+    for f in findings_to_add:
+        f.source_systems = ["easm"]
+    if findings_to_add:
+        db.add_all(findings_to_add)
+        db.flush()
+        from services.asset_observations import record_finding_observation
+        for f in findings_to_add:
+            record_finding_observation(
+                db, finding_id=f.id, source_system="easm",
+                raw_fields={"plugin_id": f.plugin_id, "plugin_name": f.plugin_name,
+                             "severity": f.severity, "plugin_output": f.plugin_output},
+                scan_id=scan.id, org_id=scan.org_id,
+            )
+            if f.id is not None:
+                new_finding_ids.append(f.id)
+
+    return asset_count, finding_count, new_asset_ids, new_finding_ids
 
 
 async def import_easm_assets_for_domain(
@@ -2467,6 +2974,37 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
             created, findings_created, _new_asset_ids, _new_finding_ids = _import_assets_for_domain(
                 db, scan, easm_assets, domain,
             )
+
+            # Commit host-asset import before kicking off GitHub/npm attribution.
+            # The attribution step is network-dependent and can take minutes;
+            # a failure (network blip, scanner restart) should not roll back the
+            # host import we just finished.
+            db.commit()
+
+            # GitHub/npm attribution: discover and ingest code_repo / github_org /
+            # github_user / npm_package assets for the same domain. Non-fatal —
+            # if the scanner endpoint is unavailable or rate-limited, the host
+            # asset import above still succeeds.
+            gh_asset_count = 0
+            gh_finding_count = 0
+            try:
+                gh_result = await trigger_github_npm_scan(org.easm_org_id, domain)
+                if gh_result:
+                    gh_asset_count, gh_finding_count, _gh_aids, _gh_fids = (
+                        _import_github_npm_assets(db, scan, gh_result, domain)
+                    )
+                    created += gh_asset_count
+                    findings_created += gh_finding_count
+                    db.commit()
+                    logger.info(
+                        f"EASM GitHub/npm import for '{domain}': "
+                        f"assets={gh_asset_count} findings={gh_finding_count}"
+                    )
+            except Exception:
+                logger.exception(
+                    f"GitHub/npm attribution failed for '{domain}' (non-fatal)"
+                )
+                db.rollback()
 
             now = datetime.utcnow()
             scan.raw_metadata = {

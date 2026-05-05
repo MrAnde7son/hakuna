@@ -205,6 +205,7 @@ const TABS = [
 
 function TypeSpecificAttributesSection({ asset }) {
   const { t } = useTranslation()
+  const navigate = useNavigate()
   const identity = asset?.asset_identity && typeof asset.asset_identity === 'object' ? asset.asset_identity : {}
   const attributes = asset?.asset_attributes && typeof asset.asset_attributes === 'object' ? asset.asset_attributes : {}
   // Identity keys already surfaced in the Network & Identity section for host-type
@@ -217,13 +218,29 @@ function TypeSpecificAttributesSection({ asset }) {
   const attributeEntries = Object.entries(attributes).filter(([, v]) => v != null && v !== '')
   if (identityEntries.length === 0 && attributeEntries.length === 0) return null
   const typeLabel = getAssetTypeLabel(asset?.asset_type)
+
+  const renderAttrValue = (k, v) => {
+    if (k === 'parent_asset_id' && v) {
+      return (
+        <a
+          href={`/assets/${v}`}
+          onClick={(e) => { e.preventDefault(); navigate(`/assets/${v}`) }}
+          style={{ color: 'var(--accent)', textDecoration: 'none' }}
+        >
+          {String(v)} →
+        </a>
+      )
+    }
+    return renderJsonValue(v)
+  }
+
   return (
     <Section title={t('assetDetail.typeAttributes', { type: typeLabel, defaultValue: `${typeLabel} attributes` })} icon={Package}>
       {identityEntries.map(([k, v]) => (
         <KeyVal key={`id-${k}`} label={prettifyKey(k)}>{renderJsonValue(v)}</KeyVal>
       ))}
       {attributeEntries.map(([k, v]) => (
-        <KeyVal key={`attr-${k}`} label={prettifyKey(k)}>{renderJsonValue(v)}</KeyVal>
+        <KeyVal key={`attr-${k}`} label={prettifyKey(k)}>{renderAttrValue(k, v)}</KeyVal>
       ))}
     </Section>
   )

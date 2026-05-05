@@ -79,6 +79,36 @@
       "strategy": "merge",
       "scope": "cross_scan"
     },
+    "github_org": {
+      "enabled": true,
+      "key_fields": [
+        "provider",
+        "login"
+      ],
+      "key_mode": "and",
+      "strategy": "merge",
+      "scope": "cross_scan"
+    },
+    "github_user": {
+      "enabled": true,
+      "key_fields": [
+        "provider",
+        "login"
+      ],
+      "key_mode": "and",
+      "strategy": "merge",
+      "scope": "cross_scan"
+    },
+    "npm_package": {
+      "enabled": true,
+      "key_fields": [
+        "registry",
+        "name"
+      ],
+      "key_mode": "and",
+      "strategy": "merge",
+      "scope": "cross_scan"
+    },
     "k8s_workload": {
       "enabled": true,
       "key_fields": [
@@ -86,6 +116,34 @@
         "namespace",
         "kind",
         "name"
+      ],
+      "key_mode": "and",
+      "strategy": "merge",
+      "scope": "cross_scan"
+    },
+    "ai_agent": {
+      "enabled": true,
+      "key_fields": [
+        "url"
+      ],
+      "key_mode": "and",
+      "strategy": "merge",
+      "scope": "cross_scan"
+    },
+    "mcp_server": {
+      "enabled": true,
+      "key_fields": [
+        "url"
+      ],
+      "key_mode": "and",
+      "strategy": "merge",
+      "scope": "cross_scan"
+    },
+    "cloud_storage_bucket": {
+      "enabled": true,
+      "key_fields": [
+        "provider",
+        "bucket_name"
       ],
       "key_mode": "and",
       "strategy": "merge",

@@ -85,6 +85,9 @@ KEY_FIELD_OPTIONS: dict[str, list[str]] = {
     "assets.identity": ["provider", "principal_id", "tenant_id"],
     "assets.container_image": ["registry", "repository", "tag", "digest"],
     "assets.code_repo": ["provider", "org", "repo"],
+    "assets.github_org": ["provider", "login"],
+    "assets.github_user": ["provider", "login"],
+    "assets.npm_package": ["registry", "name"],
     "assets.k8s_workload": ["cluster", "namespace", "kind", "name"],
     # Legacy flat key (backward compat for old UI / config references)
     "assets": ["ip", "hostname", "fqdn", "netbios_name"],
@@ -160,6 +163,27 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "code_repo": {
             "enabled": True,
             "key_fields": ["provider", "org", "repo"],
+            "key_mode": "and",
+            "strategy": "merge",
+            "scope": "cross_scan",
+        },
+        "github_org": {
+            "enabled": True,
+            "key_fields": ["provider", "login"],
+            "key_mode": "and",
+            "strategy": "merge",
+            "scope": "cross_scan",
+        },
+        "github_user": {
+            "enabled": True,
+            "key_fields": ["provider", "login"],
+            "key_mode": "and",
+            "strategy": "merge",
+            "scope": "cross_scan",
+        },
+        "npm_package": {
+            "enabled": True,
+            "key_fields": ["registry", "name"],
             "key_mode": "and",
             "strategy": "merge",
             "scope": "cross_scan",

@@ -189,6 +189,9 @@ ASSET_TYPE_DEFAULTS: dict[str, dict] = {
     "identity":         {"environment_tag": "internal", "business_context": "Identity",        "context_criticality": 6},
     "container_image":  {"environment_tag": "cloud",    "business_context": "Container",       "context_criticality": 5},
     "code_repo":        {"environment_tag": "development", "business_context": "Code Repository", "context_criticality": 4},
+    "github_org":       {"environment_tag": "external",    "business_context": "GitHub Organization", "context_criticality": 3},
+    "github_user":      {"environment_tag": "external",    "business_context": "GitHub User",     "context_criticality": 2},
+    "npm_package":      {"environment_tag": "external",    "business_context": "npm Package",     "context_criticality": 3},
     "k8s_workload":     {"environment_tag": "cloud",    "business_context": "K8s Workload",    "context_criticality": 5},
 }
 

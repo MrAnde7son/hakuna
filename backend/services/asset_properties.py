@@ -94,7 +94,8 @@ _REGISTRY: List[AssetProperty] = [
     AssetProperty(
         "asset_type", "Asset Type", "enum", _col("asset_type"), "identity",
         enum_values=["host", "web_app", "cloud_instance", "api_endpoint", "identity",
-                     "container_image", "code_repo", "k8s_workload"],
+                     "container_image", "code_repo", "github_org", "github_user",
+                     "npm_package", "k8s_workload"],
         default_visible=True,
     ),
     AssetProperty("asset_identity", "Asset Identity", "json", _col("asset_identity"), "identity", sortable=False),

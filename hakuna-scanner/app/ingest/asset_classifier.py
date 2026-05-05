@@ -87,8 +87,16 @@ _RULES: list[dict] = [
         "banners": [r"(?i)(ollama|vllm|localai|fastchat|triton|torchserve|tensorflow.serving|gradio|streamlit)"],
         "tech_keywords": [r"(?i)(inference|llm|language.model|ml.model|model.serving|hugging.?face)"],
     }},
+    # MCP servers are split out from ai_agent so the backend can promote
+    # them into a distinct asset kind (mcp_server) — same model as ai_agent
+    # but a different ecosystem, different tooling, and very different
+    # remediation guidance. Must come BEFORE ai_agent (first match wins).
+    {"asset_type": "mcp_server", "signals": {
+        "banners": [r"(?i)(mcp[.\s_-]?server|model.context.protocol)"],
+        "tech_keywords": [r"(?i)(mcp[.\s_-]?server|model.context.protocol)"],
+    }},
     {"asset_type": "ai_agent", "signals": {
-        "banners": [r"(?i)(flowise|langflow|langserve|dify|autogen|crewai|mcp.server)"],
+        "banners": [r"(?i)(flowise|langflow|langserve|dify|autogen|crewai)"],
         "tech_keywords": [r"(?i)(ai.agent|langchain|rag.pipeline|chain|agent.framework)"],
     }},
     {"asset_type": "ai_gateway", "signals": {

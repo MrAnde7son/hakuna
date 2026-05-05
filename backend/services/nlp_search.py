@@ -328,6 +328,9 @@ FIELDS: List[_BaseRule] = [
         (r"\bidentit(?:y|ies)\s+assets?\b", "identity"),
         (r"\bcontainer\s+images?\b", "container_image"),
         (r"\bcode\s+repos?\b|\bgit\s+repos?\b", "code_repo"),
+        (r"\bgithub\s+orgs?\b|\bgithub\s+organizations?\b", "github_org"),
+        (r"\bgithub\s+users?\b", "github_user"),
+        (r"\bnpm\s+packages?\b", "npm_package"),
         (r"\bk8s\s+workloads?\b|\bkubernetes\s+workloads?\b", "k8s_workload"),
     ]),
     EnumRule("asset", "environment", "Environment", "#10b981", aliases=[

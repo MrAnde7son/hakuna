@@ -61,6 +61,10 @@ class AssetResponse(BaseModel):
     last_enriched: datetime | None = None
     source: str | None = None
     nessus_asset_id: str | None = None
+    # Asset classification from app.ingest.asset_classifier — drives backend
+    # promotion of host rows into first-class child assets (ai_agent,
+    # mcp_server, cloud_storage_bucket, etc).
+    asset_type: str | None = None
     liveness_state: str = "unconfirmed"
     liveness_score: int = 100
     # CVE-matchable CPEs only (excludes CDNs, WAFs, analytics, policies).
@@ -160,6 +164,7 @@ def _asset_to_response(asset: Asset) -> AssetResponse:
             "last_enriched": asset.last_enriched,
             "source": asset.source,
             "nessus_asset_id": asset.nessus_asset_id,
+            "asset_type": asset.asset_type,
             "liveness_state": asset.liveness_state,
             "liveness_score": asset.liveness_score,
             "cpe_list": filtered.cpe_list if filtered else None,

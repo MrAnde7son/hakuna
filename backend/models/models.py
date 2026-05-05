@@ -305,7 +305,7 @@ class Asset(Base):
     system_type = Column(String)                        # e.g. "web_application" for WAS scans
 
     # Multi-type asset identity
-    asset_type = Column(String, default="host", index=True)   # host, web_app, cloud_instance, api_endpoint, identity, container_image, code_repo, k8s_workload, or any custom type
+    asset_type = Column(String, default="host", index=True)   # host, web_app, cloud_instance, api_endpoint, identity, container_image, code_repo, k8s_workload, ai_agent, mcp_server, cloud_storage_bucket, or any custom type
     asset_identity = Column(JSON, default=dict)                # structured identity keys per type (e.g. {"url": "..."} for web_app, {"instance_id": "..."} for cloud)
     asset_attributes = Column(JSON, default=dict)              # type-specific metadata overflow
 

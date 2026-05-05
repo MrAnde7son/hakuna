@@ -332,9 +332,6 @@ const ASSET_FILTER_SCHEMA = {
   source: { default: '' },
   minSources: { default: '' },
   credentialed: { default: null, type: 'boolean' },
-  hasPort: { default: '' },
-  tech: { default: '' },
-  dnsRecordType: { default: '' },
   sort: { default: 'risk_score' },
   order: { default: 'desc' },
   page: { default: 1, type: 'number' },
@@ -476,7 +473,7 @@ export default function AssetInventory() {
     }
   }
 
-  const activeFilterCount = ['search', 'env', 'criticality', 'assetType', 'minRisk', 'maxRisk', 'minCritical', 'minHigh', 'serverRole', 'source', 'minSources', 'hasPort', 'tech', 'dnsRecordType']
+  const activeFilterCount = ['search', 'env', 'criticality', 'assetType', 'minRisk', 'maxRisk', 'minCritical', 'minHigh', 'serverRole', 'source', 'minSources']
     .filter(k => filters[k]).length + (filters.credentialed !== null ? 1 : 0)
 
   const load = () => {
@@ -496,9 +493,6 @@ export default function AssetInventory() {
       source: filters.source || undefined,
       min_sources: filters.minSources || undefined,
       credentialed: filters.credentialed !== null ? filters.credentialed : undefined,
-      has_port: filters.hasPort || undefined,
-      tech: filters.tech || undefined,
-      dns_record_type: filters.dnsRecordType || undefined,
       first_seen_after: firstSeenAfter || undefined,
       sort_by: sortBy,
       order: sortOrder,
@@ -1211,15 +1205,17 @@ export default function AssetInventory() {
             placeholder={t('assets.anyType', 'Any type')}
             options={(() => {
               const known = [
-                'host', 'web_app', 'cloud_instance', 'api_endpoint',
-                'identity', 'container_image', 'code_repo', 'k8s_workload',
-                'ai_inference', 'ai_service', 'ai_agent', 'ai_notebook', 'vector_db',
+                'host', 'web_app', 'cloud_instance', 'cloud_storage_bucket',
+                'api_endpoint', 'identity', 'container_image', 'code_repo',
+                'k8s_workload',
+                'ai_inference', 'ai_service', 'ai_agent', 'ai_gateway',
+                'ai_notebook', 'vector_db', 'mcp_server',
                 'iot_gateway', 'camera', 'nas', 'printer',
                 'plc', 'scada', 'smart_building',
               ]
               // Union known types with whatever is actually present in the DB, so
-              // customer-defined types (mcp_server, etc.) ingested via the
-              // integration builder show up in the filter.
+              // customer-defined types ingested via the integration builder show
+              // up in the filter even if they aren't in the known list.
               const fromDb = Array.isArray(availableAssetTypes) ? availableAssetTypes : []
               const dbSet = new Set(fromDb)
               const visible = availableAssetTypes == null
@@ -1256,41 +1252,6 @@ export default function AssetInventory() {
               style={{
                 width: 60, background: 'var(--bg-card)', border: '1px solid var(--border)',
                 color: 'var(--text-primary)', borderRadius: 6, padding: '7px 8px', fontSize: 13, outline: 'none',
-              }}
-            />
-          </div>
-
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span style={{ fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{t('assets.easm', 'EASM')}</span>
-            <input
-              type="number" min={0} max={65535}
-              value={filters.hasPort}
-              onChange={e => setFilter('hasPort', e.target.value)}
-              placeholder={t('assets.port', 'port')}
-              style={{
-                width: 64, background: 'var(--bg-card)', border: '1px solid var(--border)',
-                color: 'var(--text-primary)', borderRadius: 6, padding: '7px 8px', fontSize: 13, outline: 'none',
-              }}
-            />
-            <input
-              type="text"
-              value={filters.tech}
-              onChange={e => setFilter('tech', e.target.value)}
-              placeholder={t('assets.tech', 'tech')}
-              style={{
-                width: 90, background: 'var(--bg-card)', border: '1px solid var(--border)',
-                color: 'var(--text-primary)', borderRadius: 6, padding: '7px 8px', fontSize: 13, outline: 'none',
-              }}
-            />
-            <input
-              type="text"
-              value={filters.dnsRecordType}
-              onChange={e => setFilter('dnsRecordType', e.target.value.toUpperCase())}
-              placeholder={t('assets.dns', 'DNS')}
-              style={{
-                width: 64, background: 'var(--bg-card)', border: '1px solid var(--border)',
-                color: 'var(--text-primary)', borderRadius: 6, padding: '7px 8px', fontSize: 13, outline: 'none',
-                textTransform: 'uppercase',
               }}
             />
           </div>
