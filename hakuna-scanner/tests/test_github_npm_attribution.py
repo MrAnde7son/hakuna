@@ -20,6 +20,7 @@ from app.ingest.github_npm.attribution import (
 )
 from app.ingest.github_npm.discovery import (
     COMMON_SECRET_FILE_PATHS,
+    _derive_login_hints_from_domain,
     _normalize_git_url,
     enrich_repos_with_package_json,
     extract_github_slug,
@@ -194,6 +195,34 @@ class TestFilterAboveThreshold:
         kept = filter_above_threshold(items, 0.3)
         assert len(kept) == 1
         assert kept[0].full_name == "c/d"
+
+
+class TestDeriveLoginHintsFromDomain:
+    def test_simple_two_part_domain(self):
+        assert _derive_login_hints_from_domain("tenable.com") == ["tenable"]
+
+    def test_strips_www_prefix(self):
+        assert _derive_login_hints_from_domain("www.tenable.com") == ["tenable"]
+
+    def test_strips_mail_prefix(self):
+        assert _derive_login_hints_from_domain("mail.rapid7.com") == ["rapid7"]
+
+    def test_strips_app_prefix(self):
+        assert _derive_login_hints_from_domain("app.company.co.uk") == ["company"]
+
+    def test_non_stripped_subdomain(self):
+        # "sub" is not in the strip list — return it as-is (false-positive hints
+        # are safely rejected by score_org if the blog/email doesn't match).
+        assert _derive_login_hints_from_domain("sub.example.com") == ["sub"]
+
+    def test_no_tld(self):
+        assert _derive_login_hints_from_domain("localhost") == []
+
+    def test_empty_string(self):
+        assert _derive_login_hints_from_domain("") == []
+
+    def test_preserves_hyphens_and_digits(self):
+        assert _derive_login_hints_from_domain("palo-alto123.com") == ["palo-alto123"]
 
 
 class TestGitUrlNormalization:

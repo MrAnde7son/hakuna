@@ -34,6 +34,31 @@ from app.ingest.github_npm.models import (
 
 logger = logging.getLogger(__name__)
 
+# Subdomain labels that carry no org-identity signal and should be stripped
+# when deriving a candidate GitHub org login from a domain name.
+_COMMON_SUBDOMAIN_PREFIXES: frozenset[str] = frozenset({
+    "www", "mail", "smtp", "ftp", "dev", "staging", "app", "api",
+    "blog", "docs", "support", "status", "secure", "cdn",
+})
+
+
+def _derive_login_hints_from_domain(domain: str) -> list[str]:
+    """Return candidate GitHub org login names derived from a domain.
+
+    Strips well-known subdomain prefixes then returns the leftmost label
+    before the TLD as the most likely org slug:
+
+        tenable.com         → ["tenable"]
+        www.tenable.com     → ["tenable"]
+        rapid7.com          → ["rapid7"]
+        app.company.co.uk   → ["company"]
+    """
+    parts = domain.lower().strip().split(".")
+    while len(parts) > 2 and parts[0] in _COMMON_SUBDOMAIN_PREFIXES:
+        parts = parts[1:]
+    hint = parts[0] if len(parts) >= 2 else ""
+    return [hint] if hint else []
+
 
 # ── GitHub orgs ───────────────────────────────────────────────────────
 
@@ -44,10 +69,13 @@ async def find_orgs_by_domain(
     """Find GitHub Orgs whose blog/email matches target_domain.
 
     GitHub has no "find org by domain" API. Strategy:
-      1. If the caller supplies candidate logins (from e.g. the domain itself
-         as a name heuristic), fetch them directly.
-      2. Otherwise use the user search with `type:org` and the domain as the
-         query string. Yields hints; we then fetch each org's full payload.
+      1. Derive candidate logins from the domain itself (e.g. tenable.com →
+         "tenable") and merge with any caller-supplied hints, then fetch each
+         org's full profile directly — this is cheap and catches the common
+         case where the org slug matches the company name.
+      2. Fall back to a user search with `type:org`. GitHub's search only
+         supports `in:email` and `in:name` for orgs (not `in:blog`/website),
+         so this catches orgs that list their corporate email on their profile.
     """
     out: list[AttributedOrg] = []
     seen: set[str] = set()
@@ -63,12 +91,18 @@ async def find_orgs_by_domain(
         if org:
             out.append(org)
 
-    # Candidate list first — these are cheap direct lookups.
-    if candidate_logins:
-        await asyncio.gather(*(_evaluate(c) for c in candidate_logins))
+    # Merge caller-supplied hints with auto-derived ones, then do direct
+    # lookups. These are cheap single-org GETs and catch the common case
+    # where the org slug matches the company/domain name.
+    all_hints = list(candidate_logins or []) + _derive_login_hints_from_domain(target_domain)
+    if all_hints:
+        await asyncio.gather(*(_evaluate(c) for c in all_hints))
 
     # Then search — limited to first 100 to keep cost bounded.
-    query = f"{target_domain} in:email,blog type:org"
+    # Note: GitHub's user search does not support `in:blog`, so we use
+    # `in:email,name` to surface orgs with the domain in their email or
+    # display name.
+    query = f"{target_domain} in:email,name type:org"
     count = 0
     async for hit in gh.search_users(query, per_page=100):
         if hit.get("type") != "Organization":
