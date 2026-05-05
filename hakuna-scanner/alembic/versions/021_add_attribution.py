@@ -15,8 +15,8 @@ Shape::
       "signals": {"tls_san": [...], "rdns": "...", "passive_dns": [...]}
     }
 
-Revision ID: 020
-Revises: 019
+Revision ID: 021
+Revises: 020
 Create Date: 2026-05-05
 """
 from typing import Sequence, Union
@@ -26,8 +26,8 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 
-revision: str = "020"
-down_revision: Union[str, None] = "019"
+revision: str = "021"
+down_revision: Union[str, None] = "020"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
