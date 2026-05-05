@@ -165,7 +165,7 @@ resource "google_compute_instance" "audit_worker" {
 
     [Service]
     Type=oneshot
-    ExecStart=/usr/bin/docker system prune -af --filter "until=168h"
+    ExecStart=/usr/bin/docker system prune -af --filter "until=24h"
     PRUNE_SERVICE
 
     cat > /etc/systemd/system/docker-prune.timer << 'PRUNE_TIMER'

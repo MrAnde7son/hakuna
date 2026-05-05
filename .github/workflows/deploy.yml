@@ -352,7 +352,7 @@ jobs:
         # swaps containers in place once the new image is local.
         run: |
           gcloud compute ssh hakuna-audit-worker --zone="${{ env.ZONE }}" --tunnel-through-iap \
-            --command="cd /opt/hakuna-audit-worker && sudo docker compose pull && sudo docker compose up -d" \
+            --command="cd /opt/hakuna-audit-worker && sudo docker system prune -af --filter 'until=24h' && sudo docker compose pull && sudo docker compose up -d" \
             --quiet
 
   migrate:
