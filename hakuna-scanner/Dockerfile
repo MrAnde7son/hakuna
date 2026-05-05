@@ -95,7 +95,14 @@ COPY --from=builder /opt/hakuna/wordlists /opt/hakuna/wordlists
 # Go binaries after pip install ensures they win.
 WORKDIR /app
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# pytricia is a C extension with no manylinux wheel; it must be compiled.
+# Install gcc + python headers for the pip step, then purge to keep the
+# runtime image slim.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends gcc python3-dev \
+    && pip install --no-cache-dir -r requirements.txt \
+    && apt-get purge -y --auto-remove gcc python3-dev \
+    && rm -rf /var/lib/apt/lists/*
 
 # Compiled Go binaries from the builder stage
 COPY --from=builder /root/go/bin/subfinder /usr/local/bin/subfinder

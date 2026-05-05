@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import text
 
-ENRICHMENT_STEP_COUNT = 17  # tlsx, httpx, cdncheck, js_fingerprint, favicon, endpoint_probe, katana, protocol_probe, banner_grab, kiterunner, trufflehog, llm_js_extraction, openapi_discovery, graphql_introspection, classify_assets, ai_exposure, nmap_dispatch
+ENRICHMENT_STEP_COUNT = 18  # tlsx, httpx, cdncheck, js_fingerprint, favicon, endpoint_probe, katana, protocol_probe, banner_grab, kiterunner, trufflehog, llm_js_extraction, openapi_discovery, graphql_introspection, classify_assets, attribution, ai_exposure, nmap_dispatch
 
 from app.celery_app import celery
 from app.config import settings
@@ -40,6 +40,7 @@ from app.ingest.service_lookup import (
     port_matches_service,
 )
 from app.ingest.asset_classifier import classify_asset
+from app.ingest.attribution import attribute_asset
 from app.ingest.endpoint_probe import probe_assets
 from app.ingest.favicon_fingerprint import fingerprint_assets as favicon_fingerprint_assets
 from app.ingest.js_fingerprint import fingerprint_assets
@@ -1147,6 +1148,96 @@ async def _do_classify_assets(sf, org_id: str, target_scope: str | None = None) 
     return {"total_assets": len(assets), "classified": classified}
 
 
+async def _do_attribution(sf, org_id: str, target_scope: str | None = None) -> dict:
+    """Attribute cloud-hosted assets to their actual tenant owner.
+
+    Only runs against assets where ``cloud_provider IS NOT NULL`` — for
+    non-cloud IPs the asset's own DNS already identifies the owner, so
+    attribution adds no signal. Pulls per-port TLS certs and a reverse-DNS
+    lookup, then delegates to ``app.ingest.attribution.attribute_asset``.
+    The result lands in ``assets.attribution`` (JSONB).
+    """
+    import socket
+
+    scope_sql, scope_params = build_target_scope(target_scope)
+    extra = compose_where(scope_sql)
+    params = {"org_id": org_id, **scope_params}
+
+    async with sf() as db:
+        # Per-asset cert SAN/CN aggregation across all asset_ports rows.
+        result = await db.execute(
+            text(f"""
+                SELECT a.id, a.hostname, host(a.ip) as ip, a.cloud_provider,
+                       coalesce(
+                           jsonb_agg(ap.tls_cert) FILTER (WHERE ap.tls_cert IS NOT NULL),
+                           '[]'::jsonb
+                       ) as tls_certs
+                FROM assets a
+                LEFT JOIN asset_ports ap ON ap.asset_id = a.id
+                WHERE a.org_id = :org_id
+                  AND a.cloud_provider IS NOT NULL
+                  {extra}
+                GROUP BY a.id
+            """),
+            params,
+        )
+        rows = result.fetchall()
+
+        domain_rows = await db.execute(
+            text("SELECT domain FROM target_domains WHERE org_id = :org_id AND active = true"),
+            {"org_id": org_id},
+        )
+        target_domains = [r.domain for r in domain_rows.fetchall()]
+
+    if not rows:
+        return {"total_assets": 0, "attributed": 0}
+
+    async def _rdns(ip: str | None) -> str | None:
+        if not ip:
+            return None
+        try:
+            host, _aliases, _addrs = await asyncio.wait_for(
+                asyncio.to_thread(socket.gethostbyaddr, ip),
+                timeout=2.0,
+            )
+            return host
+        except (socket.herror, socket.gaierror, asyncio.TimeoutError, OSError):
+            return None
+
+    # Bound concurrency on rDNS — each lookup is cheap but we don't want
+    # 10k parallel DNS queries to hammer the resolver.
+    sem = asyncio.Semaphore(20)
+
+    async def _attribute_one(row) -> tuple[uuid.UUID, dict]:
+        async with sem:
+            rdns = await _rdns(str(row.ip) if row.ip else None)
+        certs = row.tls_certs or []
+        attribution = attribute_asset(
+            hostname=row.hostname,
+            cloud_provider=row.cloud_provider,
+            tls_certs=certs,
+            target_domains=target_domains,
+            rdns=rdns,
+        )
+        return row.id, attribution
+
+    tasks = [_attribute_one(r) for r in rows]
+    pairs = await asyncio.gather(*tasks)
+
+    attributed = 0
+    async with sf() as db:
+        for asset_id, attribution in pairs:
+            await db.execute(
+                text("UPDATE assets SET attribution = cast(:a as jsonb) WHERE id = :id"),
+                {"a": json.dumps(attribution), "id": asset_id},
+            )
+            if attribution.get("best_guess"):
+                attributed += 1
+        await db.commit()
+
+    return {"total_assets": len(rows), "attributed": attributed}
+
+
 async def _do_ai_exposure(sf, org_id: str, target_scope: str | None = None) -> dict:
     """Probe AI/LLM/vector-DB assets for unauthenticated exposure.
 
@@ -1865,6 +1956,11 @@ def run_enrichment_chain(self, org_id: str, scan_run_id: str | None = None) -> d
                 ],
                 [
                     ("classify_assets", _do_classify_assets),
+                    # Tenant attribution shares classify_assets's read-then-
+                    # update shape and writes a disjoint column (attribution
+                    # vs asset_type), so it can run alongside without lock
+                    # contention.
+                    ("attribution", _do_attribution),
                 ],
                 [
                     # ai_exposure depends on asset_type set by classify_assets,

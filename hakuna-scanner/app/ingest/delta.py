@@ -311,6 +311,54 @@ async def detect_cert_expiring(db: AsyncSession, org_id: uuid.UUID) -> int:
     return events
 
 
+async def decay_unseen_assets(
+    db: AsyncSession,
+    org_id: uuid.UUID,
+    decay: int = 10,
+    lookback_scans: int = 1,
+) -> int:
+    """Decay liveness_score for assets that weren't validated this cycle.
+
+    Counterpart to ``validate_and_update_assets`` (which bumps/decays the
+    score for assets that *did* run a liveness probe). An asset whose
+    last_validated_at is older than the most recent finished scan got
+    skipped — usually because liveness only validates a sample on large
+    scans — so we decay by a small fixed amount per skipped cycle. Floor
+    at 0 so the score is never negative.
+
+    Returns the number of rows touched.
+    """
+    result = await db.execute(
+        text(
+            """
+            SELECT finished_at FROM scan_runs
+            WHERE org_id = :org_id AND status = 'done'
+            ORDER BY finished_at DESC
+            LIMIT 1 OFFSET :offset
+            """
+        ),
+        {"org_id": org_id, "offset": lookback_scans - 1},
+    )
+    cutoff_row = result.fetchone()
+    if not cutoff_row or not cutoff_row.finished_at:
+        return 0
+
+    cutoff = cutoff_row.finished_at
+    res = await db.execute(
+        text(
+            """
+            UPDATE assets SET
+                liveness_score = GREATEST(0, COALESCE(liveness_score, 100) - :decay)
+            WHERE org_id = :org_id
+              AND (last_validated_at IS NULL OR last_validated_at < :cutoff)
+            """
+        ),
+        {"org_id": org_id, "cutoff": cutoff, "decay": decay},
+    )
+    await db.commit()
+    return res.rowcount or 0
+
+
 async def detect_gone_assets(db: AsyncSession, org_id: uuid.UUID, lookback_scans: int = 3) -> int:
     """Emit 'asset_gone' for hosts not seen in the last N scan cycles.
 

@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, SmallInteger, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import ARRAY, INET, JSON, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -29,6 +29,14 @@ class Asset(Base):
     http_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     tech_stack: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     cdn_provider: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Hosting cloud provider derived from the asset's resolved IP — distinct
+    # from cdn_provider (which describes the fronting CDN). Populated by
+    # liveness.py via app.ingest.cloud_ranges.identify_cloud_provider.
+    cloud_provider: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    # Tenant attribution for cloud-hosted assets — who controls the
+    # resource on a shared cloud IP. Populated by app.ingest.attribution
+    # only when cloud_provider is non-null. See migration 020 for shape.
+    attribution: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     waf: Mapped[str | None] = mapped_column(String(64), nullable=True)
     tls_cert: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # Normalized HTTP-header + cookie audit — see app.ingest.http_header_audit.
@@ -36,6 +44,10 @@ class Asset(Base):
     # AssetResponse API can return it without joining.
     security_audit: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     dns_records: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Phase-2 EASM blob — banner_findings from _do_banner_grab land here under
+    # the ``banner_findings`` key. Backend's CVE correlator reads from it via
+    # services.cve_correlator._banner_components.
+    easm_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     tags: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True, default=list)
     first_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     last_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
@@ -52,6 +64,11 @@ class Asset(Base):
     liveness_state: Mapped[str] = mapped_column(String(32), default="unconfirmed")
     consecutive_failures: Mapped[int] = mapped_column(Integer, default=0)
     last_validated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Decaying 0–100 freshness score. 100 = fully alive this cycle; <30 =
+    # suppressed from active findings (kept in inventory with a stale badge).
+    # Bumped/decayed in liveness.validate_and_update_assets and
+    # delta.decay_unseen_assets. See migration 019.
+    liveness_score: Mapped[int] = mapped_column(SmallInteger, default=100, server_default="100", index=True)
 
     # Extension 4: Nmap fingerprinting
     nmap_status: Mapped[str] = mapped_column(String(32), default="pending")

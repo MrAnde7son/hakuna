@@ -21,6 +21,7 @@ from app.database import get_task_session
 from app.ingest.assets import upsert_discovered_hosts, update_dns_records, update_ports
 from app.ingest.delta import (
     apply_shodan_observations,
+    decay_unseen_assets,
     detect_gone_assets,
     emit_new_asset_events,
 )
@@ -32,6 +33,7 @@ from app.ingest.liveness import (
 )
 from app.ingest.wildcard import detect_wildcard, filter_wildcard_results
 from app.ingest.crtsh import query_crtsh
+from app.ingest.otx_passive_dns import query_otx_passive_dns
 from app.ingest.shodan_discovery import query_shodan
 from app.runner.base import BaseRunner, batch_hosts, run_batches_parallel, run_batches_parallel_with_outcomes
 from app.tasks.scoping import (
@@ -376,6 +378,33 @@ async def _do_crtsh(sf, org_id: str, target_scope: str | None = None) -> dict:
     return {"hosts_found": len(all_hosts), "upserted": total, "new": len(new_ids)}
 
 
+async def _do_otx(sf, org_id: str, target_scope: str | None = None) -> dict:
+    """Query AlienVault OTX passive DNS for subdomain discovery.
+
+    Catches subdomains that resolved historically but never appeared in a
+    public certificate (so crt.sh missed them). No-op when otx_api_key is
+    unset — keeps dev environments quiet.
+    """
+    if not settings.otx_api_key:
+        return {"hosts_found": 0, "upserted": 0, "new": 0, "skipped": "no_api_key"}
+
+    domains = await _get_target_domains(sf, org_id, target_scope=target_scope)
+    all_hosts: list[dict] = []
+    for domain in domains:
+        hostnames = await query_otx_passive_dns(domain, settings.otx_api_key)
+        for h in hostnames:
+            all_hosts.append({"host": h})
+
+    if not all_hosts:
+        return {"hosts_found": 0, "upserted": 0, "new": 0}
+
+    async with sf() as db:
+        total, new_ids = await upsert_discovered_hosts(db, uuid.UUID(org_id), all_hosts, "otx")
+        await emit_new_asset_events(db, uuid.UUID(org_id), new_ids)
+
+    return {"hosts_found": len(all_hosts), "upserted": total, "new": len(new_ids)}
+
+
 async def _do_dnsx(sf, org_id: str, target_scope: str | None = None) -> dict:
     # Staleness filter: skip assets that were already enriched within the last
     # 24h. First-ever discovery still runs because last_enriched is NULL.
@@ -686,6 +715,7 @@ def run_discovery_chain(self, org_id: str, scan_run_id: str | None = None) -> di
                 ("wildcard_bruteforce", _do_wildcard_and_bruteforce),
                 ("uncover", _do_uncover),
                 ("crtsh", _do_crtsh),
+                ("otx", _do_otx),
                 ("shodan", _do_shodan),
             ],
             [
@@ -809,9 +839,14 @@ def run_discovery_chain(self, org_id: str, scan_run_id: str | None = None) -> di
                     )
                     await db.commit()
 
-        # Post-discovery: detect gone assets
+        # Post-discovery: decay assets that weren't validated this cycle,
+        # then emit asset_gone events for hosts unseen across multiple
+        # scans. The decay must run BEFORE detect_gone_assets so the score
+        # reflects this scan's outcome before downstream consumers read it.
         sf2 = get_task_session()
         async with sf2() as db:
+            decayed = await decay_unseen_assets(db, uuid.UUID(org_id))
+            results["liveness_decayed"] = decayed
             gone = await detect_gone_assets(db, uuid.UUID(org_id))
             results["gone_assets"] = gone
 

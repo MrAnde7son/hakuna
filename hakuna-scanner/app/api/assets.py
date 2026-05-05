@@ -41,6 +41,9 @@ class AssetResponse(BaseModel):
     http_url: str | None = None
     tech_stack: dict | list | None = None
     cdn_provider: str | None = None
+    cloud_provider: str | None = None
+    # Tenant attribution from app.ingest.attribution. See migration 020.
+    attribution: dict | None = None
     waf: str | None = None
     tls_cert: dict | None = None
     # Normalized HTTP-header + cookie audit (see ingest.http_header_audit).
@@ -49,6 +52,9 @@ class AssetResponse(BaseModel):
     # OCSP + CAA). Aggregated from the primary TLS port (443 preferred).
     tls_deep_audit: dict | None = None
     dns_records: dict | None = None
+    # Phase-2 EASM blob (banner_findings etc). Forwarded to the backend so
+    # services.cve_correlator._banner_components can read banner_findings.
+    easm_data: dict | None = None
     tags: list[str] | None = None
     first_seen: datetime | None = None
     last_seen: datetime | None = None
@@ -56,6 +62,7 @@ class AssetResponse(BaseModel):
     source: str | None = None
     nessus_asset_id: str | None = None
     liveness_state: str = "unconfirmed"
+    liveness_score: int = 100
     # CVE-matchable CPEs only (excludes CDNs, WAFs, analytics, policies).
     cpe_list: list[str] | None = None
     # All detected technologies including non-software (for UI display).
@@ -139,11 +146,14 @@ def _asset_to_response(asset: Asset) -> AssetResponse:
             "http_url": asset.http_url,
             "tech_stack": asset.tech_stack,
             "cdn_provider": asset.cdn_provider,
+            "cloud_provider": asset.cloud_provider,
+            "attribution": asset.attribution,
             "waf": asset.waf,
             "tls_cert": asset.tls_cert,
             "security_audit": asset.security_audit,
             "tls_deep_audit": deep_audit,
             "dns_records": asset.dns_records,
+            "easm_data": asset.easm_data,
             "tags": asset.tags,
             "first_seen": asset.first_seen,
             "last_seen": asset.last_seen,
@@ -151,6 +161,7 @@ def _asset_to_response(asset: Asset) -> AssetResponse:
             "source": asset.source,
             "nessus_asset_id": asset.nessus_asset_id,
             "liveness_state": asset.liveness_state,
+            "liveness_score": asset.liveness_score,
             "cpe_list": filtered.cpe_list if filtered else None,
             "detected_technologies": filtered.detected_technologies if filtered else None,
         }

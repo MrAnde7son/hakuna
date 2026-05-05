@@ -41,6 +41,7 @@ celery.conf.update(
         "app.tasks.scheduler",
         "app.tasks.recovery",
         "app.tasks.github_attribution",
+        "app.tasks.cloud_ranges",
     ],
     task_routes={
         "nmap.nmap_enrich_asset": {"queue": "nmap_queue"},

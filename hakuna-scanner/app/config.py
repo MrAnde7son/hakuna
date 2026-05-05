@@ -221,6 +221,13 @@ class Settings(BaseSettings):
     censys_api_secret: str = ""
     fofa_email: str = ""
     fofa_key: str = ""
+    otx_api_key: str = ""
+
+    # Cloud-provider IP-range matching (app.ingest.cloud_ranges). The
+    # refresh task (app.tasks.cloud_ranges) writes per-provider JSON files
+    # here once a day; the matcher loads them lazily on first lookup.
+    # Falls back to a bundled seed when the directory is empty.
+    cloud_ranges_dir: str = "/data/cloud_ranges"
 
     model_config = {"env_file": ".env", "extra": "ignore"}
 

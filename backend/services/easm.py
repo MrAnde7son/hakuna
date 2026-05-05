@@ -928,6 +928,16 @@ async def trigger_easm_for_new_org(db: Session, org: Organization, email: str):
 def _build_easm_data(ea: dict) -> dict:
     """Build the easm_data blob from a hakuna-scanner asset."""
     services = ea.get("services") or {}
+    # Banner findings live on the scanner under either a top-level
+    # ``banner_findings`` key or nested in the scanner's own ``easm_data``
+    # JSON column. Carry whichever is populated through to the backend so
+    # cve_correlator._banner_components can consume them.
+    scanner_easm = ea.get("easm_data") or {}
+    banner_findings = (
+        ea.get("banner_findings")
+        or (scanner_easm.get("banner_findings") if isinstance(scanner_easm, dict) else None)
+        or []
+    )
     # Aggregate Shodan-reported CVEs across all ports into a single list.
     # Per-port CVEs land in services[port].shodan_vulns when the scanner's
     # Shodan ingest path runs (see hakuna-scanner/app/ingest/delta.py
@@ -951,8 +961,13 @@ def _build_easm_data(ea: dict) -> dict:
         "security_audit": ea.get("security_audit") or {},
         "tls_deep_audit": ea.get("tls_deep_audit") or {},
         "cdn_provider": ea.get("cdn_provider"),
+        "cloud_provider": ea.get("cloud_provider"),
+        "attribution": ea.get("attribution") or {},
+        "liveness_score": ea.get("liveness_score", 100),
+        "liveness_state": ea.get("liveness_state"),
         "waf": ea.get("waf"),
         "dns_records": ea.get("dns_records") or {},
+        "banner_findings": banner_findings,
         "http_status": ea.get("http_status"),
         "http_title": ea.get("http_title"),
         "http_url": ea.get("http_url"),
@@ -1040,12 +1055,25 @@ def _upsert_inventory_software_from_cpes(
         ))
 
 
+_LIVENESS_SUPPRESS_THRESHOLD = 30
+
+
 def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -> Tuple[int, list]:
     """Generate one finding per EASM observation. Idempotent: skips existing plugin_id+asset combos.
 
     Returns ``(count, new_finding_ids)`` so callers can drive finalize_batch
     over the exact rows that were inserted this call.
     """
+    # Suppress finding generation for stale assets (liveness_score below
+    # threshold). The asset record is still imported and visible in the
+    # inventory with its current state — we just stop emitting *new*
+    # exposure findings for hosts that haven't been confirmed alive in
+    # several scan cycles. Existing findings remain open so historical
+    # exposure isn't lost.
+    score = ea.get("liveness_score")
+    if score is not None and score < _LIVENESS_SUPPRESS_THRESHOLD:
+        return 0, []
+
     now = datetime.utcnow()
     hostname = ea.get("hostname", "")
 
