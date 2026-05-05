@@ -1,0 +1,108 @@
+id: vpn-appliance-detect
+
+info:
+  name: VPN / Remote-Access Appliance Detection
+  author: hakuna
+  severity: info
+  description: |
+    Identifies internet-facing VPN gateways and remote-access portals by
+    matching vendor-specific URL paths, response bodies, and cookies. A hit
+    on this template means the host is presenting a VPN login portal to the
+    internet — which is itself an attack-surface signal regardless of CVE
+    status. Vendor-specific CVE templates run after this one.
+  reference:
+    - https://www.cisa.gov/news-events/cybersecurity-advisories
+  tags: vpn-appliance,vpn,exposure,fingerprint
+  metadata:
+    source: custom
+    verified: true
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/dana-na/auth/url_default/welcome.cgi"
+      - "{{BaseURL}}/remote/login"
+      - "{{BaseURL}}/sslvpn/portal.html"
+      - "{{BaseURL}}/vpn/index.html"
+      - "{{BaseURL}}/logon/LogonPoint/tmindex.html"
+      - "{{BaseURL}}/global-protect/login.esp"
+      - "{{BaseURL}}/+CSCOE+/logon.html"
+      - "{{BaseURL}}/sslvpn/Login/Login"
+      - "{{BaseURL}}/cgi-bin/welcome"
+      - "{{BaseURL}}/my.policy"
+    stop-at-first-match: true
+    matchers-condition: or
+    matchers:
+      - type: word
+        name: ivanti-pulse
+        part: body
+        words:
+          - "dana-na"
+          - "Pulse Connect Secure"
+          - "Ivanti Connect Secure"
+        condition: or
+      - type: word
+        name: fortinet
+        part: body
+        words:
+          - "/remote/login"
+          - "FortiGate"
+          - "sslvpn_login"
+        condition: or
+      - type: word
+        name: citrix-netscaler
+        part: body
+        words:
+          - "_ctxs_AuthRedirect"
+          - "Citrix Gateway"
+          - "NetScaler"
+          - "/logon/LogonPoint/"
+        condition: or
+      - type: word
+        name: globalprotect
+        part: body
+        words:
+          - "GlobalProtect Portal"
+          - "/global-protect/"
+        condition: or
+      - type: word
+        name: cisco-asa
+        part: body
+        words:
+          - "+CSCOE+"
+          - "+webvpn+"
+          - "Cisco AnyConnect"
+        condition: or
+      - type: word
+        name: sonicwall
+        part: body
+        words:
+          - "NetExtender"
+          - "SonicWall"
+          - "sslvpn"
+        condition: or
+      - type: word
+        name: f5-bigip
+        part: header
+        words:
+          - "BIGipServer"
+          - "TS01"
+        condition: or
+      - type: word
+        name: checkpoint
+        part: body
+        words:
+          - "Mobile Access Portal"
+          - "/sslvpn/Login/"
+        condition: or
+    extractors:
+      - type: regex
+        name: vendor-version
+        part: body
+        group: 1
+        regex:
+          - "FortiGate-[A-Za-z0-9]+ ([0-9]+\\.[0-9]+\\.[0-9]+)"
+          - "Pulse Secure[^0-9]*([0-9]+\\.[0-9]+(?:\\.[0-9]+)?)"
+          - "Ivanti Connect Secure[^0-9]*([0-9]+\\.[0-9]+(?:\\.[0-9]+)?)"
+          - "NetScaler[^0-9]*([0-9]+\\.[0-9]+(?:\\.[0-9]+)?)"
+          - "PAN-OS ([0-9]+\\.[0-9]+(?:\\.[0-9]+)?)"

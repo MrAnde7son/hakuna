@@ -482,6 +482,78 @@ class TestOwnerSuggestion:
         result = compute_priority_score(finding)
         assert result["owner_suggestion"] == "VM"
 
+    def test_vpn_appliance_mapped_to_networking(self):
+        finding = _finding(plugin_family="VPN Appliance")
+        result = compute_priority_score(finding)
+        assert result["owner_suggestion"] == "Networking"
+
+
+# ---------------------------------------------------------------------------
+# Class N: VPN appliance prioritization — internet-facing remote-access
+# gateways must outrank a comparably-severe internal finding because the
+# exploit-to-ransomware window is days, not months. The scoring should
+# reflect the family weight, KEV/EPSS intel, and full reachability.
+# ---------------------------------------------------------------------------
+
+class TestVpnAppliancePrioritization:
+
+    def _vpn_finding(self, **kwargs) -> dict:
+        """A KEV-listed, internet-reachable VPN-appliance finding."""
+        base = _finding(
+            plugin_id="vpn-cve-2024-21887",
+            plugin_name="Ivanti Connect Secure - Command Injection",
+            plugin_family="VPN Appliance",
+            severity=4,
+            cvss3_score=9.1,
+            is_kev=True,
+            epss_score=0.95,
+            exploit_maturity="weaponized",
+            cves=["CVE-2024-21887"],
+            port=443,
+        )
+        base.update(kwargs)
+        return base
+
+    def test_vpn_appliance_family_outranks_general_at_same_cvss(self):
+        # Identical severity/CVSS, but the VPN-appliance family carries a
+        # heavier weight because the operational impact is dramatically higher.
+        general = _finding(plugin_family="General", severity=4, cvss3_score=9.1)
+        vpn = _finding(plugin_family="VPN Appliance", severity=4, cvss3_score=9.1)
+        assert (
+            compute_priority_score(vpn)["priority_score"]
+            >= compute_priority_score(general)["priority_score"]
+        )
+
+    def test_internet_facing_kev_vpn_scores_at_or_near_max(self):
+        # The single highest-impact finding pattern: internet-reachable +
+        # KEV-listed + weaponized exploit on a remote-access appliance.
+        result = compute_priority_score(
+            self._vpn_finding(),
+            asset_criticality=8,
+            asset_inventory={"is_internet_facing": True},
+        )
+        assert result["priority_score"] >= 9.0
+
+    def test_vpn_appliance_owner_is_networking(self):
+        result = compute_priority_score(self._vpn_finding())
+        assert result["owner_suggestion"] == "Networking"
+
+    def test_vpn_kev_beats_internal_critical_at_same_cvss(self):
+        # Same CVSS 9.8, but the internal generic finding has neither KEV
+        # nor internet exposure — VPN finding must win the queue.
+        vpn = self._vpn_finding(cvss3_score=9.8)
+        vpn_score = compute_priority_score(
+            vpn, asset_inventory={"is_internet_facing": True}
+        )["priority_score"]
+        internal = _finding(
+            plugin_family="General", severity=4, cvss3_score=9.8,
+            is_kev=False, exploit_maturity=None,
+        )
+        internal_score = compute_priority_score(
+            internal, asset_inventory={"is_internet_facing": False}
+        )["priority_score"]
+        assert vpn_score > internal_score
+
 
 # ---------------------------------------------------------------------------
 # Class 11: compute_asset_risk_score
@@ -534,3 +606,48 @@ class TestComputeAssetRiskScore:
         score = compute_asset_risk_score(findings)
         assert isinstance(score, float)
         assert score == round(score, 2)
+
+
+# ── _generate_remediation_steps ──────────────────────────────────────────────
+
+from services.prioritizer import _generate_remediation_steps
+
+
+class TestRemediationSteps:
+    def test_verification_step_is_scanner_agnostic(self):
+        """Should not mention Nessus — scanner-neutral copy only."""
+        finding = {"plugin_name": "Anything", "severity": 2, "cves": []}
+        steps = _generate_remediation_steps(finding)
+        assert "Nessus" not in steps
+        assert "re-running a scan" in steps
+
+    def test_no_generic_compensating_controls_platitude(self):
+        """The vague 'compensating controls' fallback was removed."""
+        finding = {"plugin_name": "Anything", "severity": 4, "cves": []}
+        steps = _generate_remediation_steps(finding)
+        assert "compensating controls" not in steps.lower()
+
+    def test_cwe_sql_injection_guidance(self):
+        finding = {
+            "plugin_name": "SQL Injection",
+            "severity": 4,
+            "cves": [],
+            "cwe_ids": ["CWE-89"],
+        }
+        steps = _generate_remediation_steps(finding)
+        assert "parameterized queries" in steps
+
+    def test_cwe_xss_guidance(self):
+        finding = {
+            "plugin_name": "Reflected XSS",
+            "severity": 3,
+            "cwe_ids": ["CWE-79"],
+        }
+        steps = _generate_remediation_steps(finding)
+        assert "Content-Security-Policy" in steps
+
+    def test_falls_back_to_plugin_name_when_no_cwe(self):
+        """Plugin-name keyword heuristic works when cwe_ids is empty."""
+        finding = {"plugin_name": "SQL Injection in /login", "severity": 4}
+        steps = _generate_remediation_steps(finding)
+        assert "parameterized queries" in steps

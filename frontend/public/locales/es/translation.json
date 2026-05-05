@@ -85,6 +85,7 @@
     "owner": "Propietario",
     "effort": "Esfuerzo",
     "cve": "CVE",
+    "cwe": "CWE",
     "rootCause": "Causa raíz",
     "search": "Buscar hallazgos...",
     "noResults": "Ningún hallazgo coincide con tus criterios",

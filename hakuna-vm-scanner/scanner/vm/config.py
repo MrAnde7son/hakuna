@@ -11,9 +11,16 @@ DATABASE_URL = os.environ.get(
 CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", "redis://redis:6379/1")
 CELERY_RESULT_BACKEND = os.environ.get("CELERY_RESULT_BACKEND", "redis://redis:6379/1")
 
-NUCLEI_BIN = os.environ.get("NUCLEI_BIN", "/root/go/bin/nuclei")
-NUCLEI_TIMEOUT = int(os.environ.get("NUCLEI_TIMEOUT", "30"))
-NUCLEI_RATE_LIMIT = int(os.environ.get("NUCLEI_RATE_LIMIT", "150"))
+NUCLEI_BIN = os.environ.get("NUCLEI_BIN", "/usr/local/bin/nuclei")
+NUCLEI_TIMEOUT = int(os.environ.get("NUCLEI_TIMEOUT", "10"))
+NUCLEI_RATE_LIMIT = int(os.environ.get("NUCLEI_RATE_LIMIT", "300"))
+NUCLEI_RETRIES = int(os.environ.get("NUCLEI_RETRIES", "1"))
+NUCLEI_CONCURRENCY = int(os.environ.get("NUCLEI_CONCURRENCY", "50"))
+NUCLEI_BULK_CONCURRENCY = int(os.environ.get("NUCLEI_BULK_CONCURRENCY", "50"))
+# Template classes we always exclude — these tend to dominate tail latency
+# (fuzz) or cause service impact (dos) without commensurate finding value
+# for routine scans. Ops can override via env to get back full coverage.
+NUCLEI_EXCLUDE_TAGS = os.environ.get("NUCLEI_EXCLUDE_TAGS", "fuzz,dos")
 NUCLEI_COMMUNITY_TEMPLATES = os.environ.get("NUCLEI_COMMUNITY_TEMPLATES", "/root/nuclei-templates")
 
 TEMPLATES_DIR = os.environ.get(
@@ -32,6 +39,28 @@ DAST_TEMPLATES_REPO = os.environ.get(
 DAST_TEMPLATES_DIR = os.path.join(TEMPLATES_DIR, "custom", "dast")
 
 SCAN_TIMEOUT_SECONDS = int(os.environ.get("SCAN_TIMEOUT_SECONDS", "600"))
+
+# When the preflight detects a CDN edge in front of the target (Vercel,
+# Cloudflare, Fastly, Akamai, CloudFront, Netlify), short-circuit the
+# nuclei run instead of burning the full SCAN_TIMEOUT_SECONDS budget.
+# These edges throttle scanner traffic so aggressively that effective
+# rps drops to ~5/sec — 10k+ templates can't complete inside the
+# per-target deadline, producing misleading "timeout" UI rows with
+# zero findings. Set false to force the scan anyway (e.g. when targeting
+# a misconfigured CDN that is known to permit probing).
+NUCLEI_SKIP_CDN_TARGETS = os.environ.get(
+    "NUCLEI_SKIP_CDN_TARGETS", "true"
+).lower() in {"1", "true", "yes"}
+
+# Stall watchdog: when nuclei reports `templates_loaded > 0` but
+# `requests_sent == 0` for this many seconds, abort the scan early and
+# surface status="blocked". Targets behind a WAF/edge that silently
+# drops scanner traffic look "reachable" to preflight (one HEAD passes)
+# but every subsequent connection from the scanner IP gets dropped — so
+# nuclei sits at 0 requests for the full SCAN_TIMEOUT_SECONDS budget.
+# Distinct from NUCLEI_SKIP_CDN_TARGETS, which only fires when the
+# preflight response carries a known CDN-vendor header.
+NUCLEI_STALL_GRACE_SECONDS = int(os.environ.get("NUCLEI_STALL_GRACE_SECONDS", "90"))
 
 # ── Content discovery (ffuf) ────────────────────────────────────
 # On by default. Ops can disable globally by setting

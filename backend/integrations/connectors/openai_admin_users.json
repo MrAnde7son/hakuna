@@ -1,0 +1,34 @@
+{
+  "id": "openai_admin_users",
+  "name": "OpenAI Admin — Org Members",
+  "description": "List users in the OpenAI organization with their roles. Used by identity mission to flag overly-broad Owner assignments.",
+  "category": "AI Governance",
+  "logo": "/logos/vendors/openai.svg",
+  "direction": "pull",
+  "entity": "audit_only",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://api.openai.com/v1",
+    "method": "GET",
+    "path": "/organization/users",
+    "headers": {
+      "Authorization": "Bearer {{credentials.admin_api_key}}"
+    },
+    "query_params": {},
+    "pagination": {
+      "strategy": "cursor",
+      "cursor_field": "last_id",
+      "cursor_param": "after",
+      "page_size": 100,
+      "page_size_param": "limit"
+    }
+  },
+  "records_path": "data",
+  "credential_acquisition": {
+    "pattern": "shared_credential",
+    "shared_with": "openai_admin_projects"
+  },
+  "default_field_map": [],
+  "dedup_key": ["source_system", "source_id"],
+  "params_schema": {}
+}

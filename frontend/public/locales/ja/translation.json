@@ -85,6 +85,7 @@
     "owner": "オーナー",
     "effort": "工数",
     "cve": "CVE",
+    "cwe": "CWE",
     "rootCause": "根本原因",
     "search": "検出結果を検索...",
     "noResults": "条件に一致する検出結果がありません",

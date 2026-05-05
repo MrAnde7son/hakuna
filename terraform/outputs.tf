@@ -30,6 +30,11 @@ output "artifact_registry_url" {
   value       = "${var.region}-docker.pkg.dev/${var.project_id}/${google_artifact_registry_repository.main.repository_id}"
 }
 
+output "artifact_registry_public_url" {
+  description = "Public Docker registry URL — prefix for customer-pulled images (e.g. relay agent)"
+  value       = "${var.region}-docker.pkg.dev/${var.project_id}/${google_artifact_registry_repository.public.repository_id}"
+}
+
 output "frontend_bucket" {
   description = "Upload built React app here: gsutil -m rsync -r ./frontend/dist gs://<bucket>"
   value       = google_storage_bucket.frontend.name
@@ -68,6 +73,36 @@ output "scanner_docker_status" {
 output "easm_db_migration" {
   description = "Run hakuna-scanner Alembic migrations (run after first apply)"
   value       = "gcloud compute ssh hakuna-scanners --zone=${var.zone} --tunnel-through-iap --command='cd /opt/hakuna-scanners && sudo docker compose exec easm-api alembic upgrade head'"
+}
+
+output "lab_vm_ip" {
+  description = "Private IP of the lab VM. Point scanner / audit-worker E2E targets at this address. Empty when var.lab_enabled = false."
+  value       = try(google_compute_instance.lab[0].network_interface[0].network_ip, "")
+}
+
+output "lab_vm_public_ip" {
+  description = "Static public IP of the lab VM (when var.lab_public_ip = true). Point lab.hakunahq.com → this address. Empty when public IP is not enabled."
+  value       = try(google_compute_address.lab[0].address, "")
+}
+
+output "lab_vm_ssh" {
+  description = "IAP SSH command for the lab VM."
+  value       = "gcloud compute ssh hakuna-lab --zone=${var.zone} --tunnel-through-iap"
+}
+
+output "lab_vm_logs" {
+  description = "Tail the lab VM startup log."
+  value       = "gcloud compute ssh hakuna-lab --zone=${var.zone} --tunnel-through-iap --command='sudo tail -f /var/log/startup-script.log'"
+}
+
+output "lab_vm_status" {
+  description = "Show lab container status."
+  value       = "gcloud compute ssh hakuna-lab --zone=${var.zone} --tunnel-through-iap --command='cd /opt/hakuna-lab && sudo docker compose -f docker-compose.lab.yml ps'"
+}
+
+output "lab_vm_refresh" {
+  description = "After editing lab files + terraform apply, run this to roll the new bundle onto the VM."
+  value       = "gcloud compute ssh hakuna-lab --zone=${var.zone} --tunnel-through-iap --command='sudo systemctl restart hakuna-lab'"
 }
 
 output "next_steps" {

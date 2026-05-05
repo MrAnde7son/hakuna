@@ -1,6 +1,6 @@
 """Specialist vulnerability agent worker.
 
-Runs the five specialist agents (injection, XSS, SSRF, authn, authz)
+Runs the six specialist agents (injection, XSS, SSRF, authn, authz, files)
 against a single asset and emits findings in the Celery result payload
 using the same shape as ``nuclei_worker`` / ``schemathesis_worker`` so
 the backend's ``_import_nuclei_job_findings`` ingest path handles them
@@ -57,15 +57,18 @@ from scanner.vm.agent_specialists import (
     select_applicable_specialists,
     tool_schemas_for_anthropic,
 )
+from scanner.vm.agent_scheduler import FrontierScheduler
 from scanner.vm.celery_app import celery_app
 from scanner.vm.config import DATABASE_URL, SCAN_TIMEOUT_SECONDS
 from scanner.vm.db import _normalize_dsn
+from scanner.vm.preflight import probe_http, should_preflight
 from scanner.vm.llm_provider import (
     LLMAdapter,
     LLMProviderError,
     build_adapter,
     fetch_integration_configs,
     resolve_provider,
+    resolve_specific_provider,
 )
 
 logger = logging.getLogger(__name__)
@@ -145,7 +148,292 @@ def _credentials_to_headers(credentials: dict | None) -> dict[str, str]:
     return headers
 
 
+def _build_adapter_map(
+    selected: list[SpecialistSpec],
+    integration_configs: dict,
+    default_adapter: LLMAdapter,
+    default_provider_info,
+) -> dict[str, LLMAdapter]:
+    """Resolve a per-specialist adapter, falling back to the default.
+
+    Most specialists share the scan-wide default adapter. A handful
+    (authn today; potentially post-auth-enum / authz later) prefer a
+    stronger model because their orchestration matters more than raw
+    cost. When the preferred provider isn't configured, silently fall
+    back — a scanner in an air-gapped Vertex-only environment must
+    still run authn, just on the weaker default.
+
+    Adapters are cached module-level by (provider, model, key
+    fingerprint) so building two adapters per scan doesn't double the
+    SDK connection count.
+    """
+    out: dict[str, LLMAdapter] = {}
+    for spec in selected:
+        preferred_provider = spec.preferred_provider
+        preferred_model = spec.preferred_model
+
+        # Short-circuit to default only when BOTH provider AND model
+        # match (or no preference is declared). Previously this keyed
+        # on provider alone, which silently swallowed "same provider,
+        # different model" preferences — critical now that vertex_ai
+        # serves both Gemini (gemini-*) and Claude (claude-*) and a
+        # spec may want Claude while the scan default is Gemini.
+        if not preferred_provider:
+            out[spec.category] = default_adapter
+            continue
+        same_provider = preferred_provider == default_provider_info.provider
+        same_model = (
+            preferred_model is None
+            or preferred_model == default_provider_info.model
+        )
+        if same_provider and same_model:
+            out[spec.category] = default_adapter
+            continue
+
+        info = resolve_specific_provider(
+            preferred_provider, integration_configs,
+            model_override=preferred_model,
+        )
+        if info is None:
+            logger.info(
+                "agent_worker: preferred provider %s not configured for %s — using default %s",
+                preferred_provider, spec.category, default_provider_info.provider,
+            )
+            out[spec.category] = default_adapter
+            continue
+        try:
+            out[spec.category] = build_adapter(info)
+            logger.info(
+                "agent_worker: specialist %s routed to %s (model=%s)",
+                spec.category, info.provider, info.model,
+            )
+        except LLMProviderError as e:
+            logger.warning(
+                "agent_worker: could not build preferred adapter for %s (%s) — using default",
+                spec.category, e,
+            )
+            out[spec.category] = default_adapter
+    return out
+
+
+def _seed_scan_config_capability(
+    ctx: AgentContext, credentials: dict | None,
+) -> None:
+    """Promote scan-configured credentials into a typed capability.
+
+    Before: passing ``credentials={...}`` to the task set
+    ``ctx.headers["Authorization"]`` and nothing else. The CAPABILITIES
+    block stayed empty, COMPOSITION hints never fired, and every
+    specialist ran as if no auth primitive existed — the LLM had no
+    steer toward post-auth endpoints.
+
+    After: basic/bearer/cookie scan-config materialises as a CRED or
+    SESSION capability tagged ``provenance=scan_config``. The rest of
+    composition (hints, scheduler idempotency, identity refresh) then
+    works uniformly whether the primitive came from scan config or
+    from authn's discovery path. Seeding here is cheap and one-shot
+    per asset scan — the capability store's dedup keeps re-seeds
+    (e.g. from a retry) from multiplying rows.
+
+    Extra headers on the credentials dict are treated as raw config,
+    not a capability — they might be anti-CSRF tokens or trace IDs
+    rather than auth material.
+    """
+    if not credentials:
+        return
+    from scanner.vm.capabilities import (
+        Capability,
+        CapabilityType,
+        asset_scope,
+    )
+    scope = asset_scope(ctx.asset_id)
+    ctype = (credentials.get("type") or "").lower()
+
+    if ctype == "basic":
+        user = (credentials.get("username") or "").strip()
+        pw = (credentials.get("password") or "").strip()
+        if user or pw:
+            ctx.capabilities.add(Capability(
+                type=CapabilityType.CRED, scope=scope,
+                value={"scheme": "basic", "username": user, "password": pw},
+                confidence=1.0,
+                provenance="scan_config",
+            ))
+    elif ctype == "bearer":
+        token = (credentials.get("token") or "").strip()
+        if token:
+            ctx.capabilities.add(Capability(
+                type=CapabilityType.SESSION, scope=scope,
+                value={"jwt": token},
+                confidence=1.0,
+                provenance="scan_config",
+            ))
+    elif ctype == "cookie":
+        cookie = (credentials.get("cookie") or credentials.get("token") or "").strip()
+        if cookie:
+            ctx.capabilities.add(Capability(
+                type=CapabilityType.SESSION, scope=scope,
+                value={"cookie": cookie},
+                confidence=1.0,
+                provenance="scan_config",
+            ))
+
+
+def _apply_discovered_identity(ctx: AgentContext) -> list[str]:
+    """Fill missing auth headers from capability store. Return names injected.
+
+    The step 4 half of exploit composition: once authn commits a CRED
+    capability (or anyone commits a SESSION), subsequent specialists
+    need to actually *use* it. Without this, the LLM sees the primitive
+    in the CAPABILITIES block but has to construct headers manually on
+    every http_request call — slow, error-prone, and specialists that
+    don't know about the block skip it entirely.
+
+    Non-destructive: scan-configured headers always win. Only fills
+    slots the operator left empty (``Authorization`` / ``Cookie``).
+    That keeps explicit scan configuration authoritative — if the
+    operator passed ``credentials={...}`` to the task, their choice
+    isn't silently replaced by whatever the LLM stumbled across.
+
+    Ties broken by confidence, then insertion order (CapabilityStore
+    preserves insertion). CRED is preferred over SESSION for
+    ``Authorization`` because concrete user:pass lets future runs
+    re-authenticate if a bearer token expires mid-scan.
+    """
+    import base64
+    from scanner.vm.capabilities import CapabilityType, asset_scope
+
+    scope = asset_scope(ctx.asset_id)
+    added: list[str] = []
+
+    # Header lookup is case-insensitive per RFC 7230. Callers might
+    # have injected "Authorization" or "authorization" — check both so
+    # we don't double-set.
+    def _has_header(name: str) -> bool:
+        lower = name.lower()
+        return any(k.lower() == lower for k in ctx.headers)
+
+    if not _has_header("Authorization"):
+        creds = sorted(
+            ctx.capabilities.query(type=CapabilityType.CRED, scope=scope),
+            key=lambda c: c.confidence, reverse=True,
+        )
+        if creds:
+            top = creds[0]
+            user = top.value.get("username") or ""
+            pw = top.value.get("password") or ""
+            if user or pw:
+                tok = base64.b64encode(f"{user}:{pw}".encode("utf-8")).decode("ascii")
+                ctx.headers["Authorization"] = f"Basic {tok}"
+                added.append("Authorization")
+        if "Authorization" not in added:
+            sessions_with_jwt = [
+                s for s in ctx.capabilities.query(
+                    type=CapabilityType.SESSION, scope=scope,
+                )
+                if s.value.get("jwt")
+            ]
+            sessions_with_jwt.sort(key=lambda c: c.confidence, reverse=True)
+            if sessions_with_jwt:
+                ctx.headers["Authorization"] = f"Bearer {sessions_with_jwt[0].value['jwt']}"
+                added.append("Authorization")
+
+    if not _has_header("Cookie"):
+        sessions_with_cookie = [
+            s for s in ctx.capabilities.query(
+                type=CapabilityType.SESSION, scope=scope,
+            )
+            if s.value.get("cookie")
+        ]
+        sessions_with_cookie.sort(key=lambda c: c.confidence, reverse=True)
+        if sessions_with_cookie:
+            ctx.headers["Cookie"] = sessions_with_cookie[0].value["cookie"]
+            added.append("Cookie")
+
+    return added
+
+
 # ── Finding translation ──────────────────────────────────────────
+
+
+# Per-category CWE map. Each entry is (default_cwe, ((keywords, override_cwe), ...)).
+# Keywords are matched case-insensitively against the LLM-supplied title; first
+# match wins. The default fires when nothing in the title narrows it further.
+# Refinement is intentionally scoped per-category so e.g. an "authn" finding
+# mentioning "sql" doesn't get re-classified as injection — categories are
+# already chosen by the specialist that emitted the finding.
+_CWE_BY_CATEGORY: dict[str, tuple[str, tuple[tuple[tuple[str, ...], str], ...]]] = {
+    "injection": ("CWE-74", (
+        (("nosql", "mongo"), "CWE-943"),
+        (("sql",), "CWE-89"),
+        (("os command", "command injection", "shell injection", "shellshock",
+          "rce", "remote code execution"), "CWE-78"),
+        (("ldap",), "CWE-90"),
+        (("xpath",), "CWE-643"),
+        (("ssti", "server-side template", "template injection"), "CWE-1336"),
+        (("expression language", "el injection", "ognl"), "CWE-917"),
+        (("crlf", "header injection"), "CWE-93"),
+        (("code injection", "code execution", "eval"), "CWE-94"),
+    )),
+    "xss": ("CWE-79", ()),
+    "ssrf": ("CWE-918", ()),
+    "authn": ("CWE-287", (
+        (("default credential", "default login", "default password",
+          "default creds"), "CWE-798"),
+        (("hardcoded", "hard-coded"), "CWE-798"),
+        (("weak password", "password policy", "password complexity"), "CWE-521"),
+        (("brute force", "no rate limit", "rate limit", "rate-limit"), "CWE-307"),
+        (("missing authentication", "no authentication",
+          "unauthenticated access"), "CWE-306"),
+        (("credentials in url", "credentials in query"), "CWE-598"),
+        (("cleartext", "plaintext password", "plain-text password"), "CWE-319"),
+    )),
+    "authz": ("CWE-285", (
+        (("idor", "insecure direct object"), "CWE-639"),
+        (("privilege escalation", "horizontal privilege",
+          "vertical privilege"), "CWE-269"),
+        (("missing authorization", "missing authz",
+          "no authorization"), "CWE-862"),
+        (("incorrect authorization", "broken access"), "CWE-863"),
+    )),
+    "csrf": ("CWE-352", ()),
+    "files": ("CWE-22", (
+        (("rfi", "remote file inclusion"), "CWE-98"),
+        (("lfi", "local file inclusion", "path traversal",
+          "directory traversal", "arbitrary file read",
+          "file disclosure"), "CWE-22"),
+    )),
+    "upload": ("CWE-434", (
+        (("filename", "external control of file name"), "CWE-73"),
+    )),
+    "session": ("CWE-384", (
+        (("session fixation",), "CWE-384"),
+        (("predictable session", "weak session", "weak token"), "CWE-330"),
+        (("missing httponly", "no httponly", "httponly"), "CWE-1004"),
+        (("missing secure", "no secure flag", "secure flag"), "CWE-614"),
+        (("session hijack", "session leakage", "exposed session",
+          "leaked session"), "CWE-598"),
+    )),
+}
+
+
+def _classify_cwe(category: str, title: str) -> list[str]:
+    """Pick a CWE for an agent finding from its category and title.
+
+    Returns a single-element list to match the shape Nuclei emits for
+    ``classification["cwe-id"]`` — the backend's CWE extractor accepts
+    either a string or a list, and a list keeps the door open if we
+    later want a finding to carry multiple CWEs.
+    """
+    entry = _CWE_BY_CATEGORY.get(category)
+    if entry is None:
+        return []
+    default_cwe, overrides = entry
+    needle = (title or "").lower()
+    for keywords, override_cwe in overrides:
+        if any(kw in needle for kw in keywords):
+            return [override_cwe]
+    return [default_cwe]
 
 
 def _agent_payload_to_finding(
@@ -162,14 +450,20 @@ def _agent_payload_to_finding(
     title = payload.get("title") or f"{specialist.display_name} finding"
     description = payload.get("description") or ""
     evidence_url = payload.get("evidence_url") or target
+    parameter = (payload.get("parameter") or "").strip().lower()
     request_str = payload.get("evidence_request") or ""
     response_str = payload.get("evidence_response") or ""
 
     # Stable template_id so dedup collapses repeat runs on the same
-    # vuln. Hash over category + title + evidence_url — different
-    # description wording shouldn't create a dupe, but probing the same
-    # endpoint should.
-    digest_src = f"{specialist.category}|{title.lower()}|{evidence_url}"
+    # vuln. Key on category + evidence_url + parameter. Title is
+    # deliberately excluded — the LLM rewords it between runs
+    # ("parameter in" vs "Parameter at", etc.), so including it defeats
+    # dedup. Parameter keeps two genuinely distinct vulns on the same
+    # endpoint (e.g. SQLi on ?id= AND SQLi on ?name=) as separate
+    # findings. Empty parameter is normalised to "-" so endpoint-level
+    # vulns (default login, exposed panel) still collapse cleanly.
+    param_key = parameter or "-"
+    digest_src = f"{specialist.category}|{evidence_url}|{param_key}"
     digest = hashlib.sha256(digest_src.encode("utf-8")).hexdigest()[:12]
     template_id = f"agent-{specialist.category}-{digest}"
 
@@ -190,7 +484,7 @@ def _agent_payload_to_finding(
         "type": "agent-vuln",
         "tags": ["agent", specialist.category],
         "reference": [],
-        "classification": {},
+        "classification": {"cwe-id": _classify_cwe(specialist.category, title)},
         "curl_command": request_str if request_str.startswith("curl") else "",
         "matcher_name": f"agent-{specialist.category}",
         "extracted_results": _trim_evidence(request_str, response_str),
@@ -227,7 +521,7 @@ def run_agent_scan(
     """Run the specialist agents against one asset.
 
     ``categories`` lets the backend pin specialists explicitly (e.g.,
-    "only run authz on this re-test"). When None, runs all five and
+    "only run authz on this re-test"). When None, runs all six and
     lets ``select_applicable_specialists`` gate individual agents.
     """
     try:
@@ -310,6 +604,32 @@ async def _run_agent_scan_async(
     finally:
         await conn.close()
 
+    target = _resolve_target(asset)
+
+    # Preflight — bail before the LLM adapter is built so an unreachable
+    # target doesn't burn a provider init + six specialist summarise loops.
+    # Only HTTP targets are probed here; bare IPs / hostnames without a
+    # known scheme fall through and the specialists run as before.
+    if should_preflight(target):
+        pre = await asyncio.to_thread(probe_http, target)
+        if not pre.reachable:
+            logger.info(
+                "agent_worker preflight failed asset=%s target=%s reason=%s detail=%s",
+                asset_id, target, pre.reason, pre.detail,
+            )
+            return {
+                "asset_id": asset_id,
+                "org_id": str(asset["org_id"]) if asset["org_id"] is not None else None,
+                "target": target,
+                "findings": [],
+                "specialists_run": [],
+                "duration_seconds": round(time.monotonic() - start, 2),
+                "status": "unreachable",
+                "error": f"target unreachable ({pre.reason}): {pre.detail}",
+                "preflight": pre.to_dict(),
+                "scanner": "agent",
+            }
+
     try:
         adapter = build_adapter(provider_info)
     except LLMProviderError as e:
@@ -328,7 +648,6 @@ async def _run_agent_scan_async(
         }
 
     endpoints = [_coerce_endpoint(dict(r)) for r in endpoint_rows]
-    target = _resolve_target(asset)
     headers = _credentials_to_headers(credentials)
 
     # If prior scanners (katana, ffuf, openapi) produced no endpoints,
@@ -344,6 +663,7 @@ async def _run_agent_scan_async(
         headers=headers,
         deadline=start + SCAN_TIMEOUT_SECONDS,
     )
+    _seed_scan_config_capability(ctx, credentials)
 
     selected = select_applicable_specialists(ctx, categories)
     if not selected:
@@ -373,22 +693,26 @@ async def _run_agent_scan_async(
         # to async. The outer worker loop stays async for DB + LLM I/O.
         pass
 
+    scheduler = FrontierScheduler(specialists=selected)
+    adapter_map = _build_adapter_map(
+        selected, integration_configs, adapter, provider_info,
+    )
+
     with httpx.Client(verify=False, follow_redirects=False) as sync_client:
         ctx.http_client = sync_client
-        for spec in selected:
-            if time.monotonic() >= ctx.deadline:
-                specialists_run.append({
-                    "category": spec.category, "status": "skipped",
-                    "reason": "asset deadline reached",
-                })
-                continue
+        while True:
+            scheduled = scheduler.next(ctx)
+            if scheduled is None:
+                break
+            spec = scheduled.spec
+            spec_adapter = adapter_map.get(spec.category, adapter)
 
             spec_start = time.monotonic()
             spec_deadline = min(ctx.deadline, spec_start + SPECIALIST_TIMEOUT_SECONDS)
 
             try:
                 spec_findings, iterations, stop_reason = await _run_specialist(
-                    spec=spec, ctx=ctx, deadline=spec_deadline, adapter=adapter,
+                    spec=spec, ctx=ctx, deadline=spec_deadline, adapter=spec_adapter,
                 )
             except LLMProviderError as e:
                 # Provider-level outage — stop running specialists for
@@ -400,6 +724,8 @@ async def _run_agent_scan_async(
                     "findings": findings,
                     "specialists_run": specialists_run + [{
                         "category": spec.category, "status": "error", "reason": str(e),
+                        "run_number": scheduled.run_number,
+                        "scheduler_reason": scheduled.reason,
                     }],
                     "duration_seconds": round(time.monotonic() - start, 2),
                     "status": "error",
@@ -413,6 +739,8 @@ async def _run_agent_scan_async(
                 specialists_run.append({
                     "category": spec.category, "status": "error",
                     "reason": str(e)[:200], "iterations": 0,
+                    "run_number": scheduled.run_number,
+                    "scheduler_reason": scheduled.reason,
                 })
                 continue
 
@@ -423,6 +751,8 @@ async def _run_agent_scan_async(
                 "iterations": iterations,
                 "findings": len(spec_findings),
                 "duration_seconds": round(time.monotonic() - spec_start, 2),
+                "run_number": scheduled.run_number,
+                "scheduler_reason": scheduled.reason,
             })
 
     return {
@@ -431,6 +761,7 @@ async def _run_agent_scan_async(
         "target": target,
         "findings": findings,
         "specialists_run": specialists_run,
+        "capabilities": ctx.capabilities.summarize(),
         "duration_seconds": round(time.monotonic() - start, 2),
         "status": "complete" if findings or any(s["status"] == "summary" for s in specialists_run) else "partial",
         "scanner": "agent",
@@ -517,6 +848,27 @@ async def _run_agent_scan_adhoc_async(
             "scanner": "agent",
         }
 
+    # Preflight — see asset-path for rationale. Run before adapter build
+    # so an unreachable adhoc target doesn't pay for provider init.
+    if should_preflight(target):
+        pre = await asyncio.to_thread(probe_http, target)
+        if not pre.reachable:
+            logger.info(
+                "agent_worker adhoc preflight failed target=%s reason=%s detail=%s",
+                target, pre.reason, pre.detail,
+            )
+            return {
+                "target": target,
+                "org_id": org_id,
+                "findings": [],
+                "specialists_run": [],
+                "duration_seconds": round(time.monotonic() - start, 2),
+                "status": "unreachable",
+                "error": f"target unreachable ({pre.reason}): {pre.detail}",
+                "preflight": pre.to_dict(),
+                "scanner": "agent",
+            }
+
     try:
         adapter = build_adapter(provider_info)
     except LLMProviderError as e:
@@ -545,6 +897,7 @@ async def _run_agent_scan_adhoc_async(
         headers=headers,
         deadline=start + SCAN_TIMEOUT_SECONDS,
     )
+    _seed_scan_config_capability(ctx, credentials)
 
     selected = select_applicable_specialists(ctx, categories)
     if not selected:
@@ -567,22 +920,26 @@ async def _run_agent_scan_adhoc_async(
     findings: list[dict] = []
     specialists_run: list[dict] = []
 
+    scheduler = FrontierScheduler(specialists=selected)
+    adapter_map = _build_adapter_map(
+        selected, integration_configs, adapter, provider_info,
+    )
+
     with httpx.Client(verify=False, follow_redirects=False) as sync_client:
         ctx.http_client = sync_client
-        for spec in selected:
-            if time.monotonic() >= ctx.deadline:
-                specialists_run.append({
-                    "category": spec.category, "status": "skipped",
-                    "reason": "target deadline reached",
-                })
-                continue
+        while True:
+            scheduled = scheduler.next(ctx)
+            if scheduled is None:
+                break
+            spec = scheduled.spec
+            spec_adapter = adapter_map.get(spec.category, adapter)
 
             spec_start = time.monotonic()
             spec_deadline = min(ctx.deadline, spec_start + SPECIALIST_TIMEOUT_SECONDS)
 
             try:
                 spec_findings, iterations, stop_reason = await _run_specialist(
-                    spec=spec, ctx=ctx, deadline=spec_deadline, adapter=adapter,
+                    spec=spec, ctx=ctx, deadline=spec_deadline, adapter=spec_adapter,
                 )
             except LLMProviderError as e:
                 return {
@@ -591,6 +948,8 @@ async def _run_agent_scan_adhoc_async(
                     "findings": findings,
                     "specialists_run": specialists_run + [{
                         "category": spec.category, "status": "error", "reason": str(e),
+                        "run_number": scheduled.run_number,
+                        "scheduler_reason": scheduled.reason,
                     }],
                     "duration_seconds": round(time.monotonic() - start, 2),
                     "status": "error",
@@ -604,6 +963,8 @@ async def _run_agent_scan_adhoc_async(
                 specialists_run.append({
                     "category": spec.category, "status": "error",
                     "reason": str(e)[:200], "iterations": 0,
+                    "run_number": scheduled.run_number,
+                    "scheduler_reason": scheduled.reason,
                 })
                 continue
 
@@ -614,6 +975,8 @@ async def _run_agent_scan_adhoc_async(
                 "iterations": iterations,
                 "findings": len(spec_findings),
                 "duration_seconds": round(time.monotonic() - spec_start, 2),
+                "run_number": scheduled.run_number,
+                "scheduler_reason": scheduled.reason,
             })
 
     return {
@@ -621,6 +984,7 @@ async def _run_agent_scan_adhoc_async(
         "org_id": org_id,
         "findings": findings,
         "specialists_run": specialists_run,
+        "capabilities": ctx.capabilities.summarize(),
         "duration_seconds": round(time.monotonic() - start, 2),
         "status": "complete" if findings or any(s["status"] == "summary" for s in specialists_run) else "partial",
         "scanner": "agent",
@@ -674,6 +1038,25 @@ async def _run_specialist(
     iteration_cap = min(spec.max_iterations, ABSOLUTE_MAX_ITERATIONS)
     findings: list[dict] = []
     iterations = 0
+
+    # Tag any capability this specialist produces with its category so
+    # provenance chains stay intact across the full asset run. The
+    # outer loop overwrites this before the next specialist starts, and
+    # ctx is discarded once the asset finishes, so there's no need to
+    # clear it explicitly.
+    ctx.current_specialist = spec.category
+
+    # Refresh identity headers from the capability store BEFORE building
+    # the initial message so AUTH_HEADERS_PROVIDED reflects the real
+    # headers the specialist's http_request calls will carry. Returns
+    # the names of any headers we injected; the audit log records them
+    # so scan traces show the moment composition unlocked auth.
+    injected_auth = _apply_discovered_identity(ctx)
+    if injected_auth:
+        logger.info(
+            "specialist %s: injected auth from capability store: %s",
+            spec.category, injected_auth,
+        )
 
     initial_user_message = _build_initial_message(ctx, spec)
     messages: list[dict] = [{"role": "user", "content": initial_user_message}]
@@ -751,6 +1134,64 @@ async def _run_specialist(
     return findings, iterations, stop_reason
 
 
+def _composition_hints(ctx: AgentContext) -> list[str]:
+    """Return prompt-ready bullets describing how to use typed capabilities.
+
+    Short, targeted, capability-conditional. Each hint is one line and
+    tells the model the *actionable* consequence of a primitive (not
+    what the primitive is — that's in the CAPABILITIES block). Silent
+    when nothing applies so baseline-run prompts stay lean.
+
+    Kept separate from the specialist system prompts so composition
+    behaviour evolves in one place: adding a new capability type with
+    an associated probe strategy is a single edit here rather than
+    seven prompt surgeries.
+    """
+    from scanner.vm.capabilities import CapabilityType, asset_scope
+
+    scope = asset_scope(ctx.asset_id)
+    hints: list[str] = []
+
+    has_cred = bool(ctx.capabilities.query(type=CapabilityType.CRED, scope=scope))
+    has_session = bool(ctx.capabilities.query(type=CapabilityType.SESSION, scope=scope))
+    if has_cred or has_session:
+        hints.append(
+            "- Authentication primitives are available. Your http_request "
+            "calls already carry the right Authorization/Cookie headers — "
+            "treat every probe as authenticated unless you deliberately "
+            "strip auth. Spend this run on endpoints that REJECT anonymous "
+            "traffic (admin/, /api/me, /settings, /account/*) — these "
+            "weren't testable in earlier runs and are where the highest-"
+            "yield post-auth bugs live."
+        )
+
+    if ctx.capabilities.query(type=CapabilityType.IDENTIFIER, scope=scope):
+        hints.append(
+            "- IDENTIFIER primitives list concrete user/resource IDs leaked "
+            "earlier. For IDOR / authz diffing, use these as the 'other' "
+            "identity instead of guessing id±1 — they're guaranteed to "
+            "exist and to belong to a different principal."
+        )
+
+    if ctx.capabilities.query(type=CapabilityType.INTERNAL_HOST, scope=scope):
+        hints.append(
+            "- INTERNAL_HOST primitives list routable internal services "
+            "reachable via server-side fetch. For SSRF follow-up, target "
+            "these concrete hosts (with port) rather than fuzzing "
+            "127.0.0.1/localhost aliases."
+        )
+
+    if ctx.capabilities.query(type=CapabilityType.WEB_ROOT, scope=scope):
+        hints.append(
+            "- WEB_ROOT primitive reveals the server's filesystem layout. "
+            "Use the absolute path to craft precise LFI / SSTI payloads "
+            "(e.g. include application config files at known paths) "
+            "rather than ../../.. traversal guesses."
+        )
+
+    return hints
+
+
 def _build_initial_message(ctx: AgentContext, spec: SpecialistSpec) -> str:
     """First user message — enough context for the agent to pick targets.
 
@@ -775,16 +1216,58 @@ def _build_initial_message(ctx: AgentContext, spec: SpecialistSpec) -> str:
             ][:10],
         })
 
+    # Surface what earlier specialists stashed via memory_set. Strip
+    # internal bookkeeping keys (leading underscore) so the model only
+    # sees actionable hints, not our OOB token list.
+    visible_memory = {
+        k: v for k, v in ctx.shared_memory.items() if not k.startswith("_")
+    }
+
+    # Typed capabilities from earlier specialists. Rendered alongside
+    # (not replacing) MEMORY so existing prompts keep working and typed
+    # primitives gain structured visibility. Notes are excluded — the
+    # MEMORY block already shows them in their original string form.
+    typed_caps = ctx.capabilities.summarize(include_notes=False)
+
+    # Composition guidance — surface targeted advice for the specialist
+    # when typed primitives exist that change how it should probe.
+    # Kept out of per-specialist system prompts so adding a new typed
+    # capability doesn't require editing seven prompt bodies, and so
+    # the hint only appears when the capability is actually present
+    # (avoids prompt noise on baseline runs).
+    composition_hints = _composition_hints(ctx)
+
     lines = [
         f"SPECIALIST: {spec.display_name}",
         f"TARGET: {ctx.target}",
         f"ASSET_ID: {ctx.asset_id}",
         f"AUTH_HEADERS_PROVIDED: {sorted(ctx.headers.keys())}",
+    ]
+    if typed_caps:
+        lines.extend([
+            "",
+            "CAPABILITIES (typed primitives discovered so far — each one is a confirmed fact you can build on):",
+            json.dumps(typed_caps, indent=2),
+        ])
+    if composition_hints:
+        lines.extend([
+            "",
+            "COMPOSITION GUIDANCE (how to exploit the capabilities above):",
+            *composition_hints,
+        ])
+    if visible_memory:
+        lines.extend([
+            "",
+            "MEMORY (from earlier specialists on this asset — trust these hints, they're concrete facts not guesses):",
+            json.dumps(visible_memory, indent=2),
+        ])
+    lines.extend([
+        "",
         f"ENDPOINTS (first {len(ep_slice)} of {len(ctx.endpoints)}):",
         json.dumps(ep_slice, indent=2),
         "",
         "Begin. Use tools to probe. Call emit_finding for every confirmed vuln. Call summary when done.",
-    ]
+    ])
     return "\n".join(lines)
 
 

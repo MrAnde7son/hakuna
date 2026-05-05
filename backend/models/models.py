@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Float, Boolean, Text, DateTime, ForeignKey, JSON, UniqueConstraint, Index, text
+from sqlalchemy import Column, Integer, String, Float, Boolean, Text, DateTime, ForeignKey, JSON, LargeBinary, UniqueConstraint, Index, text
 from sqlalchemy.orm import relationship
 from core.database import Base
 from integrations.model_registry import importable
@@ -38,6 +38,10 @@ class Organization(Base):
     # AI token quota (Pro plan)
     ai_tokens_used = Column(Integer, default=0)
     ai_tokens_reset_at = Column(DateTime, nullable=True)
+
+    # PLG activation milestone — set once, when org's first scan with ≥1 finding ingests.
+    # Drives the `activated` PostHog event and downstream retention/conversion analysis.
+    activated_at = Column(DateTime, nullable=True)
 
     parent = relationship("Organization", remote_side=[id], backref="children")
     users = relationship("User", back_populates="organization")
@@ -268,6 +272,7 @@ class Asset(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     scan_id = Column(Integer, ForeignKey("scans.id"), nullable=False)
+    scan_run_id = Column(String, nullable=True, index=True)
     ip = Column(String)
     hostname = Column(String)
     fqdn = Column(String)
@@ -385,26 +390,44 @@ class AssetObservation(Base):
 
 
 class AssetRelationship(Base):
-    """Directional edge between two assets (e.g. DNS record → cloud workload)."""
+    """Unified edge in the asset graph.
+
+    Originally infrastructure-only (DNS resolves_to, shared certificate, …).
+    Promoted in migration 054 to also carry reachability, exploit, and
+    kill-chain edges from EASM, the VM scanner, audit agents, and parsers
+    — see `docs/cross-scan-chain-coordinator-plan.md`.
+
+    `source_asset_id` / `target_asset_id` are nullable to allow pseudo-
+    endpoints: `NULL → asset` for `internet_to_asset`, `asset → NULL` for
+    `principal_to_domain` style sinks.
+    """
     __tablename__ = "asset_relationships"
     __table_args__ = (
-        UniqueConstraint("org_id", "source_asset_id", "target_asset_id", "relationship_type",
-                         name="uq_asset_relationship"),
+        # Note: the actual uniqueness constraint lives in DB as the
+        # `uq_asset_edge` partial unique index (created in migration 054)
+        # because Postgres UNIQUE treats NULLs as distinct, which would
+        # let duplicate `(NULL, asset, internet_to_asset, "")` rows in.
         Index("ix_asset_rel_source", "source_asset_id"),
         Index("ix_asset_rel_target", "target_asset_id"),
+        Index("ix_asset_edge_type", "org_id", "relationship_type"),
+        Index("ix_asset_edge_source_system", "source_system", "last_seen_at"),
     )
 
     id = Column(Integer, primary_key=True, index=True)
     org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
-    source_asset_id = Column(Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=False)
-    target_asset_id = Column(Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=False)
-    relationship_type = Column(String, nullable=False)   # resolves_to, alias_of, hosts_service, runs_technology, shares_certificate, same_jarm_cluster, same_ip, exposes_endpoint, authenticates_via
-    confidence = Column(String, default="high")           # high / medium / low
+    source_asset_id = Column(Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=True)
+    target_asset_id = Column(Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=True)
+    relationship_type = Column(String, nullable=False)   # see models/asset_edges.EdgeType
+    confidence = Column(String, default="high")           # confirmed / high / medium / low
     source_detail = Column(JSON, default=dict)            # provenance: {connector, dns_record_type}
     weight = Column(Float, default=1.0)                  # edge weight for graph algorithms (0.0-1.0)
-    properties = Column(JSON, default=dict)              # edge-specific metadata (e.g. shared cert fingerprint, JARM hash)
+    properties = Column(JSON, default=dict)              # edge-specific metadata (port, pipe name, principal, …)
+    properties_hash = Column(String(64), nullable=False, default="")  # sha256 of canonical properties — part of the unique key
+    enabled_by_findings = Column(JSON, default=list)     # finding ids that justify the edge
+    source_system = Column(String(64), nullable=True, index=True)  # easm | vm_scanner | audit_agent | inventory | knowledge_graph | parser
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    last_seen_at = Column(DateTime, default=datetime.utcnow)
 
     source_asset = relationship("Asset", foreign_keys=[source_asset_id], back_populates="outbound_relationships")
     target_asset = relationship("Asset", foreign_keys=[target_asset_id], back_populates="inbound_relationships")
@@ -470,6 +493,14 @@ class AttackPath(Base):
     recommended_mitigations = Column(JSON, nullable=True)
     # [{finding_id, finding_name, severity, chains_broken, action}]
 
+    # Cross-Scan Chain Coordinator link — set when the Coordinator
+    # validated this path end-to-end (internet → crown-jewel) and emitted
+    # a `ValidatedChain` Finding summarizing it. NULL for paths produced
+    # only by the legacy `finding_correlator` BFS.
+    validated_chain_finding_id = Column(
+        Integer, ForeignKey("findings.id", ondelete="SET NULL"), nullable=True, index=True,
+    )
+
 
 class ScannerEventCursor(Base):
     """Per-org cursor tracking the last-consumed scanner event.
@@ -500,6 +531,7 @@ class Finding(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     scan_id = Column(Integer, ForeignKey("scans.id"), nullable=False)
+    scan_run_id = Column(String, nullable=True, index=True)
     asset_id = Column(Integer, ForeignKey("assets.id"), nullable=False)
 
     # Multi-source provenance
@@ -530,6 +562,11 @@ class Finding(Base):
 
     # CVE references
     cves = Column(JSON, default=list)
+    # CWE identifiers (e.g. ["CWE-79", "CWE-89"]). Populated at ingest by scanner
+    # parsers when available, and backfilled post-ingest via CVE → ThreatCVE.cwe_ids.
+    # Primary taxonomy key for scanner-agnostic compliance mapping.
+    cwe_ids = Column(JSON, default=list, nullable=False)
+    cwe_names = Column(JSON, default=list, nullable=False)
     references = Column(JSON, default=dict)
 
     # Content
@@ -1344,13 +1381,11 @@ class TagAssignment(Base):
         Index(
             "uq_tag_assignment_tag_asset", "tag_id", "asset_id",
             unique=True,
-            sqlite_where=text("asset_id IS NOT NULL"),
             postgresql_where=text("asset_id IS NOT NULL"),
         ),
         Index(
             "uq_tag_assignment_tag_finding", "tag_id", "finding_id",
             unique=True,
-            sqlite_where=text("finding_id IS NOT NULL"),
             postgresql_where=text("finding_id IS NOT NULL"),
         ),
     )
@@ -1504,6 +1539,30 @@ class CampaignFinding(Base):
 
     campaign = relationship("Campaign", back_populates="findings")
     finding = relationship("Finding")
+
+
+class CampaignComplianceControl(Base):
+    """Links a campaign to compliance controls it remediates. One campaign can
+    bundle several controls (e.g. an entire HIPAA section); one control may be
+    referenced by multiple campaigns over time. The org_id is denormalised so
+    per-tenant queries don't need a 2-hop join through campaigns.
+    """
+    __tablename__ = "campaign_compliance_controls"
+
+    id = Column(Integer, primary_key=True, index=True)
+    campaign_id = Column(Integer, ForeignKey("campaigns.id", ondelete="CASCADE"),
+                         nullable=False, index=True)
+    control_id = Column(Integer, ForeignKey("compliance_controls.id", ondelete="CASCADE"),
+                        nullable=False, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"),
+                    nullable=False, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("campaign_id", "control_id",
+                         name="uq_campaign_compliance_control"),
+        Index("ix_campaign_compliance_control_org", "org_id"),
+    )
 
 
 # ─────────────────────────────────────────────────────────
@@ -1830,7 +1889,13 @@ class FindingException(Base):
 # ─────────────────────────────────────────────────────────
 
 class ReportTemplate(Base):
-    """Saved report/dashboard template configuration."""
+    """Saved report/dashboard template configuration.
+
+    Uniqueness is enforced by the expression index
+    ``uq_report_template_org_name (COALESCE(org_id, 0), name)`` created in
+    migration 049 — SQLAlchemy can't express COALESCE in ``__table_args__``
+    portably, so the constraint lives in the migration only.
+    """
     __tablename__ = "report_templates"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -1916,7 +1981,7 @@ class Agent(Base):
     tools = Column(JSON, default=list)                    # list of tool names from registry
     guardrails = Column(JSON, default=dict)               # {max_steps, read_only, blocked_tools, scope_scan_id}
     memory = Column(JSON, default=dict)                   # persistent key-value memory
-    model = Column(String, default="claude-sonnet-4-6")   # which Claude model to use
+    model = Column(String, default="vertex/gemini-2.5-pro")  # default LLM (Vertex-billed Gemini)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -1954,6 +2019,11 @@ class AgentRun(Base):
     steps_used = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
     finished_at = Column(DateTime)
+    # Tool names the user has bulk-approved for the remainder of this run.
+    # Future calls of these tools skip the HITL pause and the per-call
+    # NeedsApproval gate. Cleared implicitly when the run reaches a
+    # terminal state.
+    auto_approved_tools = Column(JSON, default=list)
 
     agent = relationship("Agent", back_populates="runs")
 
@@ -2001,9 +2071,92 @@ class AgentApproval(Base):
     decided_at = Column(DateTime, nullable=True)
     decided_by = Column(Integer, ForeignKey("users.id"), nullable=True)
     rejection_reason = Column(Text, nullable=True)
+    # Set when the approval has been pushed to an external channel
+    # (Slack/email) so the periodic escalation job doesn't double-send.
+    escalated_at = Column(DateTime, nullable=True)
 
     run = relationship("AgentRun")
     agent = relationship("Agent")
+
+
+class AgentLead(Base):
+    """Observation emitted by an audit agent it didn't have the budget to pursue.
+
+    SMB audit ends saying "lsarpc reachable on three other DCs in this
+    domain" — that's a lead. The Cross-Scan Chain Coordinator
+    (`services.chain_coordinator`, `lead_followup` pattern) consumes
+    open leads on the next tick and dispatches the suggested probe.
+
+    Distinct from `AgentRun.trace`: leads outlive the run, carry an
+    explicit dispatch hint (protocol + mission), and are queryable
+    across ticks.
+    """
+    __tablename__ = "agent_leads"
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    agent_run_id = Column(Integer, ForeignKey("agent_runs.id"), nullable=True)
+    # Resolved asset id when the agent passed one. Falls back to
+    # `target_asset_hint` (hostname/ip) when only the hint is known —
+    # the Coordinator resolves the hint to an asset row at consume time.
+    target_asset_id = Column(Integer, ForeignKey("assets.id"), nullable=True, index=True)
+    target_asset_hint = Column(String(255), nullable=True)
+    reason = Column(Text, nullable=False)
+    suggested_protocol = Column(String(64), nullable=False)
+    suggested_mission = Column(String(64), nullable=False, default="exposure_audit")
+    properties = Column(JSON, default=dict)
+    # open → coordinator hasn't picked it up
+    # dispatched → coordinator queued an audit; consumed_by_scan_id points to it
+    # consumed → audit completed (informational; not enforced today)
+    # ignored → coordinator skipped it (e.g. asset already audited / cooldown)
+    status = Column(String(32), nullable=False, default="open")
+    consumed_by_scan_id = Column(Integer, ForeignKey("scans.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        Index("ix_agent_leads_org_status", "org_id", "status"),
+    )
+
+
+class CoordinatorPendingApproval(Base):
+    """Approval-gated chain-coordinator hypothesis awaiting an operator decision.
+
+    The `cred_found` pattern (and any other pattern marked
+    `requires_approval=True`) emits hypotheses that should not auto-fire.
+    The coordinator persists those here so the AttackPaths UI can
+    surface a "ready to validate" queue. Operator decisions flip
+    `status` to `approved` (the next coordinator tick dispatches it,
+    bypassing the approval gate) or `rejected` (terminal — never
+    re-enumerated for the same `(asset, pattern, protocol, mission)`
+    key until the row is removed).
+    """
+    __tablename__ = "coordinator_pending_approvals"
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=True, index=True)
+    pattern = Column(String(64), nullable=False)
+    protocol = Column(String(64), nullable=False)
+    mission = Column(String(64), nullable=False)
+    rationale = Column(Text, nullable=True)
+    score = Column(Float, default=0.0)
+    score_factors = Column(JSON, default=dict)
+    # pending → awaiting operator
+    # approved → operator OK'd; coordinator dispatches on next tick
+    # rejected → operator declined; not re-enumerated
+    # consumed → dispatch completed (informational)
+    status = Column(String(32), nullable=False, default="pending")
+    decided_by = Column(String(255), nullable=True)
+    decided_at = Column(DateTime, nullable=True)
+    consumed_by_scan_id = Column(Integer, ForeignKey("scans.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    last_seen_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        Index("ix_coord_pending_org_status", "org_id", "status"),
+        Index("ix_coord_pending_dedup", "org_id", "asset_id", "pattern", "protocol", "mission"),
+    )
 
 
 class CopilotConversation(Base):
@@ -2019,6 +2172,25 @@ class CopilotConversation(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class CopilotAttachment(Base):
+    """File attached by a user inside a copilot chat. Bytes are stored inline
+    (capped at MAX_SCAN_UPLOAD_BYTES) so scan-upload tools can resolve
+    `attachment_id` → bytes without a second hop."""
+    __tablename__ = "copilot_attachments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    conversation_id = Column(Integer, ForeignKey("copilot_conversations.id"), nullable=True, index=True)
+    filename = Column(String, nullable=False)
+    content_type = Column(String, nullable=True)
+    size_bytes = Column(Integer, nullable=False, default=0)
+    content = Column(LargeBinary, nullable=False)
+    consumed_at = Column(DateTime, nullable=True)  # set when a tool processes it
+    consumed_by_tool = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
 # ─────────────────────────────────────────────────────────
 # LLM Feedback Loop — every LLM call is logged with optional
 # outcome linkage so future turns can retrieve tenant-scoped
@@ -2028,8 +2200,7 @@ class CopilotConversation(Base):
 class LLMInteraction(Base):
     """One row per LLM call — agent runs and one-shot services.
 
-    Embeddings are populated asynchronously on Postgres only (pgvector).
-    On SQLite (dev) the column is omitted by the migration.
+    Embeddings are populated asynchronously via pgvector.
     """
     __tablename__ = "llm_interactions"
 
@@ -2217,7 +2388,7 @@ class Notification(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False)
-    category = Column(String, nullable=False)  # scan_complete | scan_failed | critical_findings | new_assets | kev_update | campaign_findings | sla_breach
+    category = Column(String, nullable=False)  # scan_complete | scan_failed | critical_findings | new_assets | kev_update | campaign_findings | sla_breach | approval_required
     title = Column(String, nullable=False)
     body = Column(Text, nullable=True)
     link = Column(String, nullable=True)        # e.g. "/findings?scan_id=5"
@@ -2360,7 +2531,7 @@ class Integration(Base):
     credentials_id = Column(String, ForeignKey("integration_credentials.id"), nullable=True)
     records_path = Column(String, nullable=True)  # dot-path to records array in response
     field_map = Column(JSON, nullable=False, default=list)
-    dedup_key = Column(JSON, nullable=False, default=list)  # stored as JSON array (SQLite has no array type)
+    dedup_key = Column(JSON, nullable=False, default=list)  # stored as a JSON array
     params = Column(JSON, nullable=False, default=dict)
     schedule = Column(String, nullable=True)  # cron expression
     enabled = Column(Boolean, nullable=False, default=False)
@@ -2483,6 +2654,11 @@ class RelayAgent(Base):
     id = Column(String, primary_key=True, default=_gen_uuid)
     org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
     name = Column(String, nullable=False)             # "NYC Office Agent"
+    # relay_type='cloud_scanner' rows are auto-provisioned per org and run in
+    # GCP — they handle internet-reachable assets without needing a customer
+    # deployment. token_hash is unused for those rows; the cloud-relay
+    # container authenticates with INTERNAL_SHARED_SECRET on /ws/relay/cloud.
+    relay_type = Column(String, nullable=False, default="agent")  # agent | cloud_scanner
     token_hash = Column(String, nullable=False)        # bcrypt hash of agent token
     token_prefix = Column(String, nullable=True)       # "hka_abc1…" for display
     status = Column(String, default="disconnected")    # connected | disconnected
@@ -2733,3 +2909,315 @@ class SuppressionRule(Base):
     suppressed_count = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+# ─────────────────────────────────────────────────────────
+# Compliance frameworks & controls
+# ─────────────────────────────────────────────────────────
+#
+# Two-tier model:
+#   1. Canonical reference tables (frameworks, controls, control_mappings,
+#      framework_releases) — global, no org_id, seeded from YAML shipped
+#      in backend/compliance/frameworks/. Mirrors the BenchmarkReference /
+#      ThreatCVE / CWEEntry pattern.
+#   2. Tenant-owned tables (org_framework_subscriptions,
+#      compliance_control_status, compliance_finding_status,
+#      compliance_compensating_controls, compliance_report_runs) — strict
+#      org_id NOT NULL, indexed on (org_id, …) per the SecurityControlPolicy
+#      pattern. compliance_finding_status.org_id is intentionally
+#      denormalized (Finding has no direct org_id) so per-framework
+#      dashboard queries don't pay the 2-hop join on every page load.
+
+class ComplianceFramework(Base):
+    """Canonical compliance framework (PCI DSS, SOC 2, NIST CSF, CIS v8, …).
+
+    Loaded from versioned YAML in backend/compliance/frameworks/<slug>/<version>.yaml
+    by services/compliance_loader on first boot or when the file's sha256 changes.
+    Tenants opt in via ``org_framework_subscriptions`` rather than editing rules.
+    """
+    __tablename__ = "compliance_frameworks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    # Slug is unique per (org_id, slug) — global builtin packs (org_id NULL) and
+    # tenant-imported packs (org_id NOT NULL) share this column. Migration 060
+    # enforces the partial unique indexes that make this safe; declaring
+    # unique=True at the column level would re-create the simple-unique that
+    # the migration tears down.
+    slug = Column(String, nullable=False, index=True)               # "pci_dss_4_0", "soc2_2017_tsc"
+    name = Column(String, nullable=False)                           # "PCI DSS"
+    version = Column(String, nullable=False)                        # "4.0.1"
+    authority = Column(String, nullable=True)                       # "PCI SSC"
+    published_at = Column(DateTime, nullable=True)                  # framework publication date
+    description = Column(Text, nullable=True)
+    categories = Column(JSON, default=list, nullable=False)         # ["Payments"], etc.
+    # Bumped when control_mappings.rule schema changes — the loader compares to
+    # the value in the YAML so we can refuse stale tenant evaluator cache.
+    mapping_schema_version = Column(Integer, default=1, nullable=False)
+    # Tenancy — NULL for built-in YAML packs, set for tenant-imported packs.
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"),
+                    nullable=True, index=True)
+    created_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"),
+                        nullable=True)
+    source = Column(String(32), nullable=False, default="builtin")  # "builtin" | "imported"
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    controls = relationship("ComplianceControl", back_populates="framework",
+                            cascade="all, delete-orphan")
+    releases = relationship("ComplianceFrameworkRelease", back_populates="framework",
+                            cascade="all, delete-orphan")
+
+    __table_args__ = (
+        UniqueConstraint("slug", "version", "org_id",
+                         name="uq_compliance_framework_slug_version_org"),
+    )
+
+
+class ComplianceControl(Base):
+    """A single control / requirement under a framework (e.g. PCI 6.3.3, SOC 2 CC6.1)."""
+    __tablename__ = "compliance_controls"
+
+    id = Column(Integer, primary_key=True, index=True)
+    framework_id = Column(Integer, ForeignKey("compliance_frameworks.id", ondelete="CASCADE"),
+                          nullable=False, index=True)
+    ref = Column(String, nullable=False)                            # "6.3.3", "CC6.1", "PR.PS-02"
+    title = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    parent_ref = Column(String, nullable=True)                      # for sub-requirements (e.g. 6.3.3.a → 6.3.3)
+    domain = Column(String, nullable=True)                          # "Vulnerability Management", "Access Control"
+    # automated: rules cover it end-to-end
+    # partial:   some rules automated, some require manual evidence
+    # manual_only: no automated mappings — surfaces as not_applicable
+    testability = Column(String, default="automated", nullable=False)
+    # If any matched finding meets or exceeds this severity, the control fails
+    # regardless of count. Null means count-based logic only.
+    default_severity_floor = Column(Integer, nullable=True)
+    canonical_guidance = Column(Text, nullable=True)                # auditor-facing description
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    framework = relationship("ComplianceFramework", back_populates="controls")
+    mappings = relationship("ComplianceControlMapping", back_populates="control",
+                            cascade="all, delete-orphan")
+
+    __table_args__ = (
+        UniqueConstraint("framework_id", "ref", name="uq_compliance_control_framework_ref"),
+        Index("ix_compliance_control_framework_domain", "framework_id", "domain"),
+    )
+
+
+class ComplianceControlMapping(Base):
+    """A single rule (rule_engine condition list) that asserts whether a finding
+    matches a control. One control may have many mappings (covering different
+    scanners / detection classes). Identified by ``mapping_key`` rather than id
+    so YAML re-releases don't orphan compliance_finding_status rows.
+    """
+    __tablename__ = "compliance_control_mappings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    control_id = Column(Integer, ForeignKey("compliance_controls.id", ondelete="CASCADE"),
+                        nullable=False, index=True)
+    # Stable key from YAML — survives renumbering / re-release. Unique per
+    # control so two tenants importing the same pack don't collide; the
+    # downstream compliance_finding_status row already carries control_id
+    # so its (finding_id, control_id, mapping_key) UNIQUE is unambiguous.
+    mapping_key = Column(String, nullable=False)
+    rule = Column(JSON, nullable=False)                             # rule_engine condition list
+    rule_version = Column(Integer, default=1, nullable=False)       # bumped when rule body changes
+    testability = Column(String, nullable=True)                     # per-rule override of control.testability
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    control = relationship("ComplianceControl", back_populates="mappings")
+
+    __table_args__ = (
+        UniqueConstraint("control_id", "mapping_key",
+                         name="uq_compliance_control_mapping_control_key"),
+    )
+
+
+class ComplianceFrameworkRelease(Base):
+    """Audit trail of framework YAML loads. One row per (framework, release_tag).
+
+    Lets us answer "which mapping version was in effect when this finding was
+    last evaluated?" without consulting git history.
+    """
+    __tablename__ = "compliance_framework_releases"
+
+    id = Column(Integer, primary_key=True, index=True)
+    framework_id = Column(Integer, ForeignKey("compliance_frameworks.id", ondelete="CASCADE"),
+                          nullable=False, index=True)
+    release_tag = Column(String, nullable=False)                    # "2026.04.24-v1"
+    release_notes = Column(Text, nullable=True)
+    mapping_file_sha256 = Column(String, nullable=True)             # hex digest of the YAML
+    released_at = Column(DateTime, default=datetime.utcnow)
+
+    framework = relationship("ComplianceFramework", back_populates="releases")
+
+    __table_args__ = (
+        UniqueConstraint("framework_id", "release_tag",
+                         name="uq_compliance_framework_release_tag"),
+    )
+
+
+class OrgFrameworkSubscription(Base):
+    """An org's opt-in to a compliance framework, plus the asset scope rule.
+
+    scope_rule is rule_engine JSON — a superset of FindingException.scope_tags.
+    Empty/null scope means "all assets in the org". scope_tag_expr is a UI
+    convenience: when the user authors via the simple tag picker, the comma
+    string lives here and scope_rule mirrors it as a one-condition rule.
+    """
+    __tablename__ = "org_framework_subscriptions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"),
+                    nullable=False, index=True)
+    framework_id = Column(Integer, ForeignKey("compliance_frameworks.id", ondelete="CASCADE"),
+                          nullable=False, index=True)
+    enabled = Column(Boolean, default=True, nullable=False)
+    scope_rule = Column(JSON, nullable=True)                        # rule_engine condition list
+    scope_tag_expr = Column(String, nullable=True)                  # UI mirror, e.g. "env:prod,cde:yes"
+    activated_at = Column(DateTime, default=datetime.utcnow)
+    activated_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("org_id", "framework_id", name="uq_org_framework_subscription"),
+        Index("ix_org_framework_subscription_org", "org_id"),
+    )
+
+
+class ComplianceCompensatingControl(Base):
+    """A documented compensating control covering a subset of failing findings
+    for a specific compliance control. Bridges to FindingException so the
+    auditor-facing compliance surface and the existing risk-acceptance model
+    stay in sync rather than holding two parallel free-text fields.
+    """
+    __tablename__ = "compliance_compensating_controls"
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"),
+                    nullable=False, index=True)
+    control_id = Column(Integer, ForeignKey("compliance_controls.id", ondelete="CASCADE"),
+                        nullable=False, index=True)
+    scope_rule = Column(JSON, nullable=True)                        # which finding/asset subset this covers
+    rationale = Column(Text, nullable=False)                        # auditor-facing explanation
+    # Bridge to FindingException — written when an exception of type
+    # "compensating_control" backs this entry. The compliance evaluator
+    # follows this link to mark matched findings as
+    # verdict="satisfied_by_compensating".
+    linked_exception_id = Column(Integer, ForeignKey("finding_exceptions.id", ondelete="SET NULL"),
+                                  nullable=True)
+    linked_ticket_ids = Column(JSON, default=list, nullable=False)  # [{system, external_id}, ...]
+    valid_until = Column(DateTime, nullable=True)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    approved_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_compliance_comp_org_control", "org_id", "control_id"),
+    )
+
+
+class ComplianceControlStatus(Base):
+    """Materialized state per (org, control). Recomputed by the compliance
+    evaluator after finalize_batch. The Compliance tab queries this table
+    directly for tab counts and the controls list.
+    """
+    __tablename__ = "compliance_control_status"
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"),
+                    nullable=False, index=True)
+    control_id = Column(Integer, ForeignKey("compliance_controls.id", ondelete="CASCADE"),
+                        nullable=False, index=True)
+    # passing | failing | partial | compensating_control | not_applicable
+    state = Column(String, default="not_applicable", nullable=False)
+    in_scope_asset_count = Column(Integer, default=0, nullable=False)
+    failing_finding_count = Column(Integer, default=0, nullable=False)
+    failing_asset_count = Column(Integer, default=0, nullable=False)
+    # Set when state == compensating_control / partial. SET NULL on delete so
+    # the status row survives a removed compensating-control note.
+    compensating_note_id = Column(
+        Integer,
+        ForeignKey("compliance_compensating_controls.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    last_evaluated_at = Column(DateTime, nullable=True)
+    # Bumped in code when evaluator logic changes; next finalize re-evaluates
+    # rows whose stored version is below the current evaluator_version.
+    evaluator_version = Column(Integer, default=1, nullable=False)
+    first_failed_at = Column(DateTime, nullable=True)               # earliest "failing" entry, for trend reports
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("org_id", "control_id", name="uq_compliance_status_org_control"),
+        Index("ix_compliance_status_org_state", "org_id", "state"),
+        Index("ix_compliance_status_org_evaluated", "org_id", "last_evaluated_at"),
+    )
+
+
+class ComplianceFindingStatus(Base):
+    """One row per (finding × control mapping) the evaluator matched.
+
+    org_id is denormalized (Finding has no direct org_id — see Finding model
+    note) so per-framework dashboards don't pay the 2-hop join.
+    """
+    __tablename__ = "compliance_finding_status"
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"),
+                    nullable=False, index=True)
+    finding_id = Column(Integer, ForeignKey("findings.id", ondelete="CASCADE"),
+                        nullable=False, index=True)
+    control_id = Column(Integer, ForeignKey("compliance_controls.id", ondelete="CASCADE"),
+                        nullable=False, index=True)
+    mapping_key = Column(String, nullable=False)                    # from compliance_control_mappings.mapping_key
+    # failing | satisfied_by_compensating | exception_suppressed | resolved
+    verdict = Column(String, default="failing", nullable=False)
+    # cve_cwe | plugin_family | plugin_id | ttp | inventory | source_vuln_id
+    matched_via = Column(String, nullable=True)
+    match_signal = Column(JSON, default=dict, nullable=False)       # {cve, cwe, plugin_id, ...}
+    scored_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("finding_id", "control_id", "mapping_key",
+                         name="uq_compliance_finding_status_finding_control_key"),
+        Index("ix_compliance_finding_status_org_control_verdict",
+              "org_id", "control_id", "verdict"),
+        Index("ix_compliance_finding_status_control_finding",
+              "control_id", "finding_id"),
+    )
+
+
+class ComplianceReportRun(Base):
+    """One row per generated compliance report (PDF / CSV / JSON). The artifact
+    lives in MinIO; this row carries the metadata + a frozen ``snapshot`` of
+    the control_status rollup at generation time so the report is reproducible
+    even if compliance state has moved on.
+    """
+    __tablename__ = "compliance_report_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"),
+                    nullable=False, index=True)
+    framework_id = Column(Integer, ForeignKey("compliance_frameworks.id", ondelete="CASCADE"),
+                          nullable=False, index=True)
+    format = Column(String, nullable=False)                         # "pdf" | "csv" | "json"
+    artifact_uri = Column(String, nullable=True)                    # minio://bucket/key
+    sha256 = Column(String, nullable=True)
+    status = Column(String, default="queued", nullable=False)       # queued | running | succeeded | failed
+    error = Column(Text, nullable=True)
+    generated_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    generated_at = Column(DateTime, nullable=True)                  # set when status flips to succeeded/failed
+    snapshot = Column(JSON, default=dict, nullable=False)           # frozen control rollup
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_compliance_report_run_org_framework_generated",
+              "org_id", "framework_id", "generated_at"),
+    )

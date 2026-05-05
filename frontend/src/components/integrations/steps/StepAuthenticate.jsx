@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { CheckCircle2, ExternalLink, Eye, EyeOff, RefreshCw } from 'lucide-react'
 import { Button, Spinner, InlineSpinner } from '../../shared/ui.jsx'
-import { getAcquisitionFlow, validateCredentials, createCredential, oauthStart, discoverOAuth, oauthClientCredentials } from '../../../api.js'
+import { getAcquisitionFlow, validateCredentials, createCredential, oauthStart, discoverOAuth, oauthClientCredentials, getCredentials } from '../../../api.js'
 
 export default function StepAuthenticate({ connectorId, connectorDetail, onComplete, onSkip }) {
   const [flow, setFlow] = useState(null)
@@ -18,13 +18,28 @@ export default function StepAuthenticate({ connectorId, connectorDetail, onCompl
   const [oauthPending, setOauthPending] = useState(false)
   const [discovered, setDiscovered] = useState(null)   // result from /discovery/oauth
   const [discovering, setDiscovering] = useState(false)
+  const [sharedCreds, setSharedCreds] = useState(null) // for shared_credential pattern
   const popupRef = useRef(null)
   const messageListenerRef = useRef(null)
 
   useEffect(() => {
     if (!connectorId) { onSkip(); return }
-    getAcquisitionFlow(connectorId).then(f => {
+    getAcquisitionFlow(connectorId).then(async f => {
       setFlow(f)
+      if (f.pattern === 'shared_credential' && f.shared_with) {
+        try {
+          const all = await getCredentials()
+          const matches = (all || []).filter(c => c.connector_id === f.shared_with)
+          setSharedCreds(matches)
+          if (matches.length === 1) {
+            setLoading(false)
+            onComplete(matches[0].id, matches[0].connected_user)
+            return
+          }
+        } catch {
+          setSharedCreds([])
+        }
+      }
       setLoading(false)
       if (f.pattern === 'none') onSkip()
     }).catch(() => { setLoading(false); onSkip() })
@@ -711,6 +726,54 @@ export default function StepAuthenticate({ connectorId, connectorDetail, onCompl
         {error && (
           <div style={{ padding: '10px 16px', borderRadius: 8, background: '#ef444418', border: '1px solid #ef444440', color: '#ef4444', fontSize: 12 }}>
             {error}
+          </div>
+        )}
+
+        <div style={{ display: 'flex', gap: 8 }}>
+          <Button onClick={onSkip} style={{ background: 'transparent', color: 'var(--text-muted)', border: '1px solid var(--border)' }}>
+            Skip
+          </Button>
+        </div>
+      </div>
+    )
+  }
+
+  // ── Shared Credential ──
+  // This connector reuses credentials from a "primary" connector declared in `shared_with`.
+  // If exactly one credential exists for the primary, the useEffect above auto-completes;
+  // otherwise prompt the user to pick one or set up the primary first.
+  if (flow.pattern === 'shared_credential') {
+    const matches = sharedCreds || []
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+        <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>Reuse Existing Credentials</h3>
+        <p style={{ margin: 0, fontSize: 12, color: 'var(--text-muted)' }}>
+          This connector shares credentials with <code>{flow.shared_with}</code>. Hakuna will reuse the same API key — no separate setup needed.
+        </p>
+
+        {matches.length === 0 && (
+          <div style={{ padding: '12px 16px', borderRadius: 8, background: '#eab30818', border: '1px solid #eab30840', fontSize: 12, color: 'var(--text)' }}>
+            No credentials found for <strong>{flow.shared_with}</strong>. Please set up that connector first, then return here.
+          </div>
+        )}
+
+        {matches.length > 1 && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <label style={labelStyle}>Select credential</label>
+            {matches.map(c => (
+              <button
+                key={c.id}
+                onClick={() => onComplete(c.id, c.connected_user)}
+                style={{
+                  textAlign: 'left', padding: '10px 12px', borderRadius: 8,
+                  border: '1px solid var(--border)', background: 'var(--bg)',
+                  color: 'var(--text)', cursor: 'pointer', fontSize: 13,
+                }}
+              >
+                <div style={{ fontWeight: 600 }}>{c.name}</div>
+                {c.connected_user && <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{c.connected_user}</div>}
+              </button>
+            ))}
           </div>
         )}
 

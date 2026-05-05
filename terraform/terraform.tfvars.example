@@ -19,6 +19,11 @@ jwt_secret = "replace-with-your-secret"
 # Optional — leave empty to disable Sentry
 sentry_dsn = ""
 
+# Optional — PostHog product analytics. Use the project API key (phc_...).
+# Shared by backend (POSTHOG_API_KEY) and frontend build (VITE_POSTHOG_KEY).
+posthog_api_key = ""
+posthog_host    = "https://us.i.posthog.com"
+
 # Optional OSINT API keys for EASM scanner
 # Scanner degrades gracefully without these — uses only passive/free sources
 shodan_api_key    = ""

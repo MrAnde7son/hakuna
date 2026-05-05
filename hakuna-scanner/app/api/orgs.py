@@ -1,9 +1,11 @@
 """CRUD for orgs and target domains."""
 
+import ipaddress
+import re
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,8 +26,42 @@ class OrgResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+# Hostname label per RFC 1035 §2.3.1: alphanumeric, internal hyphens allowed,
+# 1–63 chars. The full FQDN must have at least two labels (so a bare
+# "localhost" doesn't sneak through as a scan target) and total length ≤253.
+_HOSTNAME_LABEL = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+_FQDN_RE = re.compile(
+    rf"^(?=.{{1,253}}$)(?:{_HOSTNAME_LABEL}\.)+{_HOSTNAME_LABEL}$"
+)
+
+
 class DomainCreate(BaseModel):
     domain: str
+
+    @field_validator("domain")
+    @classmethod
+    def _validate_domain(cls, raw: str) -> str:
+        # Normalize first so the validator and the DB row agree on the canonical
+        # form. Without this, '  HAKUNAHQ.com ' would pass validation as-is and
+        # only get lowered/stripped in add_domain.
+        v = (raw or "").strip().lower()
+        if not v:
+            raise ValueError("domain must not be empty")
+        # Accept literal IPv4/IPv6 — the scanner already runs against IP targets
+        # (see existing target_domains rows like 20.83.163.0).
+        try:
+            ipaddress.ip_address(v)
+            return v
+        except ValueError:
+            pass
+        # Otherwise require a valid FQDN. This is what catches typos like
+        # 'hakunahq,com' (comma instead of dot) which otherwise get accepted
+        # and waste a full scan run on an unresolvable name.
+        if not _FQDN_RE.match(v):
+            raise ValueError(
+                f"'{raw}' is not a valid FQDN or IP address"
+            )
+        return v
 
 
 class DomainResponse(BaseModel):
@@ -83,17 +119,15 @@ async def add_domain(org_id: uuid.UUID, body: DomainCreate, db: AsyncSession = D
     if not org:
         raise HTTPException(404, "Org not found")
 
-    clean_domain = body.domain.strip().lower()
-
-    # Return existing if already added
+    # body.domain is already stripped/lowered and validated by DomainCreate.
     result = await db.execute(
-        select(TargetDomain).where(TargetDomain.org_id == org_id, TargetDomain.domain == clean_domain)
+        select(TargetDomain).where(TargetDomain.org_id == org_id, TargetDomain.domain == body.domain)
     )
     existing = result.scalar_one_or_none()
     if existing:
         return existing
 
-    domain = TargetDomain(org_id=org_id, domain=clean_domain)
+    domain = TargetDomain(org_id=org_id, domain=body.domain)
     db.add(domain)
     await db.commit()
     await db.refresh(domain)

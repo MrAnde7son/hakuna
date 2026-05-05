@@ -65,6 +65,15 @@ def finalize_batch(
         db, "Global exceptions (batch)", lambda: _apply_global_exceptions(db, scan_id)
     )
 
+    # Compliance evaluator — runs after exceptions so verdict can reflect
+    # exception_id; runs before threat-intel so any KEV-driven rule that
+    # fires this batch will re-fire on the next finalize once enrichment
+    # adds is_kev=True (idempotent upsert keeps that re-fire cheap).
+    results["compliance"] = _step(
+        db, "Compliance evaluator (batch)",
+        lambda: _run_compliance_eval(db, scan_id, org_id, new_finding_ids=new_finding_ids),
+    )
+
     # Threat intel + TTP enrichment — local to findings in this scan
     results["threat_intel"] = _step(
         db, "Threat intel enrichment (batch)", lambda: _enrich_threat_intel(db, scan_id)
@@ -79,6 +88,16 @@ def finalize_batch(
     results["prioritize"] = _step(
         db, "Finding prioritization (batch)",
         lambda: _prioritize_findings(db, scan_id, org_id, new_finding_ids=new_finding_ids),
+    )
+
+    # Severity counter recomputation — recounts critical/high/medium/low/info
+    # per asset across ALL findings (not just this scan) for assets touched by
+    # the batch. Required because scanners that link findings to pre-existing
+    # assets (VM scanner → EASM-discovered web_app) otherwise leave the
+    # counter columns stale, and the assets inventory reads them directly.
+    results["severity_counts"] = _step(
+        db, "Asset severity counts (batch)",
+        lambda: _recompute_asset_severity_counts(db, scan_id, new_finding_ids=new_finding_ids),
     )
 
     # Risk score recomputation — only affects assets in this scan
@@ -118,6 +137,17 @@ def finalize_scan(
     """
     results = {}
 
+    # 0. Drop superseded run rows — VM rescans write new-run findings
+    # alongside the previous run's rows. At successful finalize, we resolve
+    # any open tickets on the prior run's findings (the vuln wasn't re-
+    # detected, so the work is done) and delete rows tagged with a stale
+    # run_id. Must run BEFORE cross-scan dedup so the dedup pass doesn't
+    # see stale rows and keep them as the latest.
+    results["drop_superseded_run"] = _step(
+        db, "Drop superseded run rows",
+        lambda: _drop_superseded_run(db, scan_id),
+    )
+
     # 1a. OS & Software auto-tags (built-in)
     results["os_software_tags"] = _step(
         db, "OS/Software auto-tags", lambda: _run_os_software_tags(db, scan_id)
@@ -143,6 +173,14 @@ def finalize_scan(
         db, "Global exceptions", lambda: _apply_global_exceptions(db, scan_id)
     )
 
+    # 4b. Compliance evaluator — full-scan mode (new_finding_ids=None)
+    # wipes prior compliance_finding_status rows for findings in this scan
+    # so unmatched/resolved findings don't leave stale "failing" entries.
+    results["compliance"] = _step(
+        db, "Compliance evaluator",
+        lambda: _run_compliance_eval(db, scan_id, org_id, new_finding_ids=None),
+    )
+
     # 5b. Solution aggregation
     results["solutions"] = _step(
         db, "Solution aggregation", lambda: _aggregate_solutions(db, scan_id)
@@ -152,6 +190,16 @@ def finalize_scan(
     results["threat_intel"] = _step(
         db, "Threat intel enrichment", lambda: _enrich_threat_intel(db, scan_id)
     )
+
+    # 6b. Mirror KEV-flagged findings into the unified edge graph as
+    # `cve_on_asset` anchors. Must run after threat-intel enrichment
+    # (which is what flips `Finding.is_kev`). Idempotent — re-runs
+    # only update last_seen_at on existing edges.
+    if org_id:
+        results["cve_edges"] = _step(
+            db, "KEV cve_on_asset edges",
+            lambda: _emit_kev_cve_edges(db, scan_id, org_id),
+        )
 
     # 7. TTP matching
     results["ttp"] = _step(
@@ -192,6 +240,18 @@ def finalize_scan(
             lambda: _extract_inventory_edges(db, org_id, scan_id),
         )
 
+    # 9.56. Unified-edge materialization from inventory (Phase 2 of the
+    # Cross-Scan Chain Coordinator). Emits asset_to_asset_port /
+    # user_to_asset / asset_to_asset_auth using the closed taxonomy in
+    # `models.asset_edges`. Complementary to step 9.55 — both write to
+    # `asset_relationships`; the Coordinator and the new blast-radius
+    # read path consume the unified families.
+    if org_id:
+        results["inventory_unified_edges"] = _step(
+            db, "Inventory unified edges",
+            lambda: _materialize_inventory_unified_edges(db, org_id, scan_id),
+        )
+
     # 9.6. Cross-finding correlation — dispatched as a background job
     # (CVE corroboration + attack-path BFS + up to 50 LLM narrations).
     # Runs async so multi-scan ingests don't serialise on one slow run,
@@ -200,6 +260,17 @@ def finalize_scan(
         results["finding_correlation"] = _step(
             db, "Cross-finding correlation (dispatched)",
             lambda: _correlate_findings(db, org_id),
+        )
+
+    # 9.65. Chain Coordinator (Phase 3) — dispatched as a background job
+    # alongside correlation. Reads the unified edge graph, enumerates
+    # hypotheses, dispatches probes, and emits ValidatedChain findings
+    # on closure. Same per-org debounce shape as correlation so a
+    # multi-scan ingest collapses to a single tick.
+    if org_id:
+        results["chain_coordinator"] = _step(
+            db, "Chain coordinator (dispatched)",
+            lambda: _run_chain_coordinator(db, org_id, scan_id),
         )
 
     # 10. EASM enrichment
@@ -241,6 +312,15 @@ def finalize_scan(
         lambda: _prioritize_findings(db, scan_id, org_id),
     )
 
+    # 12.7. Asset severity counter recomputation — scan-wide version.
+    # Same purpose as the batch step: keep Asset.critical_count/high_count/etc.
+    # consistent with Finding rows across scan boundaries (VM scanner, EASM,
+    # integrations often link findings to assets from a different scan).
+    results["severity_counts"] = _step(
+        db, "Asset severity counts",
+        lambda: _recompute_asset_severity_counts(db, scan_id),
+    )
+
     # 13. Asset risk score recomputation
     results["risk_scores"] = _step(
         db, "Risk score recomputation",
@@ -259,18 +339,44 @@ def finalize_scan(
 def _step(db: Session, name: str, fn):
     """Execute a pipeline step, catching and logging failures.
 
-    Uses a savepoint so that a failure in one step doesn't roll back
-    the entire transaction (and undo previous steps' work).
+    Uses a savepoint so that a failure in one step doesn't roll back the
+    entire transaction (and undo previous steps' work).
+
+    Tolerates step bodies that call `db.commit()` themselves. Several pipeline
+    steps (os_software_tags, tags, ownership_inference, compliance_evaluator,
+    the EASM→VM trigger flag) commit their own work — that releases the
+    SAVEPOINT we opened, so `nested.commit()` afterward would raise "This
+    transaction is closed". Before this fix, that raise produced a misleading
+    "failed (non-fatal)" warning even though the work had succeeded; in
+    production it cascaded across the whole pipeline because each subsequent
+    step inherited the closed-transaction state. The savepoint's isolation
+    guarantee is illusory for body-commits regardless — once the body
+    committed, the work is durable and can't be rolled back by us.
+
+    Also recovers a session left in a closed-transaction state by an
+    upstream caller (e.g. a transient Cloud SQL proxy connection drop)
+    so the step can still run on a fresh transaction.
     """
-    # Try savepoint-based isolation first
+    # Defensive recovery: if a previous step (or upstream code) left the
+    # session in a closed-transaction state, reset it before doing anything.
+    if not db.is_active:
+        try:
+            db.rollback()
+        except Exception:
+            logger.warning("%s: pre-step session rollback failed", name)
+
     nested = None
     try:
         nested = db.begin_nested()  # SAVEPOINT
         result = fn()
-        nested.commit()
+        # Only commit the savepoint if it's still active. A body that called
+        # `db.commit()` will have released it already; commiting again raises
+        # "This transaction is closed".
+        if nested.is_active:
+            nested.commit()
         return result
     except Exception as e:
-        if nested is not None:
+        if nested is not None and nested.is_active:
             try:
                 nested.rollback()  # roll back only this step's changes
             except Exception:
@@ -279,11 +385,83 @@ def _step(db: Session, name: str, fn):
                     db.rollback()
                 except Exception:
                     pass
+        else:
+            # Either begin_nested itself raised, or the savepoint was already
+            # released (body committed and then we hit a real error after).
+            # Either way, roll the outer session back so the next step can
+            # open a fresh savepoint instead of inheriting broken state.
+            try:
+                db.rollback()
+            except Exception:
+                pass
         logger.warning("%s failed (non-fatal): %s", name, e)
         return None
 
 
 # ── Individual pipeline steps ──────────────────────────────────────────
+
+
+def _drop_superseded_run(db, scan_id):
+    """Delete Finding/Asset rows from the scan's previous run at finalize.
+
+    VM rescans mint a new `current_run_id` and write alongside the prior
+    run's rows. Once the new run completes successfully we drop anything
+    tagged with a stale run_id. A failed rescan takes the opposite path
+    (_rollback_failed_run in vm_scanner) so the prior run is preserved.
+
+    Open tickets on superseded findings are logged then cascade-deleted
+    via the FindingTicket FK (ON DELETE CASCADE). If the underlying vuln
+    isn't detected by the latest scan, the remediation work is done.
+    """
+    from models.models import Scan, Finding, Asset, FindingTicket
+
+    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+    if not scan:
+        return {"findings_deleted": 0, "assets_deleted": 0}
+    meta = scan.raw_metadata or {}
+    current_run_id = meta.get("current_run_id")
+    if not current_run_id:
+        return {"findings_deleted": 0, "assets_deleted": 0}
+
+    stale_finding_ids = [
+        fid for (fid,) in db.query(Finding.id).filter(
+            Finding.scan_id == scan_id,
+            Finding.scan_run_id.isnot(None),
+            Finding.scan_run_id != current_run_id,
+        ).all()
+    ]
+
+    tickets_auto_resolved = 0
+    findings_deleted = 0
+    if stale_finding_ids:
+        tickets_auto_resolved = db.query(FindingTicket).filter(
+            FindingTicket.finding_id.in_(stale_finding_ids),
+        ).delete(synchronize_session=False)
+        if tickets_auto_resolved:
+            logger.info(
+                "Auto-resolved %d tickets on superseded findings (scan_id=%s)",
+                tickets_auto_resolved, scan_id,
+            )
+        findings_deleted = db.query(Finding).filter(
+            Finding.id.in_(stale_finding_ids),
+        ).delete(synchronize_session=False)
+
+    assets_deleted = db.query(Asset).filter(
+        Asset.scan_id == scan_id,
+        Asset.scan_run_id.isnot(None),
+        Asset.scan_run_id != current_run_id,
+    ).delete(synchronize_session=False)
+
+    if findings_deleted or assets_deleted:
+        logger.info(
+            "Dropped superseded run rows (scan_id=%s): findings=%d assets=%d",
+            scan_id, findings_deleted, assets_deleted,
+        )
+    return {
+        "findings_deleted": findings_deleted,
+        "assets_deleted": assets_deleted,
+        "tickets_auto_resolved": tickets_auto_resolved,
+    }
 
 
 def _run_os_software_tags(db, scan_id):
@@ -337,6 +515,27 @@ def _apply_global_exceptions(db, scan_id):
     return applied
 
 
+def _run_compliance_eval(db, scan_id, org_id, *, new_finding_ids=None):
+    """Wrapper around services.compliance_evaluator.evaluate so the
+    post-ingest pipeline can call it with the same lambda signature as
+    every other step. Non-fatal on import or runtime errors — compliance
+    state is best-effort, never gates ingestion.
+    """
+    from services.compliance_evaluator import evaluate as _eval
+    result = _eval(
+        db,
+        scan_id=scan_id,
+        new_finding_ids=new_finding_ids,
+        org_id=org_id,
+    )
+    if result.get("evaluated"):
+        logger.info(
+            "Compliance eval: %d rule matches across %d controls",
+            result["evaluated"], result.get("controls_touched", 0),
+        )
+    return result
+
+
 
 def _run_control_assessment(db, org_id, scan_id):
     import services.control_assessment as control_assessment
@@ -366,6 +565,14 @@ def _enrich_threat_intel(db, scan_id):
     if result["enriched"]:
         logger.info("Threat intel enrichment: %d findings enriched", result["enriched"])
     return result
+
+
+def _emit_kev_cve_edges(db, scan_id, org_id):
+    from services.asset_edges import write_kev_cve_edges_for_scan
+    written = write_kev_cve_edges_for_scan(db, org_id=org_id, scan_id=scan_id)
+    if written:
+        logger.info("KEV cve_on_asset edges: %d upserted for scan %s", written, scan_id)
+    return {"edges_upserted": written}
 
 
 def _match_ttps(db, scan_id):
@@ -466,43 +673,44 @@ def _easm_enrich(db, org_id, scan_id):
 
 
 def _auto_vm_scan_for_easm(db, org_id, scan_id):
-    """Trigger a VM scan on high-value assets when an EASM scan completes."""
-    from models.models import Scan, Organization
-    from core.database import SessionLocal
-    import asyncio
+    """Mark an EASM scan for follow-up VM scanning.
+
+    The actual VM scan dispatch happens in the `process_pending_easm_vm_triggers`
+    sweeper (apscheduler, every 60s). We only persist the intent here.
+
+    Why durable handoff and not in-process: the previous implementation used
+    `loop.create_task()` to fire-and-forget the dispatch on the API event loop.
+    On Cloud Run, liveness-probe timeouts and rolling deploys regularly tear
+    down the API instance mid-finalize, killing any background task before
+    `start_vm_scan` reaches the VM scanner. Persisting a flag survives container
+    death — the next instance's sweeper picks it up.
+    """
+    from models.models import Scan
 
     scan = db.query(Scan).filter(Scan.id == scan_id).first()
     if not scan or scan.source_type != "easm":
-        return None
-
-    org = db.query(Organization).filter(Organization.id == org_id).first()
-    if not org:
         return None
 
     domain = (scan.raw_metadata or {}).get("domain")
     if not domain:
         return None
 
-    from services.vm_scanner import trigger_vm_scan_for_easm_assets
+    # Per-scan opt-out: same flag the audit auto-trigger honors. When the
+    # operator unticked "Run automated follow-up scans" at EASM scan creation,
+    # skip queueing the VM follow-up too — keeping the audit and VM rails
+    # consistent on a single user-facing toggle.
+    if (scan.raw_metadata or {}).get("suppress_auto_followup"):
+        return {"queued": False, "domain": domain, "suppressed": True}
 
-    # Use a dedicated session so the caller's session isn't accessed
-    # concurrently or after the request context closes.
-    async def _trigger_with_own_session():
-        vm_db = SessionLocal()
-        try:
-            vm_org = vm_db.query(Organization).filter(Organization.id == org_id).first()
-            await trigger_vm_scan_for_easm_assets(vm_db, vm_org, scan_id, domain)
-        except Exception:
-            logger.exception("Auto VM scan trigger failed for scan %s", scan_id)
-        finally:
-            vm_db.close()
+    md = dict(scan.raw_metadata or {})
+    if md.get("needs_auto_vm_scan"):
+        # Already pending — sweeper will handle it.
+        return {"queued": True, "domain": domain, "already_pending": True}
 
-    try:
-        loop = asyncio.get_running_loop()
-        loop.create_task(_trigger_with_own_session())
-    except RuntimeError:
-        asyncio.run(_trigger_with_own_session())
-    return {"triggered": True, "domain": domain}
+    md["needs_auto_vm_scan"] = True
+    scan.raw_metadata = md
+    db.commit()
+    return {"queued": True, "domain": domain}
 
 
 def _prioritize_findings(db, scan_id, org_id, new_finding_ids=None):
@@ -647,6 +855,88 @@ def _prioritize_findings(db, scan_id, org_id, new_finding_ids=None):
     return {"updated": updated, "total": len(findings)}
 
 
+def _recompute_asset_severity_counts(db, scan_id, new_finding_ids=None):
+    """Recount Finding.severity per asset and write back the stored counter
+    columns (critical_count/high_count/medium_count/low_count/info_count).
+
+    Scope of *which assets* to recount:
+      - If new_finding_ids is provided → the distinct asset_ids on those rows
+        (batch mode — called from finalize_batch).
+      - Otherwise → every asset that has a finding in this scan, unioned
+        with assets whose scan_id == scan_id (scan-wide mode).
+
+    For each asset in scope, the count is computed across *all* findings
+    linked to that asset, regardless of scan_id. This is deliberate: VM
+    scanner and other streaming ingestors link new findings to pre-existing
+    assets (from an earlier EASM scan, say), and the per-scan recount in
+    app.py misses those. Recounting over all findings is idempotent.
+    """
+    from models.models import Asset, Finding
+    from sqlalchemy import func as sa_func
+
+    if new_finding_ids:
+        asset_ids = [
+            r[0] for r in db.query(Finding.asset_id)
+            .filter(Finding.id.in_(new_finding_ids))
+            .filter(Finding.asset_id.isnot(None))
+            .distinct().all()
+        ]
+    else:
+        finding_asset_ids = [
+            r[0] for r in db.query(Finding.asset_id)
+            .filter(Finding.scan_id == scan_id)
+            .filter(Finding.asset_id.isnot(None))
+            .distinct().all()
+        ]
+        scan_asset_ids = [
+            r[0] for r in db.query(Asset.id)
+            .filter(Asset.scan_id == scan_id).all()
+        ]
+        asset_ids = list(set(finding_asset_ids) | set(scan_asset_ids))
+
+    if not asset_ids:
+        return {"updated": 0, "total": 0}
+
+    rows = (
+        db.query(Finding.asset_id, Finding.severity, sa_func.count(Finding.id))
+        .filter(Finding.asset_id.in_(asset_ids))
+        .group_by(Finding.asset_id, Finding.severity)
+        .all()
+    )
+    count_map: dict[int, dict[int, int]] = {}
+    for asset_id, sev, cnt in rows:
+        count_map.setdefault(asset_id, {})[sev] = cnt
+
+    assets = db.query(Asset).filter(Asset.id.in_(asset_ids)).all()
+    updated = 0
+    for asset in assets:
+        counts = count_map.get(asset.id, {})
+        new_c = counts.get(4, 0)
+        new_h = counts.get(3, 0)
+        new_m = counts.get(2, 0)
+        new_l = counts.get(1, 0)
+        new_i = counts.get(0, 0)
+        if (
+            asset.critical_count != new_c
+            or asset.high_count != new_h
+            or asset.medium_count != new_m
+            or asset.low_count != new_l
+            or asset.info_count != new_i
+        ):
+            asset.critical_count = new_c
+            asset.high_count = new_h
+            asset.medium_count = new_m
+            asset.low_count = new_l
+            asset.info_count = new_i
+            updated += 1
+    if updated:
+        db.flush()
+        logger.info(
+            "Severity counts: %d asset(s) updated (scan %s)", updated, scan_id
+        )
+    return {"updated": updated, "total": len(assets)}
+
+
 def _recompute_risk_scores(db, scan_id):
     """Recompute risk scores for every asset in a scan using the full formula."""
     from models.models import Asset, Finding, InventorySecurityControl, InventoryNetConn
@@ -782,7 +1072,7 @@ def _correlate_findings(db, org_id):
 
     Correlation runs CVE corroboration + attack-path BFS + up to 50 LLM
     narration calls. Running inline blocked the post-ingest response for
-    30-60s and caused SQLite writer contention with the APScheduler.
+    30-60s and starved the APScheduler on connection-pool checkouts.
 
     Dispatched via job_manager with per-org debounce: if a correlation
     job is already pending/running, or finished within the last minute
@@ -841,10 +1131,71 @@ def _correlate_findings(db, org_id):
     return {"dispatched": True, "job_id": job.id}
 
 
+def _run_chain_coordinator(db, org_id, scan_id):
+    """Dispatch a single Chain Coordinator tick as a background job.
+
+    Mirrors `_correlate_findings`: per-org debounce so EASM's multi-batch
+    polling and overlapping scan uploads collapse to one tick. Coordinator
+    reads the unified edge graph directly — it does not block on the
+    correlation job's output, and the two can run concurrently.
+
+    Returns {dispatched, reason?, job_id?} for pipeline logging.
+    """
+    from datetime import datetime, timedelta
+    from services.job_manager import dispatch, list_jobs
+    from core.database import SessionLocal
+
+    job_name = f"chain_coordinator_org{org_id}"
+    debounce = timedelta(seconds=60)
+    now = datetime.utcnow()
+
+    for j in list_jobs(limit=50):
+        if j.get("name") != job_name:
+            continue
+        status = j.get("status")
+        if status in ("pending", "running"):
+            logger.info(
+                "org=%d chain_coordinator already %s (job=%s) — skipping dispatch",
+                org_id, status, j.get("job_id"),
+            )
+            return {"dispatched": False, "reason": "already_running"}
+        completed_at = j.get("completed_at")
+        if completed_at:
+            try:
+                ts = datetime.fromisoformat(completed_at)
+                if now - ts < debounce:
+                    logger.info(
+                        "org=%d chain_coordinator ran %.0fs ago — skipping dispatch",
+                        org_id, (now - ts).total_seconds(),
+                    )
+                    return {"dispatched": False, "reason": "debounced"}
+            except (ValueError, TypeError):
+                pass
+        break
+
+    def _run():
+        bg_db = SessionLocal()
+        try:
+            from services.chain_coordinator import tick
+            return tick(bg_db, org_id=org_id, scan_id=scan_id)
+        finally:
+            bg_db.close()
+
+    job = dispatch(job_name, _run, timeout=600)
+    logger.info("org=%d chain_coordinator dispatched as job=%s", org_id, job.id)
+    return {"dispatched": True, "job_id": job.id}
+
+
 def _extract_inventory_edges(db, org_id, scan_id):
     """Materialize AssetRelationship edges from Inventory* tables."""
     from services.inventory_graph_extractor import extract_inventory_edges
     return extract_inventory_edges(db, org_id, scan_id)
+
+
+def _materialize_inventory_unified_edges(db, org_id, scan_id):
+    """Materialize unified-taxonomy edges (Phase 2)."""
+    from services.inventory_edge_materializer import materialize_inventory_edges
+    return materialize_inventory_edges(db, org_id=org_id, scan_id=scan_id)
 
 
 def _llm_validate_findings(db, org_id, scan_id):

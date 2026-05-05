@@ -7,6 +7,13 @@ resource "google_cloud_run_v2_service" "api" {
   # Only accept traffic from the load balancer — not directly from the internet
   ingress = "INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER"
 
+  # Labels flow into the detailed billing export as `labels[].{key,value}` on
+  # every SKU row — used by cogs.v_infra_cost_daily to attribute spend.
+  labels = {
+    hakuna_service = "api"
+    environment    = var.environment
+  }
+
   template {
     timeout = "300s" # match LB backend timeout — allows large Nessus scans to fully process
 
@@ -96,16 +103,41 @@ resource "google_cloud_run_v2_service" "api" {
         }
       }
 
-      # Phase 1: tasks run eagerly (inline, no workers needed).
-      # Phase 2: change to "false" once Celery worker VM is running.
+      # Phase 2: audits dispatched to hakuna-audit-worker VM (compute_audit_worker.tf).
+      # Eager=false means apply_async actually enqueues; if redis is unreachable
+      # the route returns 503 (services/audit_runner.AuditWorkerUnavailableError).
       env {
         name  = "CELERY_TASK_ALWAYS_EAGER"
-        value = "true"
+        value = "false"
       }
 
       env {
         name  = "CELERY_TASK_EAGER_PROPAGATES"
-        value = "true"
+        value = "false"
+      }
+
+      # Audit Celery broker — DB 3 on the main Memorystore (DB 0 = API,
+      # DB 2 = EASM scanner). Must match the URL the audit-worker VM reads.
+      env {
+        name  = "AUDIT_CELERY_BROKER_URL"
+        value = "redis://${google_redis_instance.main.host}:${google_redis_instance.main.port}/3"
+      }
+
+      env {
+        name  = "AUDIT_CELERY_RESULT_BACKEND"
+        value = "redis://${google_redis_instance.main.host}:${google_redis_instance.main.port}/3"
+      }
+
+      # Validates X-Internal-Token on /internal/relay/dispatch — the audit-worker
+      # presents this when tunneling relay dispatch back through the API.
+      env {
+        name = "INTERNAL_SHARED_SECRET"
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.internal_shared_secret.secret_id
+            version = "latest"
+          }
+        }
       }
 
       # JWT secret from Secret Manager
@@ -136,10 +168,39 @@ resource "google_cloud_run_v2_service" "api" {
         }
       }
 
+      # PostHog product analytics — project API key (shared with frontend build).
+      # services/posthog_client.py no-ops if the key is "disabled" (see secrets.tf).
+      env {
+        name = "POSTHOG_API_KEY"
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.posthog_api_key.secret_id
+            version = "latest"
+          }
+        }
+      }
+
+      env {
+        name  = "POSTHOG_HOST"
+        value = var.posthog_host
+      }
+
       # Cloud Trace — Cloud Run automatically injects PROJECT_ID
       env {
         name  = "GOOGLE_CLOUD_PROJECT"
         value = var.project_id
+      }
+
+      # COGS tracking — services.cogs_writer streams llm_interactions rows
+      # to this BigQuery table in addition to Postgres. Unset the dataset
+      # to disable BQ streaming entirely.
+      env {
+        name  = "COGS_BQ_DATASET"
+        value = google_bigquery_dataset.cogs.dataset_id
+      }
+      env {
+        name  = "COGS_BQ_TABLE"
+        value = google_bigquery_table.llm_usage.table_id
       }
 
       # CORS — set to your app domain
@@ -248,14 +309,22 @@ resource "google_cloud_run_v2_service" "api" {
       }
 
       # Health check
+      # timeout_seconds bumped from the Cloud Run default (1s) because the
+      # API serves both probes and heavy work (post_ingest, httpx polls) on
+      # the same process; a 1s timeout under load was killing healthy
+      # instances. period+failure widened to ~5 min of unresponsiveness
+      # before kill, vs. the previous ~90s — long enough to ride out a
+      # transient finalize_scan spike, short enough to recover from a true
+      # deadlock without manual intervention.
       liveness_probe {
         http_get {
           path = "/api/health"
           port = 8000
         }
         initial_delay_seconds = 30
-        period_seconds        = 30
-        failure_threshold     = 3
+        period_seconds        = 60
+        timeout_seconds       = 10
+        failure_threshold     = 5
       }
 
       startup_probe {
@@ -265,6 +334,7 @@ resource "google_cloud_run_v2_service" "api" {
         }
         initial_delay_seconds = 10
         period_seconds        = 5
+        timeout_seconds       = 5
         failure_threshold     = 12 # 60s total startup time
       }
     }
@@ -315,8 +385,10 @@ resource "google_cloud_run_v2_service" "api" {
     google_secret_manager_secret_version.redis_url,
     google_secret_manager_secret_version.jwt_secret,
     google_secret_manager_secret_version.sentry_dsn,
+    google_secret_manager_secret_version.posthog_api_key,
     google_secret_manager_secret_version.brevo_smtp_pass,
     google_secret_manager_secret_version.integration_secret_key,
+    google_secret_manager_secret_version.internal_shared_secret,
     google_secret_manager_secret_version.stripe_secret_key,
     google_secret_manager_secret_version.stripe_webhook_secret,
     google_project_iam_member.api_roles,

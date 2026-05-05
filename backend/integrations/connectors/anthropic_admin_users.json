@@ -1,0 +1,35 @@
+{
+  "id": "anthropic_admin_users",
+  "name": "Anthropic Admin — Org Members",
+  "description": "List users in the Anthropic organization with their roles. Used by identity mission to flag overly-broad Primary Owner / Owner assignments.",
+  "category": "AI Governance",
+  "logo": "/logos/vendors/anthropic.svg",
+  "direction": "pull",
+  "entity": "audit_only",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://api.anthropic.com/v1",
+    "method": "GET",
+    "path": "/organizations/users",
+    "headers": {
+      "x-api-key": "{{credentials.admin_api_key}}",
+      "anthropic-version": "2023-06-01"
+    },
+    "query_params": {},
+    "pagination": {
+      "strategy": "cursor",
+      "cursor_field": "last_id",
+      "cursor_param": "after_id",
+      "page_size": 100,
+      "page_size_param": "limit"
+    }
+  },
+  "records_path": "data",
+  "credential_acquisition": {
+    "pattern": "shared_credential",
+    "shared_with": "anthropic_admin_workspaces"
+  },
+  "default_field_map": [],
+  "dedup_key": ["source_system", "source_id"],
+  "params_schema": {}
+}

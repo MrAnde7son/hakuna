@@ -192,7 +192,7 @@ resource "google_compute_instance" "scanners" {
           CELERY_RESULT_BACKEND: "redis://$${VM_REDIS_HOST}:$${VM_REDIS_PORT}/0"
           PYTHONPATH: "/app"
           TEMPLATES_DIR: "/app/templates"
-          NUCLEI_BIN: "/root/go/bin/nuclei"
+          NUCLEI_BIN: "/usr/local/bin/nuclei"
           NUCLEI_TIMEOUT: "30"
           NUCLEI_RATE_LIMIT: "150"
           SCAN_TIMEOUT_SECONDS: "600"
@@ -211,12 +211,19 @@ resource "google_compute_instance" "scanners" {
           CELERY_RESULT_BACKEND: "redis://$${VM_REDIS_HOST}:$${VM_REDIS_PORT}/0"
           PYTHONPATH: "/app"
           TEMPLATES_DIR: "/app/templates"
-          NUCLEI_BIN: "/root/go/bin/nuclei"
+          NUCLEI_BIN: "/usr/local/bin/nuclei"
           NUCLEI_RATE_LIMIT: "150"
           # Vertex AI / Gemini — agent_worker resolves the LLM provider
           # from env + integration_configs. On GCE the scanner SA's ADC
           # satisfies auth; only the project id has to be passed in.
           GOOGLE_CLOUD_PROJECT: "$${PROJECT_ID}"
+          # WAF / rate-limit evasion — see scanner/vm/evasion.py. The
+          # proxy pool is the only piece with a real cost (paid bandwidth,
+          # provider rate caps); the header-only branch is free. With pool
+          # empty, evasion still applies UA + forwarded-header tricks on
+          # CDN-detected targets and on retry after a stall.
+          HAKUNA_EVASION_ENABLED: "${var.vm_scanner_evasion_enabled}"
+          HAKUNA_PROXY_POOL: "${var.vm_scanner_proxy_pool}"
         depends_on:
           cloud-sql-proxy:
             condition: service_healthy
@@ -242,6 +249,30 @@ resource "google_compute_instance" "scanners" {
     cd /opt/hakuna-scanners
     docker compose pull || echo "Image pull failed — images may not exist yet. Service will retry."
 
+    # ── Daily docker prune (prevents disk fill from old image layers) ──────
+    cat > /etc/systemd/system/docker-prune.service << 'PRUNE_SERVICE'
+    [Unit]
+    Description=Prune unused Docker images, containers, networks
+    Requires=docker.service
+    After=docker.service
+
+    [Service]
+    Type=oneshot
+    ExecStart=/usr/bin/docker system prune -af --filter "until=168h"
+    PRUNE_SERVICE
+
+    cat > /etc/systemd/system/docker-prune.timer << 'PRUNE_TIMER'
+    [Unit]
+    Description=Run docker-prune daily
+
+    [Timer]
+    OnCalendar=daily
+    Persistent=true
+
+    [Install]
+    WantedBy=timers.target
+    PRUNE_TIMER
+
     # ── Create systemd service ──────────────────────────────────────────────
     cat > /etc/systemd/system/hakuna-scanners.service << SERVICE
     [Unit]
@@ -263,6 +294,7 @@ resource "google_compute_instance" "scanners" {
     SERVICE
 
     systemctl daemon-reload
+    systemctl enable --now docker-prune.timer
     systemctl enable hakuna-scanners
     systemctl start hakuna-scanners
 

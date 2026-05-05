@@ -45,6 +45,21 @@ async function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
+function formatErrorDetail(detail) {
+  if (!detail) return null
+  if (typeof detail === 'string') return detail
+  if (Array.isArray(detail)) {
+    return detail.map(d => {
+      if (typeof d === 'string') return d
+      const loc = Array.isArray(d?.loc) ? d.loc.slice(1).join('.') : null
+      const msg = d?.msg || JSON.stringify(d)
+      return loc ? `${loc}: ${msg}` : msg
+    }).join('; ')
+  }
+  if (typeof detail === 'object') return detail.msg || JSON.stringify(detail)
+  return String(detail)
+}
+
 async function _doRequest(path, opts = {}) {
   const token = getStoredToken()
   const orgContext = getOrgContext()
@@ -93,7 +108,9 @@ async function _doRequest(path, opts = {}) {
 
       if (!res.ok) {
         const err = await res.json().catch(() => ({ detail: res.statusText }))
-        throw new Error(err.detail || 'Request failed')
+        const error = new Error(formatErrorDetail(err.detail) || 'Request failed')
+        error.status = res.status
+        throw error
       }
       return res.json()
     } catch (err) {
@@ -307,6 +324,7 @@ export const skipOnboarding = () => request('/onboarding/skip', { method: 'POST'
 // Scans
 export const getScans = () => request('/scans')
 export const deleteScan = (id) => request(`/scans/${id}`, { method: 'DELETE' })
+export const cancelScan = (id) => request(`/scans/${id}/cancel`, { method: 'POST' })
 export const getScanStatus = (id) => request(`/scans/${id}`)
 export const updateScanSchedule = (id, schedule) => request(`/scans/${id}/schedule`, {
   method: 'PATCH',
@@ -525,6 +543,12 @@ export const previewCampaignQuery = (data) =>
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
+  })
+export const nlpToCampaignConditions = (q, scan_id = null) =>
+  request('/campaigns/nlp-to-conditions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ q, scan_id }),
   })
 export const advancedSearch = (data) =>
   request('/search/advanced', {
@@ -893,6 +917,19 @@ export const createWorkflowFromTemplate = (data) =>
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
   })
+export const generateWorkflow = (description, model = null) =>
+  request('/workflows/generate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ description, model }),
+    timeout: 60_000,
+  })
+export const createWorkflowFromGenerated = (data) =>
+  request('/workflows/from-generated', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
 export const getWorkflow = (id) => request(`/workflows/${id}`)
 export const updateWorkflow = (id, data) =>
   request(`/workflows/${id}`, {
@@ -1149,15 +1186,20 @@ export const rebuildAggregatedSolutions = (scanId) => request(`/aggregated-solut
 
 // EASM (External Attack Surface)
 export const getEasmStatus = () => request('/easm/status')
-export const scanEasmDomain = (domain, scanType = 'full') => request(`/easm/scan-domain?domain=${encodeURIComponent(domain)}&scan_type=${scanType}`, { method: 'POST' })
+export const scanEasmDomain = (domain, scanType = 'full', suppressAutoFollowup = false) => request(`/easm/scan-domain?domain=${encodeURIComponent(domain)}&scan_type=${scanType}&suppress_auto_followup=${suppressAutoFollowup ? 'true' : 'false'}`, { method: 'POST' })
 export const rescanEasmScan = (scanId, scanType = 'full') => request(`/easm/rescan/${scanId}?scan_type=${scanType}`, { method: 'POST' })
+export const updateEasmScan = (scanId, patch) => request(`/easm/scans/${scanId}`, {
+  method: 'PATCH',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(patch),
+})
 export const refreshEasmScan = (scanId) => request(`/easm/refresh/${scanId}`, { method: 'POST' })
 export const triggerEasmScan = (scanType = 'full') => request(`/easm/scan?scan_type=${scanType}`, { method: 'POST' })
 export const getEasmEvents = (since, limit = 100) => request(`/easm/events?limit=${limit}${since ? '&since=' + since : ''}`)
 export const setupEasm = (domain) => request(`/easm/setup?domain=${encodeURIComponent(domain)}`, { method: 'POST' })
 export const addEasmDomain = (domain) => request(`/easm/domain?domain=${encodeURIComponent(domain)}`, { method: 'POST' })
 export const getEasmDomains = () => request('/easm/domains')
-export const getEasmScanRuns = (limit = 10, domain = null) => request(`/easm/scan-runs?limit=${limit}${domain ? `&domain=${encodeURIComponent(domain)}` : ''}`)
+export const getEasmScanRuns = (limit = 10, domain = null, scanId = null) => request(`/easm/scan-runs?limit=${limit}${domain ? `&domain=${encodeURIComponent(domain)}` : ''}${scanId ? `&scan_id=${scanId}` : ''}`)
 export const syncEasmAssets = () => request('/easm/sync', { method: 'POST' })
 
 // Agent Pipelines
@@ -1171,10 +1213,10 @@ export const runAgentPipeline = (pipelineId, input, modelOverrides = {}) => requ
 // Agent Approvals (HITL)
 export const getAgentApprovals = (status) => request(`/agents/approvals${status ? `?status=${status}` : ''}`)
 export const getAgentApproval = (approvalId) => request(`/agents/approvals/${approvalId}`)
-export const decideAgentApproval = (approvalId, decision, reason) => request(`/agents/approvals/${approvalId}/decide`, {
+export const decideAgentApproval = (approvalId, decision, reason, { grantScope } = {}) => request(`/agents/approvals/${approvalId}/decide`, {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ decision, reason }),
+  body: JSON.stringify({ decision, reason, grant_scope: grantScope ?? null }),
 })
 export const getRunApprovals = (agentId, runId) => request(`/agents/${agentId}/runs/${runId}/approvals`)
 
@@ -1186,6 +1228,18 @@ export const deleteCopilotConversation = (id) => request(`/copilot/conversations
 export const getCopilotSuggestedPrompts = () => request('/copilot/suggested-prompts')
 export const getCopilotAutonomy = () => request('/copilot/autonomy')
 export const setCopilotAutonomy = (level) => request('/copilot/autonomy', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level }) })
+
+export function uploadCopilotAttachment(conversationId, file) {
+  const fd = new FormData()
+  fd.append('file', file)
+  return request(`/copilot/conversations/${conversationId}/attachments`, {
+    method: 'POST',
+    body: fd,
+  })
+}
+
+export const deleteCopilotAttachment = (conversationId, attachmentId) =>
+  request(`/copilot/conversations/${conversationId}/attachments/${attachmentId}`, { method: 'DELETE' })
 
 // ── VM Scanner API (via main backend) ─────────────────────
 export const startVmScan = (data) => request('/vm/scan', {
@@ -1205,14 +1259,33 @@ export const rescanVmScan = (scanId, overrides = null) => request(`/vm/rescan/${
 
 export const getVmHealth = () => request('/vm/health').catch(() => null)
 
-// ── WMI Inventory (authenticated Windows scans via relay) ─
-export const startWmiScan = (data) => request('/wmi/scan', {
+// ── Protocol Audits (credentialed ReAct audits per protocol) ─
+export const listAuditProtocols = () => request('/audits/protocols')
+export const getAuditProtocol = (protocol) => request(`/audits/protocols/${protocol}`)
+export const startAuditRun = (data) => request('/audits/run', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify(data),
 })
+export const getAuditScan = (scanId) => request(`/audits/scans/${scanId}`)
+export const getAuditScanHistory = (scanId) => request(`/audits/scans/${scanId}/history`)
+export const rescanAuditScan = (scanId, overrides = null) => request(`/audits/scans/${scanId}/rescan`, {
+  method: 'POST',
+  ...(overrides
+    ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(overrides) }
+    : {}),
+})
+export const updateAuditScan = (scanId, patch) => request(`/audits/scans/${scanId}`, {
+  method: 'PATCH',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(patch),
+})
 
-export const getWmiProfiles = () => request('/wmi/profiles')
+// ── OT Posture (Report Builder source) ──────────────────
+// Backend still exposes /api/ot-posture/consent for grant/revoke; the UI
+// for managing consent will live on the asset detail page. The Report
+// Builder OT Posture template just reads /overview via this fetcher.
+export const getOtPostureOverview = () => request('/ot-posture/overview')
 
 // ── Auth Profiles (authenticated VM scans) ────────────────
 export const listAuthProfiles = () => request('/auth-profiles')
@@ -1228,11 +1301,19 @@ export const updateAuthProfile = (id, data) => request(`/auth-profiles/${id}`, {
   body: JSON.stringify(data),
 })
 export const deleteAuthProfile = (id) => request(`/auth-profiles/${id}`, { method: 'DELETE' })
-export const testAuthProfile = (id) => request(`/auth-profiles/${id}/test`, { method: 'POST' })
+// Test-login drives Playwright through the full flow (chromium launch + goto +
+// fills + click + success-condition wait). Each Playwright step is up to 30s,
+// so the total can blow past the default 30s fetch timeout — give it 120s so
+// the backend's real success/error reaches the UI instead of an AbortError.
+export const testAuthProfile = (id) =>
+  request(`/auth-profiles/${id}/test`, { method: 'POST', timeout: 120_000 })
+// Detect-flow renders the login page in headless chromium and then calls the
+// LLM — comfortably 20–40s on cold cache. 90s gives the second attempt headroom.
 export const detectAuthFlow = (loginUrl) => request('/auth-profiles/detect-flow', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({ login_url: loginUrl }),
+  timeout: 90_000,
 })
 
 export const getEasmAssets = (params = {}) => {
@@ -1299,6 +1380,10 @@ export const createCredential = (data) => request(`${IB}/credentials`, {
   method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
 })
 export const getCredentials = () => request(`${IB}/credentials`)
+export const getCredential = (id) => request(`${IB}/credentials/${id}`)
+export const updateCredential = (id, data) => request(`${IB}/credentials/${id}`, {
+  method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
+})
 export const deleteCredential = (id) => request(`${IB}/credentials/${id}`, { method: 'DELETE' })
 
 export const integrationConnect = (data) => request(`${IB}/connect`, {
@@ -1552,6 +1637,15 @@ export const listCorroboratedFindings = (params = {}) => {
   return request(`/correlations/corroborated${q ? '?' + q : ''}`)
 }
 
+// ── Chain Coordinator approval queue ─────────────────────
+
+export const listPendingApprovals = (status = 'pending') =>
+  request(`/chain-coordinator/pending-approvals?status=${encodeURIComponent(status)}`)
+export const approvePendingApproval = (id) =>
+  request(`/chain-coordinator/pending-approvals/${id}/approve`, { method: 'POST' })
+export const rejectPendingApproval = (id) =>
+  request(`/chain-coordinator/pending-approvals/${id}/reject`, { method: 'POST' })
+
 // ── Validation Agent ─────────────────────────────────────
 
 export const runValidation = (findingId) =>
@@ -1561,3 +1655,116 @@ export const getValidationStatus = (findingId) =>
 export const getValidationQueue = (limit = 50) =>
   request(`/validation/queue?limit=${limit}`)
 export const deleteSuppressionRule = (id) => request(`/suppression-rules/${id}`, { method: 'DELETE' })
+
+// ── Compliance ───────────────────────────────────────────
+
+export const getComplianceFrameworks = () => request('/compliance/frameworks')
+
+export const subscribeFramework = (slug, body = {}) => request(
+  `/compliance/frameworks/${slug}/subscribe`,
+  { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
+)
+export const unsubscribeFramework = (slug) => request(
+  `/compliance/frameworks/${slug}/subscribe`, { method: 'DELETE' },
+)
+export const updateFrameworkScope = (slug, body) => request(
+  `/compliance/frameworks/${slug}/scope`,
+  { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
+)
+
+export const getComplianceControls = (slug, params = {}) => {
+  const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v != null && v !== ''))
+  return request(`/compliance/frameworks/${slug}/controls?${q}`)
+}
+export const getComplianceControl = (controlId) => request(`/compliance/controls/${controlId}`)
+export const getComplianceControlFindings = (controlId, params = {}) => {
+  const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v != null && v !== ''))
+  return request(`/compliance/controls/${controlId}/findings?${q}`)
+}
+
+export const createCompensatingControl = (controlId, body) => request(
+  `/compliance/controls/${controlId}/compensating-controls`,
+  { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
+)
+
+export const createCampaignFromControl = (controlId, body = {}) => request(
+  `/compliance/controls/${controlId}/campaign`,
+  { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
+)
+export const createCampaignFromFramework = (slug, body = {}) => request(
+  `/compliance/frameworks/${slug}/campaign`,
+  { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
+)
+export const deleteCompensatingControl = (id) => request(
+  `/compliance/compensating-controls/${id}`, { method: 'DELETE' },
+)
+
+// Reports
+export const createComplianceReport = (body) => request(
+  '/compliance/reports',
+  { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
+)
+export const listComplianceReports = (params = {}) => {
+  const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v != null && v !== ''))
+  return request(`/compliance/reports?${q}`)
+}
+export const getComplianceReport = (runId) => request(`/compliance/reports/${runId}`)
+
+// Framework import / export — tenant-private packs.
+// Export streams YAML; the response Content-Disposition carries the filename.
+export const exportComplianceFramework = async (slug) => {
+  const headers = {}
+  const token = getStoredToken()
+  if (token) headers['Authorization'] = `Bearer ${token}`
+  const orgContext = getOrgContext()
+  if (orgContext) headers['X-Org-Context'] = orgContext
+  const res = await fetch(`${BASE}/compliance/frameworks/${slug}/export`, { headers })
+  if (!res.ok) {
+    let detail = ''
+    try { detail = (await res.json()).detail || '' } catch { /* not json */ }
+    throw new Error(detail || `Export failed (${res.status})`)
+  }
+  const blob = await res.blob()
+  const blobUrl = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = blobUrl
+  a.download = `compliance_${slug}.yaml`
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(blobUrl)
+}
+
+export const importComplianceFramework = (yamlText) => request(
+  '/compliance/frameworks/import',
+  {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ yaml_text: yamlText }),
+  },
+)
+
+export const deleteImportedFramework = (slug) => request(
+  `/compliance/frameworks/${slug}/imported`,
+  { method: 'DELETE' },
+)
+
+// Download a report artifact (CSV/JSON) — mirrors exportDownload's blob-link flow.
+export const downloadComplianceReport = async (runId, frameworkSlug = 'framework', fmt = 'csv') => {
+  const headers = {}
+  const token = getStoredToken()
+  if (token) headers['Authorization'] = `Bearer ${token}`
+  const orgContext = getOrgContext()
+  if (orgContext) headers['X-Org-Context'] = orgContext
+  const res = await fetch(`${BASE}/compliance/reports/${runId}/download`, { headers })
+  if (!res.ok) throw new Error(`Download failed (${res.status})`)
+  const blob = await res.blob()
+  const blobUrl = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = blobUrl
+  a.download = `compliance_${frameworkSlug}_${runId}.${fmt}`
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(blobUrl)
+}

@@ -10,11 +10,12 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from core.database import get_db
-from core.auth import require_auth
+from core.auth import get_accessible_org_ids, require_auth
 from core.subscription import check_scan_limit
 from models.models import Organization, User
 from models.models import Scan
 from services.vm_scanner import start_vm_scan, rescan_vm_scan, refresh_vm_scan, get_vm_health
+from services.target_expander import expand_cidr_targets
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/vm", tags=["vm-scanner"])
@@ -29,7 +30,7 @@ class VmScanRequest(BaseModel):
     # measured in LLM tokens. Default False to avoid quiet regressions
     # when the scanner service picks up a new release.
     enable_agents: bool = False
-    agent_categories: List[str] | None = None  # subset of injection/xss/ssrf/authn/authz
+    agent_categories: List[str] | None = None  # subset of injection/xss/ssrf/authn/authz/csrf/files
 
 
 class VmRescanRequest(BaseModel):
@@ -43,8 +44,23 @@ class VmRescanRequest(BaseModel):
     agent_categories: List[str] | None = None
 
 
-def _get_org(db: Session, user: User) -> Organization:
-    org = db.query(Organization).filter(Organization.id == user.org_id).first()
+async def get_active_org(
+    user: User = Depends(require_auth),
+    db: Session = Depends(get_db),
+    org_ids: list | None = Depends(get_accessible_org_ids),
+) -> Organization:
+    """Resolve the org targeted by the current request.
+
+    Honors the X-Org-Context sidebar selector (validated by
+    ``get_accessible_org_ids``) so superadmin / MSSP users acting against a
+    child org dispatch the scan into that child org. Falls back to the user's
+    home org otherwise.
+    """
+    if org_ids and len(org_ids) == 1:
+        target_id = org_ids[0]
+    else:
+        target_id = user.org_id
+    org = db.query(Organization).filter(Organization.id == target_id).first()
     if not org:
         raise HTTPException(404, "Organization not found")
     return org
@@ -55,13 +71,22 @@ async def create_vm_scan(
     body: VmScanRequest,
     db: Session = Depends(get_db),
     user: User = Depends(require_auth),
+    org: Organization = Depends(get_active_org),
 ):
     """Create a VM scan — creates a Scan record and dispatches to VM scanner container."""
-    org = _get_org(db, user)
 
     targets = [t.strip() for t in body.targets if t.strip()]
     if not targets:
         raise HTTPException(400, "No valid targets provided")
+
+    # Expand CIDR subnets when the caller isn't pairing targets 1:1 with
+    # existing asset_ids — asset-paired flows can't be expanded without
+    # breaking the mapping, and selected-asset IPs never contain CIDRs.
+    if not body.asset_ids:
+        try:
+            targets = expand_cidr_targets(targets)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
 
     result = await start_vm_scan(
         db, org, targets,
@@ -73,6 +98,20 @@ async def create_vm_scan(
     )
     if not result:
         raise HTTPException(502, "Failed to start VM scan — scanner may be unavailable")
+
+    from core.audit import log_audit
+    scan_row = db.query(Scan).filter(Scan.id == result["scan_id"]).first()
+    log_audit(
+        db, "start", "scan", entity_id=result["scan_id"],
+        entity_name=(scan_row.scan_name if scan_row else None),
+        changes={
+            "source_type": "vm_scanner",
+            "targets_queued": result.get("targets_queued", 0),
+            "enable_agents": body.enable_agents,
+        },
+        actor=user,
+    )
+    db.commit()
     return result
 
 
@@ -116,9 +155,17 @@ async def rescan(
             body.enable_agents, body.agent_categories,
         )
     )
+    # Rescan edit-and-rerun: expand CIDRs in the override list before the
+    # service layer stores them on the scan record.
+    targets_override = body.targets if body else None
+    if targets_override:
+        try:
+            targets_override = expand_cidr_targets(targets_override)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
     result = await rescan_vm_scan(
         db, scan,
-        targets_override=(body.targets if body else None),
+        targets_override=targets_override,
         credential_id_override=(body.credential_id if body else None),
         auth_profile_id_override=(body.auth_profile_id if body else None),
         enable_agents_override=(body.enable_agents if body else None),
@@ -127,6 +174,19 @@ async def rescan(
     )
     if not result:
         raise HTTPException(502, "Failed to start VM scan — scanner may be unavailable or scan has no targets")
+
+    from core.audit import log_audit
+    log_audit(
+        db, "start", "scan", entity_id=scan.id,
+        entity_name=scan.scan_name,
+        changes={
+            "source_type": "vm_scanner",
+            "rescan": True,
+            "overrides_applied": overrides_applied,
+        },
+        actor=user,
+    )
+    db.commit()
     return result
 
 

@@ -83,14 +83,7 @@ def extract_findings_with_llm(db: Session, text: str, prompt_type: str = "unstru
     Returns:
         List of finding dicts extracted by the LLM.
     """
-    from agents.agent_engine import (
-        get_default_model, detect_provider,
-        _get_anthropic_client, _get_openai_client, _get_gemini_client,
-        _get_vertex_client, _get_groq_client, _get_ollama_client,
-    )
-
-    model = get_default_model(db)
-    provider = detect_provider(model)
+    from core.llm_router import router
 
     # Select prompt
     base_prompt = PENTEST_EXTRACT_PROMPT if prompt_type == "pentest" else UNSTRUCTURED_EXTRACT_PROMPT
@@ -99,45 +92,16 @@ def extract_findings_with_llm(db: Session, text: str, prompt_type: str = "unstru
     truncated = text[:150_000]
     prompt = base_prompt + truncated
 
-    logger.info("LLM extraction using provider=%s model=%s prompt_type=%s text_len=%d",
-                provider, model, prompt_type, len(truncated))
+    # Instructions live in the user message here — no system prompt.
+    response_text, model = router.call(
+        db,
+        user=prompt,
+        max_tokens=8000,
+    )
+    response_text = (response_text or "").strip()
 
-    if provider == "anthropic":
-        client = _get_anthropic_client(db)
-        message = client.messages.create(
-            model=model, max_tokens=8000,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        response_text = message.content[0].text.strip()
-
-    elif provider in ("openai", "groq", "ollama"):
-        if provider == "openai":
-            client = _get_openai_client(db)
-        elif provider == "groq":
-            client = _get_groq_client(db)
-        else:
-            client = _get_ollama_client(db)
-        api_model = model.replace("ollama/", "") if model.startswith("ollama/") else model
-        resp = client.chat.completions.create(
-            model=api_model, max_tokens=8000,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        response_text = resp.choices[0].message.content.strip()
-
-    elif provider in ("google_gemini", "vertex_ai"):
-        if provider == "vertex_ai":
-            client = _get_vertex_client(db)
-            api_model = model.replace("vertex/", "")
-        else:
-            client = _get_gemini_client(db)
-            api_model = model
-        resp = client.models.generate_content(
-            model=api_model, contents=prompt,
-        )
-        response_text = resp.text.strip()
-
-    else:
-        raise ValueError(f"Unsupported LLM provider for extraction: {provider}")
+    logger.info("LLM extraction model=%s prompt_type=%s text_len=%d",
+                model, prompt_type, len(truncated))
 
     # Strip markdown fences if present
     if response_text.startswith("```"):

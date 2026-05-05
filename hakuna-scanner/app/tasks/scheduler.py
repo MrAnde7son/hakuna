@@ -82,6 +82,14 @@ celery.conf.beat_schedule = {
         "task": "recovery.recover_orphaned_scans",
         "schedule": 300.0,  # every 5 minutes
     },
+    # Pull authoritative cloud IP-range feeds (AWS, GCP, Cloudflare,
+    # Oracle, DigitalOcean, Fastly) once a day. The matcher
+    # (app.ingest.cloud_ranges) reloads in-process after each successful
+    # write — no worker restart needed.
+    "refresh-cloud-ranges-daily": {
+        "task": "cloud_ranges.refresh",
+        "schedule": crontab(hour=3, minute=30),
+    },
     # Keep the CertStream consumer alive. The task runs forever internally;
     # this re-enqueue is a belt-and-suspenders recovery if the worker process
     # crashes and the consumer task dies with it. Celery dedup ensures only

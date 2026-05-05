@@ -20,6 +20,16 @@ celery.conf.update(
     worker_concurrency=settings.celery_concurrency,
     task_soft_time_limit=settings.task_soft_time_limit,
     task_time_limit=settings.task_time_limit,
+    # Redis broker visibility timeout MUST be at least as long as the
+    # longest task_time_limit in this app — otherwise Redis re-delivers
+    # the task to another worker mid-flight, the original keeps running,
+    # and `task_acks_late=True` means both grind on the same task. With
+    # 4 worker slots and ~3-4h scans, the slots fill with re-delivered
+    # ghosts within hours and no new work drains. Set to match the
+    # longest per-task override (14700s on `discovery.run_discovery_chain`
+    # and `enrichment.*`).
+    broker_transport_options={"visibility_timeout": 14700},
+    result_backend_transport_options={"visibility_timeout": 14700},
     beat_schedule={},  # populated by scheduler module
 )
 
@@ -31,6 +41,7 @@ celery.conf.update(
         "app.tasks.scheduler",
         "app.tasks.recovery",
         "app.tasks.github_attribution",
+        "app.tasks.cloud_ranges",
     ],
     task_routes={
         "nmap.nmap_enrich_asset": {"queue": "nmap_queue"},

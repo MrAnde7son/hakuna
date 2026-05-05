@@ -1,0 +1,205 @@
+# NIS2 Directive (EU) 2022/2555 — initial mapping pack.
+#
+# Scope: cybersecurity risk-management measures essential and important
+# entities must adopt under Article 21. Article 23 (incident reporting)
+# is process-based and ships as testability=manual_only.
+
+framework:
+  slug: nis2
+  name: NIS2
+  version: "Directive (EU) 2022/2555"
+  authority: European Parliament & Council
+  published_at: 2022-12-14
+  description: |
+    NIS2 Directive — EU framework for a high common level of cybersecurity
+    across the Union. Applies to essential and important entities in
+    18 sectors. Member states transposed into national law in 2024.
+  categories: [EU, Critical Infrastructure]
+  mapping_schema_version: 1
+
+release:
+  tag: "2026.05.04-v1"
+  notes: |
+    Initial NIS2 pack covering the ten Article 21(2) cybersecurity risk-
+    management measures, with automated mappings where Hakuna's surface
+    can produce direct evidence and manual_only otherwise.
+
+controls:
+
+  # ── Article 21(2): risk-management measures ────────────────
+  - ref: "Art.21.2.a"
+    title: Policies on Risk Analysis and Information System Security
+    domain: Risk Management
+    testability: manual_only
+    canonical_guidance: |
+      Policy adoption is evidence-based. Mark satisfied via a
+      compensating-control note linking to approved policy documents.
+    mappings: []
+
+  - ref: "Art.21.2.b"
+    title: Incident Handling
+    domain: Incident Response
+    testability: manual_only
+    canonical_guidance: |
+      IR program effectiveness is evidence-based. Mark satisfied via a
+      compensating-control note linking to the IR plan and tabletop logs.
+    mappings: []
+
+  - ref: "Art.21.2.c"
+    title: Business Continuity and Crisis Management
+    domain: Continuity
+    testability: manual_only
+    canonical_guidance: |
+      BCP/DR is evidence-based. Mark satisfied via a compensating-control
+      note linking to the most recent recovery test.
+    mappings: []
+
+  - ref: "Art.21.2.d"
+    title: Supply Chain Security
+    domain: Third-Party Risk
+    testability: manual_only
+    canonical_guidance: |
+      Supplier-risk management is evidence-based. Mark satisfied via a
+      compensating-control note linking to the vendor register and DDQs.
+    mappings: []
+
+  - ref: "Art.21.2.e"
+    title: Security in Network and Information Systems Acquisition, Development and Maintenance
+    domain: Vulnerability Management
+    testability: automated
+    canonical_guidance: |
+      Vulnerability handling and disclosure must be in place. KEV-listed
+      findings past SLA, or unresolved High+ CVEs on production assets,
+      fail this measure.
+    mappings:
+      - key: nis2_art_21_2_e_kev_breached
+        when:
+          logic: AND
+          conditions:
+            - field: finding.is_kev
+              op: is_true
+            - field: finding.sla_status
+              op: in
+              value: [breached, at_risk]
+            - field: finding.workflow_status
+              op: not_in
+              value: [resolved, false_positive]
+      - key: nis2_art_21_2_e_unresolved_high_cve
+        when:
+          logic: AND
+          conditions:
+            - field: finding.has_cve
+              op: is_true
+            - field: finding.severity
+              op: gte
+              value: 3
+            - field: finding.workflow_status
+              op: not_in
+              value: [resolved, false_positive, accepted_risk]
+
+  - ref: "Art.21.2.f"
+    title: Policies and Procedures to Assess Effectiveness
+    domain: Continuous Monitoring
+    testability: automated
+    canonical_guidance: |
+      Effectiveness must be assessed. Regression of resolved findings is
+      direct evidence the assess/correct loop is not functioning.
+    mappings:
+      - key: nis2_art_21_2_f_regressions
+        when:
+          logic: AND
+          conditions:
+            - field: finding.is_regression
+              op: is_true
+            - field: finding.workflow_status
+              op: not_in
+              value: [resolved, false_positive]
+
+  - ref: "Art.21.2.g"
+    title: Basic Cyber Hygiene Practices and Cybersecurity Training
+    domain: Cyber Hygiene
+    testability: automated
+    canonical_guidance: |
+      Hygiene baselines (endpoint protection, exposure reduction) are
+      partially measurable. Assets missing AV/EDR, or with EASM-exposed
+      services on the internet, fail this measure.
+    mappings:
+      - key: nis2_art_21_2_g_endpoint_missing
+        when:
+          logic: OR
+          conditions:
+            - field: inventory.no_av
+              op: is_true
+            - field: inventory.no_edr
+              op: is_true
+      - key: nis2_art_21_2_g_easm_exposed
+        when:
+          logic: AND
+          conditions:
+            - field: finding.plugin_family
+              op: eq
+              value: "EASM: Exposed Service"
+            - field: inventory.is_internet_facing
+              op: is_true
+            - field: finding.workflow_status
+              op: neq
+              value: resolved
+
+  - ref: "Art.21.2.h"
+    title: Policies and Procedures Regarding the Use of Cryptography and Encryption
+    domain: Cryptography
+    testability: automated
+    canonical_guidance: |
+      Cryptographic controls must be implemented. CWE-311/319/326/327
+      findings indicate this measure is not met.
+    mappings:
+      - key: nis2_art_21_2_h_weak_crypto
+        when:
+          logic: AND
+          conditions:
+            - field: finding.cwe
+              op: contains_any
+              value: ["CWE-311", "CWE-319", "CWE-326", "CWE-327"]
+            - field: finding.workflow_status
+              op: neq
+              value: resolved
+
+  - ref: "Art.21.2.i"
+    title: Human Resources Security, Access Control Policies and Asset Management
+    domain: Access Control
+    testability: partial
+    canonical_guidance: |
+      Authentication weaknesses (CWE-306/798/862/863) indicate access
+      controls are inadequate; the HR/policy components remain manual.
+    mappings:
+      - key: nis2_art_21_2_i_auth_weaknesses
+        when:
+          logic: AND
+          conditions:
+            - field: finding.cwe
+              op: contains_any
+              value: ["CWE-306", "CWE-798", "CWE-862", "CWE-863"]
+            - field: finding.workflow_status
+              op: neq
+              value: resolved
+
+  - ref: "Art.21.2.j"
+    title: Use of Multi-Factor Authentication and Secured Communications
+    domain: Authentication
+    testability: manual_only
+    canonical_guidance: |
+      MFA coverage and secure-comms posture are largely IAM/SSO evidence.
+      Mark satisfied via a compensating-control note linking to MFA
+      enrollment metrics.
+    mappings: []
+
+  # ── Article 23: Incident Reporting ─────────────────────────
+  - ref: "Art.23"
+    title: Reporting Obligations
+    domain: Incident Reporting
+    testability: manual_only
+    canonical_guidance: |
+      Reporting timelines (24h early-warning, 72h notification, 1-month
+      final report) are process-based. Mark satisfied via the incident
+      register.
+    mappings: []

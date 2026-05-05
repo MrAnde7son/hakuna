@@ -16,11 +16,13 @@ from sqlalchemy.orm import Session
 from core.database import get_db
 from core.auth import get_current_user, get_accessible_org_ids, apply_org_filter
 from core.audit import log_audit, diff as _diff
+from core.time_utils import iso_utc
 from models.models import (
     User, Workflow, WorkflowNode, WorkflowEdge,
     WorkflowExecution, WorkflowExecutionLog,
 )
 import services.workflow_engine as workflow_engine
+from services.workflow_generator import generate_workflow
 
 
 router = APIRouter(tags=["workflows"])
@@ -38,9 +40,9 @@ def _workflow_to_dict(wf: Workflow) -> dict:
         "description": wf.description,
         "status": wf.status,
         "is_enabled": wf.is_enabled,
-        "created_at": wf.created_at.isoformat() if wf.created_at else None,
-        "updated_at": wf.updated_at.isoformat() if wf.updated_at else None,
-        "last_run_at": wf.last_run_at.isoformat() if wf.last_run_at else None,
+        "created_at": iso_utc(wf.created_at),
+        "updated_at": iso_utc(wf.updated_at),
+        "last_run_at": iso_utc(wf.last_run_at),
         "run_count": wf.run_count,
         "version": getattr(wf, "version", 1) or 1,
         "node_count": len(wf.nodes),
@@ -77,8 +79,8 @@ def _execution_to_dict(ex: WorkflowExecution) -> dict:
         "workflow_id": ex.workflow_id,
         "status": ex.status,
         "trigger_type": ex.trigger_type,
-        "started_at": ex.started_at.isoformat() if ex.started_at else None,
-        "completed_at": ex.completed_at.isoformat() if ex.completed_at else None,
+        "started_at": iso_utc(ex.started_at),
+        "completed_at": iso_utc(ex.completed_at),
         "items_processed": ex.items_processed,
         "result_summary": ex.result_summary,
         "error": ex.error,
@@ -142,6 +144,100 @@ def create_workflow_from_template_endpoint(body: WorkflowCreateFromTemplate, db:
         return d
     except ValueError as e:
         raise HTTPException(400, str(e))
+
+
+class WorkflowGenerateBody(BaseModel):
+    description: str
+    model: Optional[str] = None  # override default LLM
+
+
+class WorkflowFromGeneratedBody(BaseModel):
+    name: str
+    description: Optional[str] = None
+    nodes: list
+    edges: list
+    campaign_id: Optional[int] = None
+    original_prompt: Optional[str] = None  # for audit / future "explain" feature
+
+
+@router.post("/api/workflows/generate")
+def generate_workflow_endpoint(
+    body: WorkflowGenerateBody,
+    db: Session = Depends(get_db),
+):
+    """Generate a workflow JSON from a natural-language description.
+
+    Does NOT save — caller must POST to /api/workflows/from-generated to
+    persist as a draft. This separation lets the UI show the user a preview
+    + warnings before they commit.
+    """
+    try:
+        return generate_workflow(db, body.description, model=body.model)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        logger_msg = f"Workflow generation failed: {e}"
+        import logging
+        logging.getLogger(__name__).exception(logger_msg)
+        raise HTTPException(500, "Failed to generate workflow. Check LLM provider configuration.")
+
+
+@router.post("/api/workflows/from-generated")
+def create_workflow_from_generated(
+    body: WorkflowFromGeneratedBody,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user),
+):
+    """Persist an LLM-generated workflow as a draft.
+
+    Forced to status="draft" so an LLM hallucination cannot fire side-effects
+    until a human flips it to active.
+    """
+    wf = Workflow(
+        org_id=user.org_id if user else None,
+        name=body.name,
+        description=body.description,
+        campaign_id=body.campaign_id,
+        status="draft",
+        is_enabled=False,
+    )
+    db.add(wf)
+    db.flush()
+
+    for nd in body.nodes:
+        db.add(WorkflowNode(
+            workflow_id=wf.id,
+            node_id=nd["node_id"],
+            node_type=nd["node_type"],
+            node_subtype=nd["node_subtype"],
+            label=nd.get("label", ""),
+            config=nd.get("config", {}) or {},
+            position_x=nd.get("position_x", 0),
+            position_y=nd.get("position_y", 0),
+        ))
+    for ed in body.edges:
+        db.add(WorkflowEdge(
+            workflow_id=wf.id,
+            edge_id=ed["edge_id"],
+            source_node_id=ed["source_node_id"],
+            target_node_id=ed["target_node_id"],
+            source_handle=ed.get("source_handle", "output"),
+            target_handle=ed.get("target_handle", "input"),
+            label=ed.get("label"),
+        ))
+
+    log_audit(db, "create", "workflow", wf.id,
+              entity_name=wf.name,
+              changes={"name": wf.name, "ai_generated": True,
+                       "original_prompt": body.original_prompt or ""},
+              actor=user)
+    db.commit()
+    db.refresh(wf)
+    d = _workflow_to_dict(wf)
+    d["nodes"] = [_node_to_dict(n) for n in wf.nodes]
+    d["edges"] = [_edge_to_dict(e) for e in wf.edges]
+    d["ai_generated"] = True
+    return d
 
 
 @router.post("/api/workflows")
@@ -213,7 +309,7 @@ def update_workflow(wf_id: int, body: WorkflowUpdate, db: Session = Depends(get_
             "version": wf.version or 1,
             "nodes": old_nodes,
             "edges": old_edges,
-            "saved_at": datetime.utcnow().isoformat(),
+            "saved_at": iso_utc(datetime.utcnow()),
         })
         # Keep last 20 versions
         wf.version_history = history[-20:]
@@ -300,7 +396,7 @@ def restore_workflow_version(wf_id: int, version: int, db: Session = Depends(get
         "version": wf.version or 1,
         "nodes": old_nodes,
         "edges": old_edges,
-        "saved_at": datetime.utcnow().isoformat(),
+        "saved_at": iso_utc(datetime.utcnow()),
     })
     wf.version_history = history[-20:]
     wf.version = (wf.version or 1) + 1
@@ -378,7 +474,7 @@ def get_workflow_execution(exec_id: int, db: Session = Depends(get_db)):
             "items_out": log.items_out,
             "output_data": log.output_data,
             "error": log.error,
-            "executed_at": log.executed_at.isoformat() if log.executed_at else None,
+            "executed_at": iso_utc(log.executed_at),
         }
         for log in ex.logs
     ]

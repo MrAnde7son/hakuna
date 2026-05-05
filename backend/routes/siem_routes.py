@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from core.database import get_db
 from core.auth import get_current_user, get_accessible_org_ids
 from core.audit import log_audit
+from core.time_utils import iso_utc
 from models.models import SIEMEvent, IngestEndpoint, Integration, Asset
 from services.event_store import get_event_store, EventFilter
 from services.vector_config import generate_config, generate_install_script, list_templates, AVAILABLE_TEMPLATES
@@ -107,8 +108,8 @@ def _event_to_dict(ev: SIEMEvent) -> dict:
     return {
         "id": ev.id,
         "org_id": ev.org_id,
-        "event_time": ev.event_time.isoformat() if ev.event_time else None,
-        "ingested_at": ev.ingested_at.isoformat() if ev.ingested_at else None,
+        "event_time": iso_utc(ev.event_time),
+        "ingested_at": iso_utc(ev.ingested_at),
         "source_system": ev.source_system,
         "source_id": ev.source_id,
         "event_type": ev.event_type,
@@ -376,10 +377,10 @@ async def cleanup_retention(
 
     log_audit(db, "delete", "siem_event", None,
               entity_name="retention_cleanup",
-              changes={"hours": hours, "deleted_count": deleted, "cutoff": cutoff.isoformat()},
+              changes={"hours": hours, "deleted_count": deleted, "cutoff": iso_utc(cutoff)},
               actor=current_user)
 
-    return {"deleted": deleted, "cutoff": cutoff.isoformat()}
+    return {"deleted": deleted, "cutoff": iso_utc(cutoff)}
 
 
 # ── Ingest Endpoint Management ─────────────────────────
@@ -461,9 +462,9 @@ async def list_ingest_endpoints(
             "parser_type": ep.parser_type,
             "token_prefix": ep.token_prefix,
             "is_active": ep.is_active,
-            "last_used_at": ep.last_used_at.isoformat() if ep.last_used_at else None,
+            "last_used_at": iso_utc(ep.last_used_at),
             "request_count": ep.request_count or 0,
-            "created_at": ep.created_at.isoformat() if ep.created_at else None,
+            "created_at": iso_utc(ep.created_at),
         }
         for ep in endpoints
     ]

@@ -1,0 +1,169 @@
+# Essential Eight (Australian Cyber Security Centre) — initial mapping pack.
+#
+# Scope: the eight mitigation strategies the ACSC recommends as a baseline.
+# Maturity Level 2 is the realistic target for most enterprises; this pack
+# evaluates "implemented" vs "not implemented" rather than maturity tier —
+# maturity scoring belongs in a follow-up if customers ask for it.
+
+framework:
+  slug: essential_eight
+  name: Essential Eight
+  version: "Maturity Model 2023-11"
+  authority: Australian Cyber Security Centre (ACSC)
+  published_at: 2023-11-30
+  description: |
+    The Essential Eight is a prioritised set of mitigation strategies
+    published by the Australian Cyber Security Centre to make it harder
+    for adversaries to compromise systems. Mandatory baseline for many
+    Australian government and critical-infrastructure contracts.
+  categories: [Australia, Hygiene Baseline]
+  mapping_schema_version: 1
+
+release:
+  tag: "2026.05.04-v1"
+  notes: |
+    Initial Essential Eight pack covering all eight mitigation strategies.
+    Application Control and Restrict Admin Privileges are largely
+    process/IAM and ship as testability=manual_only.
+
+controls:
+
+  - ref: "E8.1"
+    title: Application Control
+    domain: Endpoint Hardening
+    testability: manual_only
+    canonical_guidance: |
+      Application allow-listing is enforcement-policy evidence. Mark
+      satisfied via a compensating-control note linking to the AppLocker /
+      WDAC / equivalent policy and its enforcement scope.
+    mappings: []
+
+  - ref: "E8.2"
+    title: Patch Applications
+    domain: Patch Management
+    testability: automated
+    canonical_guidance: |
+      Application security patches must be applied within ACSC timeframes
+      (48h for internet-facing services with working exploit). Unresolved
+      KEV-listed application CVEs, or High+ Patch Management findings past
+      SLA, fail this strategy.
+    mappings:
+      - key: essential_eight_e8_2_kev_unresolved
+        when:
+          logic: AND
+          conditions:
+            - field: finding.is_kev
+              op: is_true
+            - field: finding.workflow_status
+              op: not_in
+              value: [resolved, false_positive, accepted_risk]
+      - key: essential_eight_e8_2_app_patch_breached
+        when:
+          logic: AND
+          conditions:
+            - field: finding.plugin_family
+              op: eq
+              value: "Patch Management"
+            - field: finding.severity
+              op: gte
+              value: 3
+            - field: finding.sla_status
+              op: in
+              value: [breached, at_risk]
+            - field: finding.workflow_status
+              op: neq
+              value: resolved
+
+  - ref: "E8.3"
+    title: Configure Microsoft Office Macro Settings
+    domain: Endpoint Hardening
+    testability: manual_only
+    canonical_guidance: |
+      Macro restriction is policy/GPO-based. Mark satisfied via a
+      compensating-control note linking to the Office macro policy.
+    mappings: []
+
+  - ref: "E8.4"
+    title: User Application Hardening
+    domain: Endpoint Hardening
+    testability: automated
+    canonical_guidance: |
+      User-facing applications (browsers, PDF readers) must be hardened.
+      Findings indicating weak/insecure crypto in user-facing services
+      (CWE-311, CWE-319, CWE-326, CWE-327) fail this strategy.
+    mappings:
+      - key: essential_eight_e8_4_weak_crypto
+        when:
+          logic: AND
+          conditions:
+            - field: finding.cwe
+              op: contains_any
+              value: ["CWE-311", "CWE-319", "CWE-326", "CWE-327"]
+            - field: finding.workflow_status
+              op: neq
+              value: resolved
+
+  - ref: "E8.5"
+    title: Restrict Administrative Privileges
+    domain: Access Control
+    testability: manual_only
+    canonical_guidance: |
+      Admin-privilege restriction is IAM evidence. Mark satisfied via a
+      compensating-control note linking to PAM tooling and admin-account
+      review records.
+    mappings: []
+
+  - ref: "E8.6"
+    title: Patch Operating Systems
+    domain: Patch Management
+    testability: automated
+    canonical_guidance: |
+      Operating-system security patches must be applied within ACSC
+      timeframes. High+ OS Patch Management findings past SLA fail.
+    mappings:
+      - key: essential_eight_e8_6_os_patch_breached
+        when:
+          logic: AND
+          conditions:
+            - field: finding.plugin_family
+              op: eq
+              value: "Patch Management"
+            - field: finding.severity
+              op: gte
+              value: 3
+            - field: finding.sla_status
+              op: in
+              value: [breached, at_risk]
+            - field: finding.workflow_status
+              op: neq
+              value: resolved
+
+  - ref: "E8.7"
+    title: Multi-Factor Authentication
+    domain: Authentication
+    testability: partial
+    canonical_guidance: |
+      MFA coverage is largely IAM evidence; technical findings indicating
+      missing or weak authentication (CWE-306, CWE-798) provide partial
+      signal that MFA is not in place at the affected service.
+    mappings:
+      - key: essential_eight_e8_7_missing_or_weak_auth
+        when:
+          logic: AND
+          conditions:
+            - field: finding.cwe
+              op: contains_any
+              value: ["CWE-306", "CWE-798"]
+            - field: finding.workflow_status
+              op: neq
+              value: resolved
+
+  - ref: "E8.8"
+    title: Regular Backups
+    domain: Continuity
+    testability: manual_only
+    canonical_guidance: |
+      Backup integrity and restore testing are evidence-based. Mark
+      satisfied via a compensating-control note linking to the most
+      recent restore test record.
+    mappings: []

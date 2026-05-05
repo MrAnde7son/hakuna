@@ -221,6 +221,8 @@ PROTOCOL_PROBES = [
     {
         "name": "Modbus TCP",
         "port": 502,
+        "ports": {502},
+        "service_types": {"modbus"},
         "payload": _MODBUS_DEVICE_ID,
         "match": lambda data: len(data) >= 9 and data[7] == 0x2B,
         "extract": _extract_modbus_info,
@@ -232,6 +234,8 @@ PROTOCOL_PROBES = [
     {
         "name": "Siemens S7comm",
         "port": 102,
+        "ports": {102},
+        "service_types": {"s7comm"},
         "payload": _S7_COTP_CR,
         "match": lambda data: len(data) >= 7 and data[0] == 0x03 and data[5] == 0xD0,
         "extract": _extract_s7_info,
@@ -243,6 +247,8 @@ PROTOCOL_PROBES = [
     {
         "name": "EtherNet/IP (CIP)",
         "port": 44818,
+        "ports": {44818},
+        "service_types": {"ethernet_ip"},
         "payload": _ENIP_LIST_IDENTITY,
         "match": lambda data: len(data) >= 4 and data[0:2] == b"\x63\x00",
         "extract": _extract_enip_info,
@@ -254,6 +260,8 @@ PROTOCOL_PROBES = [
     {
         "name": "DNP3",
         "port": 20000,
+        "ports": {20000},
+        "service_types": {"dnp3"},
         "payload": _DNP3_READ,
         "match": lambda data: len(data) >= 2 and data[0:2] == b"\x05\x64",
         "extract": lambda data: {"protocol": "dnp3"},
@@ -265,6 +273,8 @@ PROTOCOL_PROBES = [
     {
         "name": "OPC-UA",
         "port": 4840,
+        "ports": {4840},
+        "service_types": {"opc-ua"},
         "payload": _OPCUA_HELLO,
         "match": lambda data: len(data) >= 4 and data[0:3] == b"ACK",
         "extract": lambda data: {"protocol": "opc-ua"},
@@ -276,6 +286,8 @@ PROTOCOL_PROBES = [
     {
         "name": "BACnet",
         "port": 47808,
+        "ports": {47808},
+        "service_types": {"bacnet"},
         "payload": _BACNET_READ_PROP,
         "match": lambda data: len(data) >= 4 and data[0] == 0x81,
         "extract": lambda data: {"protocol": "bacnet"},
@@ -287,6 +299,8 @@ PROTOCOL_PROBES = [
     {
         "name": "Niagara Fox",
         "port": 1911,
+        "ports": {1911},
+        "service_types": {"fox"},
         "payload": _FOX_HELLO,
         "match": lambda data: b"fox" in data.lower() if data else False,
         "extract": _extract_fox_info,
@@ -298,6 +312,8 @@ PROTOCOL_PROBES = [
     {
         "name": "MQTT Broker",
         "port": 1883,
+        "ports": {1883},
+        "service_types": {"mqtt"},
         "payload": _MQTT_CONNECT,
         "match": lambda data: len(data) >= 2 and data[0] == 0x20,
         "extract": _extract_mqtt_info,
@@ -309,6 +325,8 @@ PROTOCOL_PROBES = [
     {
         "name": "RTSP",
         "port": 554,
+        "ports": {554},
+        "service_types": {"rtsp"},
         "payload": _RTSP_OPTIONS,
         "match": lambda data: b"RTSP/1.0" in data if data else False,
         "extract": _extract_rtsp_info,
@@ -364,21 +382,42 @@ async def probe_asset_protocols(
     hostname: str,
     ip: str | None,
     open_ports: list[int],
+    port_service_types: dict[int, str] | None = None,
 ) -> list[dict]:
     """Probe all matching OT/IoT protocols on an asset's open ports.
+
+    PR #2: each probe row carries ``service_types`` + ``ports``. A
+    probe runs against any open port whose ``port_service_types`` entry
+    matches the probe's ``service_types`` set, OR (fallback) any open
+    port that matches the probe's legacy ``ports`` set when no
+    service_type has been stamped yet. The fallback ensures ports not
+    yet re-fingerprinted since PR #1 still get probed.
 
     Returns list of detection dicts with keys:
       name, protocol, asset_type, port, severity, finding_title, metadata
     """
     target = ip or hostname
     results = []
+    st_map = port_service_types or {}
+    open_ports_set = set(open_ports or [])
 
     tasks = []
     for probe_def in PROTOCOL_PROBES:
-        if probe_def["port"] in open_ports:
-            tasks.append((probe_def, _probe_single(
+        legacy_ports = probe_def.get("ports") or {probe_def["port"]}
+        service_types = probe_def.get("service_types") or set()
+        # Walk the asset's open ports looking for any that match this
+        # probe by service_type (preferred) or legacy port (fallback).
+        for port in open_ports_set:
+            svc = st_map.get(port)
+            if svc is not None:
+                if svc not in service_types:
+                    continue
+            else:
+                if port not in legacy_ports:
+                    continue
+            tasks.append((probe_def, port, _probe_single(
                 target,
-                probe_def["port"],
+                port,
                 probe_def["payload"],
                 probe_def["match"],
                 probe_def["extract"],
@@ -387,17 +426,20 @@ async def probe_asset_protocols(
     if not tasks:
         return results
 
-    coros = [t[1] for t in tasks]
+    coros = [t[2] for t in tasks]
     responses = await asyncio.gather(*coros, return_exceptions=True)
 
-    for (probe_def, _), response in zip(tasks, responses):
+    for (probe_def, port, _), response in zip(tasks, responses):
         if isinstance(response, Exception) or response is None:
             continue
         results.append({
             "name": probe_def["name"],
             "protocol": probe_def["protocol"],
             "asset_type": probe_def["asset_type"],
-            "port": probe_def["port"],
+            "port": port,  # actual port hit (may differ from probe_def["port"]
+                            # when matched via service_type on a non-canonical
+                            # port — the SCADA finding still points at the
+                            # right TCP/UDP target).
             "severity": probe_def["severity"],
             "finding_title": probe_def["finding_title"],
             "metadata": response,
@@ -427,7 +469,12 @@ async def probe_batch(
             hostname = asset["hostname"]
             ip = asset.get("ip")
             ports = asset.get("open_ports") or []
-            detections = await probe_asset_protocols(hostname, ip, ports)
+            detections = await probe_asset_protocols(
+                hostname,
+                ip,
+                ports,
+                port_service_types=asset.get("port_service_types"),
+            )
             if detections:
                 results[hostname] = detections
 

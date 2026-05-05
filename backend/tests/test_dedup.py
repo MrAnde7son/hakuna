@@ -23,13 +23,64 @@ from services.dedup import (
     DEFAULT_CONFIG,
     _asset_cdn_provider,
     _deep_merge,
+    _get_asset_field,
     _make_keys,
     _merge_dicts,
     dedup_inventory,
     dedup_records,
     load_config,
+    normalize_web_app_url,
     save_config,
 )
+
+
+class TestNormalizeWebAppUrl:
+    def test_strips_trailing_slash_on_root_path(self):
+        assert normalize_web_app_url("http://20.83.163.0:8080/") == "http://20.83.163.0:8080"
+
+    def test_nessus_and_vm_scanner_collide(self):
+        vm = normalize_web_app_url("http://20.83.163.0:8080")
+        nessus = normalize_web_app_url("http://20.83.163.0:8080/")
+        assert vm == nessus
+
+    def test_lowercases_scheme_and_host(self):
+        assert normalize_web_app_url("HTTP://Example.COM/") == "http://example.com"
+
+    def test_drops_default_http_port(self):
+        assert normalize_web_app_url("http://example.com:80/") == "http://example.com"
+
+    def test_drops_default_https_port(self):
+        assert normalize_web_app_url("https://example.com:443/") == "https://example.com"
+
+    def test_keeps_nondefault_port(self):
+        assert normalize_web_app_url("http://example.com:8080") == "http://example.com:8080"
+
+    def test_preserves_nonroot_path(self):
+        assert (
+            normalize_web_app_url("http://example.com:8080/api/v1/")
+            == "http://example.com:8080/api/v1/"
+        )
+
+    def test_preserves_query_and_fragment(self):
+        assert (
+            normalize_web_app_url("http://example.com/?q=1#frag")
+            == "http://example.com?q=1#frag"
+        )
+
+    def test_non_url_passthrough(self):
+        assert normalize_web_app_url("just-a-hostname") == "just-a-hostname"
+
+    def test_empty_and_none(self):
+        assert normalize_web_app_url("") == ""
+        assert normalize_web_app_url(None) is None
+
+    def test_get_asset_field_normalizes_url(self):
+        rec = {"asset_identity": {"url": "http://20.83.163.0:8080/"}}
+        assert _get_asset_field(rec, "url") == "http://20.83.163.0:8080"
+
+    def test_get_asset_field_leaves_non_url_untouched(self):
+        rec = {"asset_identity": {"url": "http://X/", "domain": "X"}}
+        assert _get_asset_field(rec, "domain") == "X"
 
 
 # ═══════════════════════════════════════════════════════════

@@ -78,6 +78,7 @@ from scanner.vm.config import (
     FFUF_BIN,
 )
 from scanner.vm.db import _normalize_dsn
+from scanner.vm.preflight import probe_http, should_preflight
 
 logger = logging.getLogger(__name__)
 
@@ -621,6 +622,30 @@ async def _run_content_discovery_async(
             "scanner": "content_discovery",
         }
 
+    # Preflight — ffuf would burn its full wordlist against a dead
+    # target and report zero hits, indistinguishable from "no content
+    # found." Probe once up front and bail if the server isn't there.
+    if should_preflight(base_url):
+        pre = await asyncio.to_thread(probe_http, base_url)
+        if not pre.reachable:
+            logger.info(
+                "content_discovery preflight failed asset=%s base=%s reason=%s detail=%s",
+                asset_id, base_url, pre.reason, pre.detail,
+            )
+            return {
+                "asset_id": asset_id,
+                "org_id": str(asset_dict["org_id"]) if asset_dict.get("org_id") else None,
+                "target": base_url,
+                "findings": [],
+                "endpoints_discovered": 0,
+                "exposures_found": 0,
+                "duration_seconds": round(time.monotonic() - start, 2),
+                "status": "unreachable",
+                "error": f"target unreachable ({pre.reason}): {pre.detail}",
+                "preflight": pre.to_dict(),
+                "scanner": "content_discovery",
+            }
+
     headers = _credentials_to_headers(credentials)
     logger.info(
         "content_discovery start asset=%s base=%s headers=%s",
@@ -835,6 +860,27 @@ async def _run_content_discovery_adhoc_async(
     # Normalize: drop any path on the URL — we append FUZZ ourselves.
     parts = urlparse(target)
     base_url = urlunparse((parts.scheme, parts.netloc, "", "", "", ""))
+
+    # Preflight the normalised base URL so we bail before ffuf burns
+    # its wordlist against a dead target.
+    pre = await asyncio.to_thread(probe_http, base_url)
+    if not pre.reachable:
+        logger.info(
+            "content_discovery adhoc preflight failed target=%s reason=%s detail=%s",
+            base_url, pre.reason, pre.detail,
+        )
+        return {
+            "target": target,
+            "org_id": org_id,
+            "findings": [],
+            "endpoints_discovered": 0,
+            "exposures_found": 0,
+            "duration_seconds": round(time.monotonic() - start, 2),
+            "status": "unreachable",
+            "error": f"target unreachable ({pre.reason}): {pre.detail}",
+            "preflight": pre.to_dict(),
+            "scanner": "content_discovery",
+        }
 
     headers = _credentials_to_headers(credentials)
     logger.info(

@@ -14,318 +14,98 @@ from sqlalchemy.orm import Session
 
 from hakuna.utils.token_tracker import get_tracker
 from hakuna.utils.context_manager import rolling_context
+from core.database import SessionLocal
 from core.token_quota import check_token_quota, increment_token_usage
+from core.llm_router import router as llm_router, PROVIDER_FOR_MODEL
 
 from models.models import Agent, AgentRun, AgentApproval, IntegrationConfig
-from agents.agent_tools import TOOL_REGISTRY, get_claude_tool_schemas, get_openai_tool_schemas
+from agents.agent_tools import (
+    TOOL_REGISTRY, get_claude_tool_schemas, get_openai_tool_schemas,
+    NeedsApproval,
+)
 from agents.agent_context import compress_tool_result, build_context_section
 
 logger = logging.getLogger(__name__)
 
-# Cache clients per provider+key to avoid recreating on every run
-_client_cache = {}
 
-# ── Model → Provider mapping ──────────────────────────────────────────
+def _commit_quiet(db: Session) -> None:
+    """Best-effort commit used to release the implicit transaction before a
+    long LLM round-trip. Postgres' ``idle_in_transaction_session_timeout``
+    will close a connection that sits in a tx longer than 60s, and a single
+    Anthropic/Vertex call can exceed that with retries — leaving the
+    connection dead by the time the next ``db.commit()`` fires.
 
-PROVIDER_FOR_MODEL = {
-    # Anthropic
-    "claude-sonnet-4-6": "anthropic",
-    "claude-haiku-4-5-20251001": "anthropic",
-    "claude-opus-4-6": "anthropic",
-    # OpenAI
-    "gpt-4o": "openai",
-    "gpt-4o-mini": "openai",
-    "gpt-4.1": "openai",
-    "gpt-4.1-mini": "openai",
-    "o3-mini": "openai",
-    # Google Gemini
-    "gemini-2.5-flash": "google_gemini",
-    "gemini-2.5-pro": "google_gemini",
-    "gemini-2.0-flash": "google_gemini",
-    # Groq
-    "llama-3.3-70b-versatile": "groq",
-    "llama-3.1-8b-instant": "groq",
-    "mixtral-8x7b-32768": "groq",
-    "deepseek-r1-distill-llama-70b": "groq",
-    # Vertex AI (GCP-native Gemini — uses ADC, no API key needed)
-    "vertex/gemini-2.5-flash": "vertex_ai",
-    "vertex/gemini-2.5-pro": "vertex_ai",
-    "vertex/gemini-2.0-flash": "vertex_ai",
-}
+    A commit on a session with no pending writes is a no-op other than
+    ending the tx, so this is cheap. Errors are swallowed: this is a
+    safety release, not a meaningful unit of work.
+    """
+    try:
+        db.commit()
+    except Exception:  # pragma: no cover — defensive
+        try:
+            db.rollback()
+        except Exception:
+            pass
 
+
+# ── Router-backed shims ───────────────────────────────────────────────
+#
+# Provider/model resolution and client construction live in
+# ``core.llm_router``. The wrappers below exist so callers that already
+# import these names from agent_engine don't all have to change at once.
+# New code should import ``core.llm_router.router`` directly.
 
 def detect_provider(model: str) -> str:
-    """Detect provider from model name."""
-    if model in PROVIDER_FOR_MODEL:
-        return PROVIDER_FOR_MODEL[model]
-    if model.startswith("vertex/"):
-        return "vertex_ai"
-    if model.startswith("ollama/"):
-        return "ollama"
-    if model.startswith("claude"):
-        return "anthropic"
-    if model.startswith("gpt") or model.startswith("o3") or model.startswith("o1"):
-        return "openai"
-    if model.startswith("gemini"):
-        return "google_gemini"
-    if model.startswith("llama") or model.startswith("mixtral") or model.startswith("deepseek"):
-        return "groq"
-    return "anthropic"  # default fallback
+    return llm_router.detect_provider(model)
 
 
-# ── Client factories ──────────────────────────────────────────────────
-
-def _get_api_key(db: Session, provider: str, env_var: str) -> str:
-    """Load API key from DB integration config, falling back to env var."""
-    cfg = db.query(IntegrationConfig).filter(IntegrationConfig.provider == provider).first()
-    api_key = None
-    if cfg and cfg.config:
-        api_key = cfg.config.get("api_key")
-    if not api_key:
-        api_key = os.environ.get(env_var)
-    if not api_key:
-        display = provider.replace("_", " ").title()
-        raise RuntimeError(
-            f"{display} API key not configured. "
-            f"Go to Settings > Integrations to set your API key."
-        )
-    return api_key
-
-
-def _get_cached_client(cache_key: str, factory):
-    """Get or create a cached client."""
-    global _client_cache
-    if cache_key not in _client_cache:
-        if len(_client_cache) > 10:
-            _client_cache.clear()
-        _client_cache[cache_key] = factory()
-    return _client_cache[cache_key]
-
-
-def _get_anthropic_client(db: Session):
-    api_key = _get_api_key(db, "anthropic", "ANTHROPIC_API_KEY")
-    from anthropic import Anthropic
-    return _get_cached_client(f"anthropic:{api_key[:12]}", lambda: Anthropic(api_key=api_key))
+def _get_anthropic_client(db: Session, model: str | None = None):
+    return llm_router.get_anthropic_client(db, model)
 
 
 def _get_openai_client(db: Session):
-    api_key = _get_api_key(db, "openai", "OPENAI_API_KEY")
-    from openai import OpenAI
-    return _get_cached_client(f"openai:{api_key[:12]}", lambda: OpenAI(api_key=api_key))
+    return llm_router.get_openai_client(db)
 
 
 def _get_gemini_client(db: Session):
-    api_key = _get_api_key(db, "google_gemini", "GOOGLE_API_KEY")
-    from google import genai
-    return _get_cached_client(f"gemini:{api_key[:12]}", lambda: genai.Client(api_key=api_key))
+    return llm_router.get_gemini_client(db)
 
 
 def _get_groq_client(db: Session):
-    api_key = _get_api_key(db, "groq", "GROQ_API_KEY")
-    from groq import Groq
-    return _get_cached_client(f"groq:{api_key[:12]}", lambda: Groq(api_key=api_key))
+    return llm_router.get_groq_client(db)
 
 
 def _get_ollama_client(db: Session):
-    """Get OpenAI-compatible client pointing at local Ollama server."""
-    cfg = db.query(IntegrationConfig).filter(IntegrationConfig.provider == "ollama").first()
-    base_url = "http://localhost:11434/v1"
-    if cfg and cfg.config:
-        base_url = cfg.config.get("base_url", base_url).rstrip("/")
-        if not base_url.endswith("/v1"):
-            base_url = base_url.rstrip("/") + "/v1"
-    from openai import OpenAI
-    return _get_cached_client(f"ollama:{base_url}", lambda: OpenAI(base_url=base_url, api_key="ollama"))
+    return llm_router.get_ollama_client(db)
 
 
 def _get_vertex_client(db: Session):
-    """Get Gemini client configured for Vertex AI (uses Application Default Credentials)."""
-    cfg = db.query(IntegrationConfig).filter(IntegrationConfig.provider == "vertex_ai").first()
-    project = None
-    location = "us-central1"
-    if cfg and cfg.config:
-        project = cfg.config.get("project_id") or None
-        location = cfg.config.get("location") or "us-central1"
-    if not project:
-        project = os.environ.get("GOOGLE_CLOUD_PROJECT") or os.environ.get("GCLOUD_PROJECT")
-    if not project:
-        raise RuntimeError(
-            "Vertex AI requires a GCP project. Set GOOGLE_CLOUD_PROJECT env var "
-            "or configure it in Settings > Integrations."
-        )
-    from google import genai
-    return _get_cached_client(
-        f"vertex:{project}:{location}",
-        lambda: genai.Client(vertexai=True, project=project, location=location),
-    )
+    return llm_router.get_vertex_client(db)
 
 
 def get_available_providers(db: Session) -> list:
-    """Return list of providers that have an API key configured, with their models."""
-    _PROVIDER_INFO = {
-        "anthropic": {
-            "env_var": "ANTHROPIC_API_KEY",
-            "display": "Anthropic (Claude)",
-            "models": ["claude-sonnet-4-6", "claude-haiku-4-5-20251001", "claude-opus-4-6"],
-        },
-        "groq": {
-            "env_var": "GROQ_API_KEY",
-            "display": "Groq",
-            "models": ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768", "deepseek-r1-distill-llama-70b"],
-        },
-        "openai": {
-            "env_var": "OPENAI_API_KEY",
-            "display": "OpenAI",
-            "models": ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4.1-mini", "o3-mini"],
-        },
-        "google_gemini": {
-            "env_var": "GOOGLE_API_KEY",
-            "display": "Google Gemini",
-            "models": ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"],
-        },
-        "ollama": {
-            "env_var": None,  # No API key — just needs a reachable server
-            "display": "Ollama (Local)",
-            "models": [],  # populated dynamically
-        },
-        "vertex_ai": {
-            "env_var": "GOOGLE_CLOUD_PROJECT",  # presence of project = configured
-            "display": "Google Vertex AI",
-            "models": ["vertex/gemini-2.5-flash", "vertex/gemini-2.5-pro", "vertex/gemini-2.0-flash"],
-        },
-    }
-    result = []
-    for provider, info in _PROVIDER_INFO.items():
-        cfg = db.query(IntegrationConfig).filter(IntegrationConfig.provider == provider).first()
-
-        if provider == "ollama":
-            # Ollama is "configured" if explicitly enabled in integrations
-            is_configured = bool(cfg and cfg.is_enabled)
-            if is_configured:
-                # Try to fetch available models from Ollama server
-                models = _get_ollama_models(cfg)
-                result.append({
-                    "provider": provider,
-                    "display": info["display"],
-                    "models": models,
-                    "configured": True,
-                })
-        elif provider == "vertex_ai":
-            # Vertex AI is configured if project ID is set (DB config or env var)
-            has_project = bool(
-                (cfg and cfg.config and cfg.config.get("project_id"))
-                or os.environ.get("GOOGLE_CLOUD_PROJECT")
-                or os.environ.get("GCLOUD_PROJECT")
-            )
-            if has_project:
-                result.append({
-                    "provider": provider,
-                    "display": info["display"],
-                    "models": info["models"],
-                    "configured": True,
-                })
-        else:
-            has_key = bool((cfg and cfg.config and cfg.config.get("api_key")) or os.environ.get(info["env_var"]))
-            if has_key:
-                result.append({
-                    "provider": provider,
-                    "display": info["display"],
-                    "models": info["models"],
-                    "configured": True,
-                })
-    return result
-
-
-def _get_ollama_models(cfg) -> list:
-    """Fetch available model names from Ollama server, returning ollama/ prefixed names."""
-    base_url = "http://localhost:11434"
-    if cfg and cfg.config:
-        base_url = cfg.config.get("base_url", base_url).rstrip("/")
-    try:
-        import urllib.request
-        req = urllib.request.Request(f"{base_url}/api/tags", method="GET")
-        with urllib.request.urlopen(req, timeout=3) as resp:
-            data = json.loads(resp.read())
-        return [f"ollama/{m['name']}" for m in data.get("models", [])]
-    except Exception:
-        return ["ollama/llama3", "ollama/mistral", "ollama/codellama"]  # sensible defaults
-
-
-# ── Default model per provider ────────────────────────────────────────
-
-# Provider → (env var, default model)
-_PROVIDER_DEFAULTS = [
-    ("anthropic", "ANTHROPIC_API_KEY", "claude-sonnet-4-6"),
-    ("openai", "OPENAI_API_KEY", "gpt-4o"),
-    ("vertex_ai", "GOOGLE_CLOUD_PROJECT", "vertex/gemini-2.5-flash"),
-    ("google_gemini", "GOOGLE_API_KEY", "gemini-2.5-flash"),
-    ("groq", "GROQ_API_KEY", "llama-3.3-70b-versatile"),
-    ("ollama", None, "ollama/llama3"),
-]
+    return llm_router.get_available_providers(db)
 
 
 def get_default_model(db: Session) -> str:
-    """Get the default model from settings, picking from whichever provider has a key configured.
-
-    Priority order follows _PROVIDER_DEFAULTS.  For each provider we check:
-    1. Is it configured (has credentials / project)?
-    2. If yes, does it have an explicit ``default_model`` override?
-       → return that override; otherwise return the provider's fallback model.
-    This ensures the *highest-priority configured provider* always wins,
-    and its ``default_model`` (if set) is respected.
-    """
-    for provider, env_var, fallback_model in _PROVIDER_DEFAULTS:
-        cfg = db.query(IntegrationConfig).filter(IntegrationConfig.provider == provider).first()
-
-        # Determine whether this provider is configured
-        if provider == "ollama":
-            if not (cfg and cfg.is_enabled):
-                continue
-        elif provider == "vertex_ai":
-            has_project = (
-                (cfg and cfg.config and cfg.config.get("project_id"))
-                or os.environ.get("GOOGLE_CLOUD_PROJECT")
-                or os.environ.get("GCLOUD_PROJECT")
-            )
-            if not has_project:
-                continue
-        else:
-            has_key = (cfg and cfg.config and cfg.config.get("api_key")) or (env_var and os.environ.get(env_var))
-            if not has_key:
-                continue
-
-        # Provider is configured — use its explicit default_model or the fallback
-        if cfg and cfg.config:
-            explicit = cfg.config.get("default_model")
-            if explicit:
-                return explicit
-        return fallback_model
-
-    from hakuna.routing.model_router import SONNET
-    return SONNET  # ultimate fallback
+    return llm_router.get_default_model(db)
 
 
 def _find_fallback_model(db: Session, exclude_providers: set, *, tool_count: int = 0) -> Optional[tuple]:
-    """Find an alternative model/provider, skipping the excluded providers.
+    # Called from the primary-dispatch error handler, where `db` may have a
+    # broken transaction (Cloud SQL reaping the connection while a long LLM
+    # HTTP call held the session). Rollback defensively and issue the lookup
+    # on a fresh session so we don't cascade into PendingRollbackError.
+    try:
+        db.rollback()
+    except Exception:
+        logger.warning("Rollback before fallback lookup failed; using fresh session anyway", exc_info=True)
+    with SessionLocal() as fallback_db:
+        return llm_router.find_fallback_model(fallback_db, exclude=exclude_providers, tool_count=tool_count)
 
-    Returns (model, provider) or None if no fallback is available.
 
-    When tool_count is high (e.g. copilot with 50+ tools), Groq is excluded
-    because the tool schemas alone exceed Groq's on-demand TPM limits.
-    """
-    for provider, env_var, fallback_model in _PROVIDER_DEFAULTS:
-        if provider in exclude_providers:
-            continue
-        # Groq's on-demand tier has strict per-request token limits (~12K TPM).
-        # Agents with many tools generate tool schemas that exceed this limit.
-        if provider == "groq" and tool_count > 10:
-            continue
-        try:
-            _validate_provider_configured(db, provider)
-            return fallback_model, provider
-        except RuntimeError:
-            continue
-    return None
+def _validate_provider_configured(db: Session, provider: str):
+    llm_router.validate_provider(db, provider)
 
 
 # ── Shared helpers ────────────────────────────────────────────────────
@@ -340,33 +120,6 @@ _MAX_INPUT_CHARS = {
     "ollama": 30_000,        # Conservative — depends on model and available VRAM
 }
 _TRUNCATION_NOTICE = "\n\n[Note: Input was truncated to fit model context limits.]"
-
-
-def _validate_provider_configured(db: Session, provider: str):
-    """Check that a provider is configured. Raises RuntimeError if not."""
-    _ENV_VARS = {
-        "anthropic": "ANTHROPIC_API_KEY",
-        "openai": "OPENAI_API_KEY",
-        "google_gemini": "GOOGLE_API_KEY",
-        "groq": "GROQ_API_KEY",
-    }
-    if provider == "ollama":
-        cfg = db.query(IntegrationConfig).filter(IntegrationConfig.provider == "ollama").first()
-        if not (cfg and cfg.is_enabled):
-            raise RuntimeError("Ollama not enabled. Go to Settings > Integrations to configure it.")
-        return
-    if provider == "vertex_ai":
-        cfg = db.query(IntegrationConfig).filter(IntegrationConfig.provider == "vertex_ai").first()
-        has_project = (
-            (cfg and cfg.config and cfg.config.get("project_id"))
-            or os.environ.get("GOOGLE_CLOUD_PROJECT")
-            or os.environ.get("GCLOUD_PROJECT")
-        )
-        if not has_project:
-            raise RuntimeError("Vertex AI not configured. Set GOOGLE_CLOUD_PROJECT or configure in Settings > Integrations.")
-        return
-    env_var = _ENV_VARS.get(provider, "")
-    _get_api_key(db, provider, env_var)
 
 
 def _truncate_user_input(user_input: str, provider: str) -> str:
@@ -570,9 +323,22 @@ def _execute_tool(agent: Agent, db: Session, tool_name: str, tool_input: Optiona
         else:
             # Coerce params to match schema types (fixes LLMs sending "50" instead of 50)
             coerced_input = _coerce_params(tool_input, tool_def["parameters"])
-            # Inject agent_id for scratchpad tools
-            enriched_input = {**coerced_input, "_agent_id": agent.id, "_org_id": agent.org_id}
+            # Inject agent_id for scratchpad tools; merge any per-run context
+            # the caller stashed in agent.memory["_run_ctx"] (protocol audits
+            # use this to pass relay_agent_id / credential_id / mission to tools
+            # without exposing them to the LLM's tool schema).
+            run_ctx = (agent.memory or {}).get("_run_ctx") or {}
+            enriched_input = {
+                **run_ctx,
+                **coerced_input,
+                "_agent_id": agent.id,
+                "_org_id": agent.org_id,
+            }
             result = tool_def["fn"](db, enriched_input)
+    except NeedsApproval:
+        # Per-call approval — let the caller catch this and create an
+        # AgentApproval record. Don't trace; the run is about to pause.
+        raise
     except ValueError as e:
         result = {"error": str(e)}
         ok = False
@@ -616,9 +382,6 @@ CONFIRMATION_REQUIRED_TOOLS = {
     "update_finding_status", "create_exception",
     "call_integration_fetch", "call_integration_push",
     "build_report", "create_agent", "create_agent_schedule",
-    # Validation-agent verdict writes — safe-probed context flows into the
-    # finding's ctx_* fields and llm_validation JSON; requires human sign-off.
-    "update_finding_validation",
 }
 
 # Tools gated by HITL approval (superset of confirmation-required tools)
@@ -663,6 +426,29 @@ class ApprovalRequired(Exception):
         super().__init__(f"Approval required for tool '{tool_name}' (approval_id={approval_id})")
 
 
+def _is_auto_approved_for_run(run: AgentRun, tool_name: str) -> bool:
+    """True if the user has bulk-approved ``tool_name`` for the rest of this run.
+
+    Backed by ``AgentRun.auto_approved_tools`` (set when an approval is decided
+    with ``grant_scope='run'`` — see ``record_approval_decision``). Future
+    calls of these tools skip both the HITL gate and the per-call NeedsApproval
+    gate; the tool body sees ``_approved=True`` so its own classifier
+    short-circuits.
+    """
+    if not run:
+        return False
+    granted = run.auto_approved_tools or []
+    return tool_name in granted
+
+
+def _maybe_inject_auto_approval(run: AgentRun, tool_name: str, tool_input: dict) -> dict:
+    """If ``tool_name`` is auto-approved for this run, inject ``_approved=True``
+    into the tool input so the tool body skips its NeedsApproval classifier."""
+    if _is_auto_approved_for_run(run, tool_name):
+        return {**(tool_input or {}), "_approved": True}
+    return tool_input or {}
+
+
 def _create_approval(
     agent: Agent,
     run: AgentRun,
@@ -693,7 +479,78 @@ def _create_approval(
     )
     db.add(approval)
     db.flush()  # get id without committing yet
+
+    # Emit a global notification so users see gated actions in the bell
+    # without having to know they live under Agents → Approval Queue.
+    if agent.org_id:
+        try:
+            from services.notifications import create_notification
+            reason = (tool_input or {}).get("_approval_reason")
+            agent_label = agent.name or f"agent {agent.id}"
+            title = f"{agent_label}: action needs approval"
+            body = f"{tool_name}" + (f" — {reason}" if reason else "")
+            create_notification(
+                db,
+                agent.org_id,
+                "approval_required",
+                title,
+                body=body,
+                link=f"/agents?approvals=1&run={run.id}",
+                entity_type="agent_approval",
+                entity_id=approval.id,
+                metadata={
+                    "agent_id": agent.id,
+                    "agent_run_id": run.id,
+                    "tool_name": tool_name,
+                },
+            )
+        except Exception:
+            logger.exception("failed to emit approval_required notification")
     return approval
+
+
+def _pause_for_per_call_approval(
+    *,
+    agent: Agent,
+    run: AgentRun,
+    db: Session,
+    exc: NeedsApproval,
+    tool_name: str,
+    tool_input: dict,
+    messages_snapshot: list,
+    assistant_content: list,
+    provider: str,
+    model: str,
+    step: int,
+    tool_use_id: str,
+    trace: list,
+) -> None:
+    """Persist a per-call approval and raise ApprovalRequired.
+
+    The reason from the NeedsApproval exception is stashed inside tool_input
+    under `_approval_reason` so the UI can surface it; the same payload also
+    carries `_per_call=True` so resume logic knows to inject `_approved=True`
+    on rerun. The tool body sees `_approved=True` and skips its classifier.
+    """
+    enriched_input = {
+        **tool_input,
+        "_approval_reason": exc.reason,
+        "_approval_category": exc.category,
+        "_approval_details": exc.details,
+        "_per_call": True,
+    }
+    approval = _create_approval(
+        agent=agent, run=run, db=db,
+        tool_name=tool_name, tool_input=enriched_input,
+        messages_snapshot=messages_snapshot,
+        assistant_content=assistant_content,
+        provider=provider, model_name=model,
+        current_step=step, tool_use_id=tool_use_id,
+    )
+    run.status = "awaiting_approval"
+    run.trace = trace
+    db.commit()
+    raise ApprovalRequired(approval.id, tool_name)
 
 
 def _check_confirmation(tool_name: str, tool_input: dict):
@@ -715,7 +572,13 @@ def _check_confirmation(tool_name: str, tool_input: dict):
 # ── Provider-specific execution loops ─────────────────────────────────
 
 def _run_anthropic(agent: Agent, user_input: str, db: Session, run: AgentRun, model: str):
-    """Run agent using Anthropic Claude API."""
+    """Run agent using Anthropic Claude API — direct or via Vertex AI.
+
+    The router picks between ``Anthropic(api_key=...)`` and
+    ``AnthropicVertex(project_id=...)`` transparently; same
+    ``messages.create`` interface either way. Vertex-prefixed model IDs
+    need the prefix stripped before the SDK call.
+    """
     trace = []
     user_input = _truncate_user_input(user_input, "anthropic")
     messages = [{"role": "user", "content": user_input}]
@@ -724,14 +587,15 @@ def _run_anthropic(agent: Agent, user_input: str, db: Session, run: AgentRun, mo
     tools = get_claude_tool_schemas(agent.tools or [])
     max_steps = (agent.guardrails or {}).get("max_steps", 15)
 
-    cl = _get_anthropic_client(db)
+    cl = _get_anthropic_client(db, model)
+    api_model = model.removeprefix("vertex/") if model.startswith("vertex/") else model
 
     for step in range(max_steps):
         # Apply rolling context compression after 5 turns to cap history size
         compressed_messages = rolling_context(messages, max_turns=5)
 
         create_kwargs = {
-            "model": model,
+            "model": api_model,
             "max_tokens": 4096,
             "system": system,
             "messages": _sanitize_messages(compressed_messages),
@@ -739,6 +603,12 @@ def _run_anthropic(agent: Agent, user_input: str, db: Session, run: AgentRun, mo
         if tools:
             create_kwargs["tools"] = tools
 
+        # Release the open transaction before each LLM round-trip. Postgres
+        # closes connections that sit idle_in_transaction past 60s
+        # (core/database.py), and a single Anthropic call can run longer
+        # than that with retries — leaving the connection dead by the time
+        # we commit progress at the end of the step.
+        _commit_quiet(db)
         try:
             response = cl.messages.create(**create_kwargs)
         except Exception as exc:
@@ -804,7 +674,12 @@ def _run_anthropic(agent: Agent, user_input: str, db: Session, run: AgentRun, mo
             if block.type != "tool_use":
                 continue
             # HITL: pause before any write tool that needs human approval
-            if approval_mode == "hitl" and block.name in effective_hitl_tools:
+            # (skip if the user has bulk-approved this tool for the run).
+            if (
+                approval_mode == "hitl"
+                and block.name in effective_hitl_tools
+                and not _is_auto_approved_for_run(run, block.name)
+            ):
                 approval = _create_approval(
                     agent=agent, run=run, db=db,
                     tool_name=block.name, tool_input=block.input or {},
@@ -817,7 +692,18 @@ def _run_anthropic(agent: Agent, user_input: str, db: Session, run: AgentRun, mo
                 run.trace = trace
                 db.commit()
                 raise ApprovalRequired(approval.id, block.name)
-            result_str = _execute_tool(agent, db, block.name, block.input or {}, step, trace)
+            tool_input = _maybe_inject_auto_approval(run, block.name, block.input or {})
+            try:
+                result_str = _execute_tool(agent, db, block.name, tool_input, step, trace)
+            except NeedsApproval as exc:
+                _pause_for_per_call_approval(
+                    agent=agent, run=run, db=db, exc=exc,
+                    tool_name=block.name, tool_input=block.input or {},
+                    messages_snapshot=messages[:-1],
+                    assistant_content=assistant_content,
+                    provider="anthropic", model=model,
+                    step=step, tool_use_id=block.id, trace=trace,
+                )
             tool_results.append({
                 "type": "tool_result",
                 "tool_use_id": block.id,
@@ -931,8 +817,12 @@ def _run_openai_compat(agent: Agent, user_input: str, db: Session, run: AgentRun
         messages.append(assistant_msg)
         for tc in msg.tool_calls:
             tool_input = json.loads(tc.function.arguments) if tc.function.arguments else {}
-            # HITL: pause before write tool
-            if approval_mode == "hitl" and tc.function.name in effective_hitl_tools:
+            # HITL: pause before write tool (unless auto-approved for this run)
+            if (
+                approval_mode == "hitl"
+                and tc.function.name in effective_hitl_tools
+                and not _is_auto_approved_for_run(run, tc.function.name)
+            ):
                 approval = _create_approval(
                     agent=agent, run=run, db=db,
                     tool_name=tc.function.name, tool_input=tool_input,
@@ -945,7 +835,18 @@ def _run_openai_compat(agent: Agent, user_input: str, db: Session, run: AgentRun
                 run.trace = trace
                 db.commit()
                 raise ApprovalRequired(approval.id, tc.function.name)
-            result_str = _execute_tool(agent, db, tc.function.name, tool_input, step, trace)
+            tool_input = _maybe_inject_auto_approval(run, tc.function.name, tool_input)
+            try:
+                result_str = _execute_tool(agent, db, tc.function.name, tool_input, step, trace)
+            except NeedsApproval as exc:
+                _pause_for_per_call_approval(
+                    agent=agent, run=run, db=db, exc=exc,
+                    tool_name=tc.function.name, tool_input=tool_input,
+                    messages_snapshot=messages[:-1],
+                    assistant_content=assistant_content,
+                    provider=provider, model=model,
+                    step=step, tool_use_id=tc.id, trace=trace,
+                )
             messages.append({
                 "role": "tool",
                 "tool_call_id": tc.id,
@@ -1102,7 +1003,20 @@ def _run_gemini(agent: Agent, user_input: str, db: Session, run: AgentRun, model
         function_responses = []
         for fc in function_calls:
             tool_input = dict(fc.args) if fc.args else {}
-            result_str = _execute_tool(agent, db, fc.name, tool_input, step, trace)
+            tool_input = _maybe_inject_auto_approval(run, fc.name, tool_input)
+            try:
+                result_str = _execute_tool(agent, db, fc.name, tool_input, step, trace)
+            except NeedsApproval as exc:
+                # Gemini's resume support is limited (see _resume entry point);
+                # we still persist the approval so it surfaces in the UI.
+                _pause_for_per_call_approval(
+                    agent=agent, run=run, db=db, exc=exc,
+                    tool_name=fc.name, tool_input=tool_input,
+                    messages_snapshot=[],
+                    assistant_content=[],
+                    provider="google_gemini", model=model,
+                    step=step, tool_use_id="", trace=trace,
+                )
             function_responses.append(genai_types.Part.from_function_response(
                 name=fc.name,
                 response=_gemini_wrap_response(result_str),
@@ -1146,7 +1060,10 @@ def run_agent(agent: Agent, user_input: str, db: Session) -> AgentRun:
         provider = detect_provider(model)
 
     def _dispatch(m, p):
-        if p == "anthropic":
+        # Claude on Vertex routes through the Anthropic loop — same
+        # wire protocol, just a different auth path. Gemini on Vertex
+        # stays on the google-genai loop.
+        if p == "anthropic" or (p == "vertex_ai" and llm_router.is_claude_model(m)):
             _run_anthropic(agent, user_input, db, run, m)
         elif p in ("openai", "groq", "ollama"):
             _run_openai_compat(agent, user_input, db, run, m, p)
@@ -1242,7 +1159,9 @@ def run_agent_streaming(agent: Agent, user_input: str, db: Session,
         provider = detect_provider(model)
 
     def _dispatch_stream(m, p):
-        if p == "anthropic":
+        # Claude-on-Vertex uses the AnthropicVertex SDK — same message
+        # protocol as direct Anthropic, so route through _stream_anthropic.
+        if p == "anthropic" or (p == "vertex_ai" and llm_router.is_claude_model(m)):
             return _stream_anthropic(agent, user_input, db, run, m,
                                      conversation_messages=conversation_messages)
         elif p in ("openai", "groq", "ollama"):
@@ -1324,7 +1243,7 @@ def run_agent_streaming(agent: Agent, user_input: str, db: Session,
 
 
 def _stream_anthropic(agent, user_input, db, run, model, *, conversation_messages=None):
-    """Streaming variant of _run_anthropic."""
+    """Streaming variant of _run_anthropic. Direct Anthropic or Vertex."""
     trace = []
     # Build initial messages: native multi-turn history (if provided) + current user message.
     # Native messages enable Anthropic prompt caching on the conversation prefix.
@@ -1336,7 +1255,8 @@ def _stream_anthropic(agent, user_input, db, run, model, *, conversation_message
     system = _build_system_prompt_cached(agent)
     tools = get_claude_tool_schemas(agent.tools or [])
     max_steps = (agent.guardrails or {}).get("max_steps", 15)
-    cl = _get_anthropic_client(db)
+    cl = _get_anthropic_client(db, model)
+    api_model = model.removeprefix("vertex/") if model.startswith("vertex/") else model
 
     for step in range(max_steps):
         yield {"type": "thinking", "step": step}
@@ -1344,9 +1264,11 @@ def _stream_anthropic(agent, user_input, db, run, model, *, conversation_message
         # Apply rolling context compression after 5 turns to cap history size
         compressed_messages = rolling_context(messages, max_turns=5)
 
-        create_kwargs = {"model": model, "max_tokens": 4096, "system": system, "messages": _sanitize_messages(compressed_messages)}
+        create_kwargs = {"model": api_model, "max_tokens": 4096, "system": system, "messages": _sanitize_messages(compressed_messages)}
         if tools:
             create_kwargs["tools"] = tools
+        # See _run_anthropic for rationale.
+        _commit_quiet(db)
         try:
             response = cl.messages.create(**create_kwargs)
         except Exception as exc:
@@ -1397,7 +1319,11 @@ def _stream_anthropic(agent, user_input, db, run, model, *, conversation_message
         for block in response.content:
             if block.type != "tool_use":
                 continue
-            if approval_mode == "hitl" and block.name in effective_hitl_tools:
+            if (
+                approval_mode == "hitl"
+                and block.name in effective_hitl_tools
+                and not _is_auto_approved_for_run(run, block.name)
+            ):
                 approval = _create_approval(
                     agent=agent, run=run, db=db,
                     tool_name=block.name, tool_input=block.input or {},
@@ -1410,7 +1336,18 @@ def _stream_anthropic(agent, user_input, db, run, model, *, conversation_message
                 run.trace = trace
                 db.commit()
                 raise ApprovalRequired(approval.id, block.name)
-            result_str = _execute_tool(agent, db, block.name, block.input or {}, step, trace)
+            tool_input = _maybe_inject_auto_approval(run, block.name, block.input or {})
+            try:
+                result_str = _execute_tool(agent, db, block.name, tool_input, step, trace)
+            except NeedsApproval as exc:
+                _pause_for_per_call_approval(
+                    agent=agent, run=run, db=db, exc=exc,
+                    tool_name=block.name, tool_input=block.input or {},
+                    messages_snapshot=messages[:-1],
+                    assistant_content=assistant_content,
+                    provider="anthropic", model=model,
+                    step=step, tool_use_id=block.id, trace=trace,
+                )
             yield {"type": "tool_result", "name": block.name, "result": result_str[:2000], "step": step}
             tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": result_str})
 
@@ -1500,7 +1437,11 @@ def _stream_openai_compat(agent, user_input, db, run, model, provider, *, conver
         messages.append(assistant_msg)
         for tc in msg.tool_calls:
             tool_input = json.loads(tc.function.arguments) if tc.function.arguments else {}
-            if approval_mode == "hitl" and tc.function.name in HITL_TOOLS:
+            if (
+                approval_mode == "hitl"
+                and tc.function.name in HITL_TOOLS
+                and not _is_auto_approved_for_run(run, tc.function.name)
+            ):
                 approval = _create_approval(
                     agent=agent, run=run, db=db,
                     tool_name=tc.function.name, tool_input=tool_input,
@@ -1513,7 +1454,18 @@ def _stream_openai_compat(agent, user_input, db, run, model, provider, *, conver
                 run.trace = trace
                 db.commit()
                 raise ApprovalRequired(approval.id, tc.function.name)
-            result_str = _execute_tool(agent, db, tc.function.name, tool_input, step, trace)
+            tool_input = _maybe_inject_auto_approval(run, tc.function.name, tool_input)
+            try:
+                result_str = _execute_tool(agent, db, tc.function.name, tool_input, step, trace)
+            except NeedsApproval as exc:
+                _pause_for_per_call_approval(
+                    agent=agent, run=run, db=db, exc=exc,
+                    tool_name=tc.function.name, tool_input=tool_input,
+                    messages_snapshot=messages[:-1],
+                    assistant_content=assistant_content,
+                    provider=provider, model=model,
+                    step=step, tool_use_id=tc.id, trace=trace,
+                )
             yield {"type": "tool_result", "name": tc.function.name, "result": result_str[:2000], "step": step}
             messages.append({"role": "tool", "tool_call_id": tc.id, "content": result_str})
 
@@ -1602,7 +1554,17 @@ def _stream_gemini(agent, user_input, db, run, model, *, conversation_messages=N
         function_responses = []
         for fc in function_calls:
             tool_input = dict(fc.args) if fc.args else {}
-            result_str = _execute_tool(agent, db, fc.name, tool_input, step, trace)
+            tool_input = _maybe_inject_auto_approval(run, fc.name, tool_input)
+            try:
+                result_str = _execute_tool(agent, db, fc.name, tool_input, step, trace)
+            except NeedsApproval as exc:
+                _pause_for_per_call_approval(
+                    agent=agent, run=run, db=db, exc=exc,
+                    tool_name=fc.name, tool_input=tool_input,
+                    messages_snapshot=[], assistant_content=[],
+                    provider="google_gemini", model=model,
+                    step=step, tool_use_id="", trace=trace,
+                )
             yield {"type": "tool_result", "name": fc.name, "result": result_str[:2000], "step": step}
             function_responses.append(genai_types.Part.from_function_response(name=fc.name, response=_gemini_wrap_response(result_str)))
 
@@ -1623,13 +1585,47 @@ def update_agent_memory(agent: Agent, memory_updates: dict, db: Session):
     db.commit()
 
 
+def update_run_ctx(db: Session, agent_id: int, updates: dict) -> None:
+    """Merge updates into ``agent.memory["_run_ctx"]`` so subsequent tool calls
+    in the same run see them. Used by protocol-audit tools that discover a
+    fact mid-run (e.g. SNMP probe finding an accepted community) and want
+    later tools to fall back to it without exposing it to the LLM schema.
+    """
+    from sqlalchemy.orm.attributes import flag_modified
+
+    agent = db.query(Agent).filter(Agent.id == agent_id).first()
+    if not agent:
+        return
+    mem = dict(agent.memory or {})
+    rc = dict(mem.get("_run_ctx") or {})
+    rc.update(updates)
+    mem["_run_ctx"] = rc
+    agent.memory = mem
+    flag_modified(agent, "memory")
+    db.commit()
+
+
 # ── HITL Resume ───────────────────────────────────────────────────────
 
-def resume_agent_run(run_id: int, decision: str, reason: Optional[str], decider_id: Optional[int], db: Session) -> AgentRun:
-    """Resume a paused agent run after a human approval decision.
+def record_approval_decision(
+    run_id: int,
+    decision: str,
+    reason: Optional[str],
+    decider_id: Optional[int],
+    db: Session,
+    grant_scope: Optional[str] = None,
+) -> tuple[AgentRun, AgentApproval]:
+    """Record a human's approve/reject decision and flip the run to 'running'.
 
-    decision: "approved" | "rejected"
-    reason:   optional rejection reason shown to the agent
+    Cheap and synchronous — does NOT execute the gated tool or continue the
+    agent loop. Pair with :func:`continue_after_decision` (typically run on a
+    background thread) for the heavy work. Splitting the two lets the HTTP
+    handler return immediately so the UI can show the decision without
+    waiting on multi-second SSH/LLM round-trips.
+
+    If ``grant_scope='run'`` and the decision is ``approved``, registers a
+    standing grant on the run so future calls of the same tool skip the
+    HITL gate and per-call approval.
     """
     run = db.query(AgentRun).filter(AgentRun.id == run_id).first()
     if not run:
@@ -1646,16 +1642,53 @@ def resume_agent_run(run_id: int, decision: str, reason: Optional[str], decider_
     if not approval:
         raise ValueError(f"No pending approval found for run {run_id}")
 
-    # Record the decision
     approval.status = decision  # "approved" or "rejected"
     approval.decided_at = datetime.utcnow()
     approval.decided_by = decider_id
     approval.rejection_reason = reason
-    db.flush()
 
-    agent = db.query(Agent).filter(Agent.id == run.agent_id).first()
+    if decision == "approved" and grant_scope == "run":
+        # Register a run-scoped grant so future calls of this tool skip the
+        # gate. SQLAlchemy doesn't detect in-place mutation of JSON columns,
+        # so reassign the list to flag the attribute dirty.
+        granted = list(run.auto_approved_tools or [])
+        if approval.tool_name not in granted:
+            granted.append(approval.tool_name)
+        run.auto_approved_tools = granted
+
     run.status = "running"
     db.commit()
+    db.refresh(run)
+    db.refresh(approval)
+    return run, approval
+
+
+def continue_after_decision(run_id: int, db: Session) -> AgentRun:
+    """Execute the decided tool and continue the agent loop.
+
+    Expects :func:`record_approval_decision` to have already committed —
+    the run is in ``running`` state and the most-recent approval row is
+    no longer ``pending``. Safe to call from a background worker.
+    """
+    run = db.query(AgentRun).filter(AgentRun.id == run_id).first()
+    if not run:
+        raise ValueError(f"Run {run_id} not found")
+
+    approval = (
+        db.query(AgentApproval)
+        .filter(
+            AgentApproval.agent_run_id == run_id,
+            AgentApproval.status.in_(("approved", "rejected")),
+        )
+        .order_by(AgentApproval.decided_at.desc())
+        .first()
+    )
+    if not approval:
+        raise ValueError(f"No decided approval found for run {run_id}")
+
+    decision = approval.status
+    reason = approval.rejection_reason
+    agent = db.query(Agent).filter(Agent.id == run.agent_id).first()
 
     try:
         provider = approval.provider
@@ -1683,7 +1716,37 @@ def resume_agent_run(run_id: int, decision: str, reason: Optional[str], decider_
     run.finished_at = datetime.utcnow()
     db.commit()
     db.refresh(run)
+
+    # If this run belongs to an audit Scan, flip the Scan's status now that
+    # we've reached a terminal AgentRun state. The Celery worker's
+    # _finalize_scan_if_complete only fires on the *initial* dispatch — when
+    # the run paused at awaiting_approval it short-circuited. Without this
+    # call the Scan row would stay status='running' indefinitely after the
+    # human approval lets the agent finish.
+    if run.status in ("done", "failed", "cancelled"):
+        try:
+            from services.audit_worker import _finalize_scan_if_complete
+            _finalize_scan_if_complete(db, run.agent_id)
+        except Exception:
+            logger.exception(
+                "continue_after_decision: scan finalize failed for run=%s (non-fatal)",
+                run.id,
+            )
+            db.rollback()
+
     return run
+
+
+def resume_agent_run(run_id: int, decision: str, reason: Optional[str], decider_id: Optional[int], db: Session) -> AgentRun:
+    """Synchronously record the decision and continue the agent run.
+
+    Kept for callers that want the legacy blocking behavior. New code
+    (notably the HTTP decide endpoint) should call
+    :func:`record_approval_decision` and dispatch
+    :func:`continue_after_decision` to a background job instead.
+    """
+    record_approval_decision(run_id, decision, reason, decider_id, db)
+    return continue_after_decision(run_id, db)
 
 
 def _resume_anthropic(agent, run, approval, decision, reason, model, trace, db):
@@ -1703,9 +1766,21 @@ def _resume_anthropic(agent, run, approval, decision, reason, model, trace, db):
         tool_input = block.get("input") or {}
 
         if block_id == approval.tool_use_id:
-            # This is the gated tool — execute or inject rejection
+            # This is the gated tool — execute or inject rejection.
+            # `_approved=True` tells per-call classifiers (e.g. ssh_run_command)
+            # to skip their NeedsApproval check; harmless for static-HITL tools.
             if decision == "approved":
-                result_str = _execute_tool(agent, db, tool_name, {**tool_input, "confirmed": True}, approval.current_step, trace)
+                try:
+                    result_str = _execute_tool(agent, db, tool_name, {**tool_input, "confirmed": True, "_approved": True}, approval.current_step, trace)
+                except NeedsApproval as exc:
+                    _pause_for_per_call_approval(
+                        agent=agent, run=run, db=db, exc=exc,
+                        tool_name=tool_name, tool_input=tool_input,
+                        messages_snapshot=approval.messages_snapshot or [],
+                        assistant_content=assistant_content,
+                        provider="anthropic", model=model,
+                        step=approval.current_step, tool_use_id=block_id, trace=trace,
+                    )
             else:
                 result_str = json.dumps({
                     "status": "rejected",
@@ -1718,7 +1793,17 @@ def _resume_anthropic(agent, run, approval, decision, reason, model, trace, db):
                 })
         else:
             # Other tool_use blocks in the same step — execute normally
-            result_str = _execute_tool(agent, db, tool_name, tool_input, approval.current_step, trace)
+            try:
+                result_str = _execute_tool(agent, db, tool_name, tool_input, approval.current_step, trace)
+            except NeedsApproval as exc:
+                _pause_for_per_call_approval(
+                    agent=agent, run=run, db=db, exc=exc,
+                    tool_name=tool_name, tool_input=tool_input,
+                    messages_snapshot=approval.messages_snapshot or [],
+                    assistant_content=assistant_content,
+                    provider="anthropic", model=model,
+                    step=approval.current_step, tool_use_id=block_id, trace=trace,
+                )
 
         tool_results.append({"type": "tool_result", "tool_use_id": block_id, "content": result_str})
 
@@ -1730,14 +1815,19 @@ def _resume_anthropic(agent, run, approval, decision, reason, model, trace, db):
     remaining = max_steps - approval.current_step - 1
     system = _build_system_prompt_cached(agent)
     tools = get_claude_tool_schemas(agent.tools or [])
-    cl = _get_anthropic_client(db)
+    cl = _get_anthropic_client(db, model)
+    api_model = model.removeprefix("vertex/") if model.startswith("vertex/") else model
     approval_mode = (agent.guardrails or {}).get("approval_mode", "auto")
 
     for step in range(approval.current_step + 1, approval.current_step + 1 + remaining):
         compressed_messages = rolling_context(messages, max_turns=5)
-        create_kwargs = {"model": model, "max_tokens": 4096, "system": system, "messages": _sanitize_messages(compressed_messages)}
+        create_kwargs = {"model": api_model, "max_tokens": 4096, "system": system, "messages": _sanitize_messages(compressed_messages)}
         if tools:
             create_kwargs["tools"] = tools
+        # Release the open transaction before each LLM round-trip — see the
+        # matching comment in _run_anthropic for the idle_in_transaction
+        # rationale.
+        _commit_quiet(db)
         try:
             response = cl.messages.create(**create_kwargs)
         except Exception as exc:
@@ -1780,7 +1870,11 @@ def _resume_anthropic(agent, run, approval, decision, reason, model, trace, db):
         for block in response.content:
             if block.type != "tool_use":
                 continue
-            if approval_mode == "hitl" and block.name in HITL_TOOLS:
+            if (
+                approval_mode == "hitl"
+                and block.name in HITL_TOOLS
+                and not _is_auto_approved_for_run(run, block.name)
+            ):
                 new_approval = _create_approval(
                     agent=agent, run=run, db=db,
                     tool_name=block.name, tool_input=block.input or {},
@@ -1793,7 +1887,18 @@ def _resume_anthropic(agent, run, approval, decision, reason, model, trace, db):
                 run.trace = trace
                 db.commit()
                 raise ApprovalRequired(new_approval.id, block.name)
-            result_str = _execute_tool(agent, db, block.name, block.input or {}, step, trace)
+            tool_input = _maybe_inject_auto_approval(run, block.name, block.input or {})
+            try:
+                result_str = _execute_tool(agent, db, block.name, tool_input, step, trace)
+            except NeedsApproval as exc:
+                _pause_for_per_call_approval(
+                    agent=agent, run=run, db=db, exc=exc,
+                    tool_name=block.name, tool_input=block.input or {},
+                    messages_snapshot=messages[:-1],
+                    assistant_content=assistant_content,
+                    provider="anthropic", model=model,
+                    step=step, tool_use_id=block.id, trace=trace,
+                )
             tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": result_str})
 
         messages.append({"role": "user", "content": tool_results})
@@ -1827,7 +1932,17 @@ def _resume_openai_compat(agent, run, approval, decision, reason, model, provide
 
         if block_id == approval.tool_use_id:
             if decision == "approved":
-                result_str = _execute_tool(agent, db, tool_name, {**tool_input, "confirmed": True}, approval.current_step, trace)
+                try:
+                    result_str = _execute_tool(agent, db, tool_name, {**tool_input, "confirmed": True, "_approved": True}, approval.current_step, trace)
+                except NeedsApproval as exc:
+                    _pause_for_per_call_approval(
+                        agent=agent, run=run, db=db, exc=exc,
+                        tool_name=tool_name, tool_input=tool_input,
+                        messages_snapshot=approval.messages_snapshot or [],
+                        assistant_content=assistant_content,
+                        provider=provider, model=model,
+                        step=approval.current_step, tool_use_id=block_id, trace=trace,
+                    )
             else:
                 result_str = json.dumps({
                     "status": "rejected",
@@ -1835,7 +1950,17 @@ def _resume_openai_compat(agent, run, approval, decision, reason, model, provide
                 })
                 trace.append({"role": "tool", "tool_name": tool_name, "input": tool_input, "output": result_str, "step": approval.current_step})
         else:
-            result_str = _execute_tool(agent, db, tool_name, tool_input, approval.current_step, trace)
+            try:
+                result_str = _execute_tool(agent, db, tool_name, tool_input, approval.current_step, trace)
+            except NeedsApproval as exc:
+                _pause_for_per_call_approval(
+                    agent=agent, run=run, db=db, exc=exc,
+                    tool_name=tool_name, tool_input=tool_input,
+                    messages_snapshot=approval.messages_snapshot or [],
+                    assistant_content=assistant_content,
+                    provider=provider, model=model,
+                    step=approval.current_step, tool_use_id=block_id, trace=trace,
+                )
 
         messages.append({"role": "tool", "tool_call_id": block_id, "content": result_str})
 
@@ -1878,7 +2003,11 @@ def _resume_openai_compat(agent, run, approval, decision, reason, model, provide
         messages.append(clean_msg)
         for tc in msg.tool_calls:
             tool_input = json.loads(tc.function.arguments) if tc.function.arguments else {}
-            if approval_mode == "hitl" and tc.function.name in HITL_TOOLS:
+            if (
+                approval_mode == "hitl"
+                and tc.function.name in HITL_TOOLS
+                and not _is_auto_approved_for_run(run, tc.function.name)
+            ):
                 new_approval = _create_approval(
                     agent=agent, run=run, db=db,
                     tool_name=tc.function.name, tool_input=tool_input,
@@ -1891,7 +2020,18 @@ def _resume_openai_compat(agent, run, approval, decision, reason, model, provide
                 run.trace = trace
                 db.commit()
                 raise ApprovalRequired(new_approval.id, tc.function.name)
-            result_str = _execute_tool(agent, db, tc.function.name, tool_input, step, trace)
+            tool_input = _maybe_inject_auto_approval(run, tc.function.name, tool_input)
+            try:
+                result_str = _execute_tool(agent, db, tc.function.name, tool_input, step, trace)
+            except NeedsApproval as exc:
+                _pause_for_per_call_approval(
+                    agent=agent, run=run, db=db, exc=exc,
+                    tool_name=tc.function.name, tool_input=tool_input,
+                    messages_snapshot=messages[:-1],
+                    assistant_content=assistant_content,
+                    provider=provider, model=model,
+                    step=step, tool_use_id=tc.id, trace=trace,
+                )
             messages.append({"role": "tool", "tool_call_id": tc.id, "content": result_str})
         run.steps_used = step + 1
     else:

@@ -75,6 +75,123 @@ def _extract_tool_calls(messages: List[Dict[str, Any]]) -> List[str]:
     return tools_called
 
 
+# Maximum chars of a tool_result body to inline in the probe log. Long
+# enough to expose key fields (sshd_config flags, /etc/passwd lines, find
+# output) but short enough that 30 entries fit in a few KB.
+_PROBE_RESULT_CAP = 240
+# Cap on number of probe entries kept in the summary. Older ones are dropped
+# (the high-level "Tools called: x×N" tally still records they happened).
+_PROBE_LOG_MAX = 30
+# Single-line input preview length for tool_use args.
+_PROBE_INPUT_CAP = 160
+
+
+def _format_tool_input(tool_input: Any) -> str:
+    """One-line preview of a tool_use input, optimized for shell-style tools.
+    For ssh_run_command/ssh_read_file we surface the command/path directly
+    rather than dumping JSON, since that's what the agent needs to recognize
+    'I already ran this'."""
+    if not isinstance(tool_input, dict):
+        return str(tool_input)[:_PROBE_INPUT_CAP]
+    # Prefer the most diagnostic field if present
+    for key in ("command", "path", "query", "url", "method"):
+        if key in tool_input and isinstance(tool_input[key], str):
+            return f"{key}={tool_input[key][:_PROBE_INPUT_CAP]}"
+    try:
+        s = json.dumps(tool_input, separators=(",", ":"), default=str)
+    except TypeError:
+        s = str(tool_input)
+    return s[:_PROBE_INPUT_CAP]
+
+
+def _format_tool_result(raw: Any) -> str:
+    """One-line gist of a tool_result body. Tries to surface stdout when
+    the relay returns the standard ``{exit_code, stdout, stderr, error}``
+    envelope; otherwise truncates the raw string."""
+    if isinstance(raw, str):
+        # Cheap shortcut for the common shell-tool envelope.
+        try:
+            obj = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            obj = None
+        if isinstance(obj, dict):
+            stdout = obj.get("stdout")
+            stderr = obj.get("stderr")
+            err = obj.get("error")
+            exit_code = obj.get("exit_code")
+            parts = []
+            if exit_code is not None and exit_code != 0:
+                parts.append(f"exit={exit_code}")
+            if stdout:
+                parts.append(stdout.strip())
+            elif stderr:
+                parts.append(f"stderr: {stderr.strip()}")
+            if err:
+                parts.append(f"error: {err}")
+            text = " | ".join(parts) if parts else raw
+        else:
+            text = raw
+    else:
+        try:
+            text = json.dumps(raw, default=str)
+        except TypeError:
+            text = str(raw)
+    text = " ".join(text.split())  # collapse whitespace
+    if len(text) > _PROBE_RESULT_CAP:
+        return text[:_PROBE_RESULT_CAP] + "…"
+    return text
+
+
+def _build_probe_log(messages: List[Dict[str, Any]]) -> List[str]:
+    """Pair each tool_use block with its tool_result and render a compact
+    one-line entry per pair. Returns the most recent ``_PROBE_LOG_MAX``
+    entries — older ones are still represented in the high-level tool
+    counter, but their bodies are dropped to bound size.
+
+    Without this, the rolling-context summary only told the agent what it
+    *did*, not what it *learned*. The agent would re-run probes from
+    scratch — burning the step budget without ever reaching emit_finding.
+    """
+    # Index tool_results by tool_use_id so we can match them to calls.
+    results_by_id: Dict[str, Any] = {}
+    for msg in messages:
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content", "")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "tool_result":
+                tid = block.get("tool_use_id")
+                if tid:
+                    results_by_id[tid] = block.get("content", "")
+
+    entries: List[str] = []
+    for msg in messages:
+        if msg.get("role") != "assistant":
+            continue
+        content = msg.get("content", "")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not (isinstance(block, dict) and block.get("type") == "tool_use"):
+                continue
+            name = block.get("name", "?")
+            input_preview = _format_tool_input(block.get("input"))
+            tid = block.get("id", "")
+            result = results_by_id.get(tid)
+            if result is None:
+                # Tool result not yet available (race in trace) — skip.
+                continue
+            result_preview = _format_tool_result(result)
+            entries.append(f"{name}({input_preview}) → {result_preview}")
+
+    # Keep the most recent N — older facts are usually superseded.
+    if len(entries) > _PROBE_LOG_MAX:
+        entries = entries[-_PROBE_LOG_MAX:]
+    return entries
+
+
 def _extract_assets_processed(messages: List[Dict[str, Any]]) -> List[str]:
     """Extract asset IPs/hostnames mentioned in tool results."""
     assets = []
@@ -108,11 +225,14 @@ def _extract_assets_processed(messages: List[Dict[str, Any]]) -> List[str]:
 def _build_summary(old_messages: List[Dict[str, Any]]) -> str:
     """Build a compact summary of old conversation turns.
 
-    Targets ~200 tokens. Covers: decisions, tools used, assets, pending actions.
+    Covers: decisions, tools used, assets processed, and a probe log of
+    recent tool calls + result gists so the agent can recognize work it
+    has already done instead of re-running the same probes.
     """
     decisions = _extract_decisions(old_messages)
     tools_called = _extract_tool_calls(old_messages)
     assets = _extract_assets_processed(old_messages)
+    probe_log = _build_probe_log(old_messages)
 
     tool_summary = ""
     if tools_called:
@@ -127,6 +247,15 @@ def _build_summary(old_messages: List[Dict[str, Any]]) -> str:
         lines.append(f"Tools called: {tool_summary}")
     if assets:
         lines.append("Assets processed: " + ", ".join(assets[:8]))
+    if probe_log:
+        lines.append("")
+        lines.append(
+            f"Probe log (last {len(probe_log)} calls — do NOT re-run probes "
+            "whose results already appear here; reason from these and call "
+            "emit_finding for each issue you've identified):"
+        )
+        lines.extend(probe_log)
+    lines.append("")
     lines.append("[End of summary — recent turns follow verbatim]")
 
     return "\n".join(lines)

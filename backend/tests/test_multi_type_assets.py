@@ -255,7 +255,9 @@ class TestParserWASDetection:
         assets = result["assets"]
         assert len(assets) == 1
         assert assets[0]["asset_type"] == "web_app"
-        assert assets[0]["asset_identity"]["url"] == "http://10.0.0.1:8080/"
+        # URL is normalized (trailing slash stripped) so Nessus WAS dedups
+        # with VM scanner / EASM rows that omit the trailing slash.
+        assert assets[0]["asset_identity"]["url"] == "http://10.0.0.1:8080"
         assert assets[0]["asset_identity"]["domain"] == "10.0.0.1"
         # IP should still be extracted for correlation
         assert assets[0]["ip"] == "10.0.0.1"

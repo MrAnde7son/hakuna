@@ -1770,6 +1770,7 @@ export const SOURCE_TYPES = {
   rapid7:     { label: 'Rapid7',   color: '#f97316', bg: '#f9731622' },
   openvas:    { label: 'OpenVAS',  color: '#22c55e', bg: '#22c55e22' },
   vm_scanner: { label: 'VM',       color: '#ec4899', bg: '#ec489922' },
+  audit_agent:{ label: 'Audit',    color: '#14b8a6', bg: '#14b8a622' },
 }
 
 export function getSourceMeta(type) {
@@ -1884,6 +1885,17 @@ export function SourceFilter({ value, onChange }) {
 // Error Boundary
 // ─────────────────────────────────────────────────────────
 
+const CHUNK_RELOAD_KEY = 'hakuna_chunk_reload_attempt'
+
+function isChunkLoadError(error) {
+  if (!error) return false
+  if (error.name === 'ChunkLoadError') return true
+  const msg = String(error.message || '')
+  return /Failed to fetch dynamically imported module/i.test(msg)
+    || /Importing a module script failed/i.test(msg)
+    || /error loading dynamically imported module/i.test(msg)
+}
+
 export class ErrorBoundary extends Component {
   constructor(props) {
     super(props)
@@ -1894,8 +1906,33 @@ export class ErrorBoundary extends Component {
     return { hasError: true, error }
   }
 
+  componentDidCatch(error) {
+    if (isChunkLoadError(error) && typeof window !== 'undefined') {
+      try {
+        const last = Number(window.sessionStorage.getItem(CHUNK_RELOAD_KEY) || 0)
+        const recentlyTried = last && (Date.now() - last) < 10000
+        if (!recentlyTried) {
+          window.sessionStorage.setItem(CHUNK_RELOAD_KEY, String(Date.now()))
+          window.location.reload()
+        }
+      } catch {
+        window.location.reload()
+      }
+    }
+  }
+
+  handleRetry = () => {
+    if (isChunkLoadError(this.state.error) && typeof window !== 'undefined') {
+      try { window.sessionStorage.removeItem(CHUNK_RELOAD_KEY) } catch {}
+      window.location.reload()
+      return
+    }
+    this.setState({ hasError: false, error: null })
+  }
+
   render() {
     if (this.state.hasError) {
+      const chunkError = isChunkLoadError(this.state.error)
       return (
         <div style={{
           display: 'flex', flexDirection: 'column', alignItems: 'center',
@@ -1904,20 +1941,22 @@ export class ErrorBoundary extends Component {
         }}>
           <div style={{ fontSize: 40 }}>⚠</div>
           <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--text-secondary)' }}>
-            {this.props.title || 'Something went wrong'}
+            {chunkError ? 'A new version is available' : (this.props.title || 'Something went wrong')}
           </div>
           <div style={{ fontSize: 13, color: 'var(--text-muted)', textAlign: 'center', maxWidth: 420 }}>
-            {this.state.error?.message || 'An unexpected error occurred.'}
+            {chunkError
+              ? 'Reload the page to load the latest version.'
+              : (this.state.error?.message || 'An unexpected error occurred.')}
           </div>
           <button
-            onClick={() => this.setState({ hasError: false, error: null })}
+            onClick={this.handleRetry}
             style={{
               padding: '8px 20px', borderRadius: 6, border: '1px solid var(--border)',
               background: 'var(--bg)', color: 'var(--text)', cursor: 'pointer',
               fontSize: 13, fontWeight: 500,
             }}
           >
-            Try again
+            {chunkError ? 'Reload' : 'Try again'}
           </button>
         </div>
       )

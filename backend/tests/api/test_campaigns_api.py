@@ -82,3 +82,36 @@ class TestCampaignTenantIsolation:
 
         resp = client.get(f"/api/campaigns/{test_campaign.id}", headers=headers)
         assert resp.status_code in (403, 404)
+
+    def test_campaign_preview_does_not_leak_other_org_assets(self, client, db_session, test_assets):
+        """Campaign preview in org B must not return assets from org A."""
+        from models.models import Organization, Scan, Asset, Finding
+        from tests.conftest import make_auth_headers, create_user, _set_org_id
+
+        org_b = Organization(name="Org B Preview", slug="org-b-preview")
+        db_session.add(org_b)
+        db_session.flush()
+        scan_b = Scan(org_id=org_b.id, filename="b.nessus", status="completed")
+        db_session.add(scan_b)
+        db_session.flush()
+        asset_b = Asset(scan_id=scan_b.id, ip="10.99.0.1", hostname="org-b-host", os="Linux")
+        db_session.add(asset_b)
+        db_session.flush()
+        _set_org_id(db_session, "assets", asset_b.id, org_b.id)
+        db_session.flush()
+
+        user_b = create_user(db_session, org_b, email="prevb@org.com", role="org_admin")
+        headers = make_auth_headers(user_b, org_b)
+
+        resp = client.post(
+            "/api/campaigns/preview",
+            headers=headers,
+            json={"name": "probe", "query": [{"field": "os", "op": "contains", "value": "Linux"}], "query_logic": "AND"},
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        returned_ips = {a["ip"] for a in data.get("assets", [])}
+        # Only org B's asset must appear — none of org A's test_assets (10.0.0.x).
+        assert returned_ips == {"10.99.0.1"}
+        for a in test_assets:
+            assert a.ip not in returned_ips

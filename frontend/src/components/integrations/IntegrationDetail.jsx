@@ -10,6 +10,7 @@ import {
   ibDeleteIntegration, ibEnableIntegration, ibDisableIntegration, ibUpdateLogo,
   ibGetWebhookInfo, ibRotateWebhookCredentials,
 } from '../../api.js'
+import { capture } from '../../utils/analytics.js'
 
 const STATUS_COLORS = {
   success: '#22c55e', error: '#ef4444', partial: '#eab308', running: '#3b82f6',
@@ -90,6 +91,11 @@ export default function IntegrationDetail({ embedded, integrationId: embeddedId,
     setRunning(true)
     try {
       await ibRunIntegration(id)
+      capture('integration_run_manual', {
+        integration_id: id,
+        transport_type: integration?.transport_type,
+        entity: integration?.entity,
+      })
       toast.success('Integration run started')
       setTimeout(load, 1500)
     } catch (e) {

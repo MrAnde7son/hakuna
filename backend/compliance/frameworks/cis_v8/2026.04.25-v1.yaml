@@ -1,0 +1,245 @@
+# CIS Critical Security Controls v8.1 — initial mapping pack.
+#
+# Scope: the 6 controls below cover the highest-signal mappings derivable
+# from Hakuna's current detection surface (Nessus + Nuclei + EASM + agentic).
+# Every rule body is a rule_engine condition list and is validated at load
+# time — refuse-to-seed if any field/op is unknown.
+#
+# Mappings prefer scanner-agnostic signals (finding.cwe, finding.is_kev,
+# inventory.*) over scanner-specific ones (plugin_family, plugin_id) so a
+# single rule covers Nessus + Nuclei + EASM. Where a scanner-specific
+# fallback is needed, both rules are listed and the resulting findings are
+# unioned by the evaluator.
+#
+# Controls not represented here are either manual-only (16.1 secure dev
+# process, 17.x incident response, 14.x security awareness) or require
+# detections we don't yet have (3.11 data classification). They will be
+# added in a follow-up release once the upstream signal is in place.
+
+framework:
+  slug: cis_v8
+  name: CIS Controls
+  version: "8.1"
+  authority: Center for Internet Security
+  published_at: 2024-06-25
+  description: |
+    CIS Critical Security Controls v8.1 — prescriptive, prioritized,
+    simplified set of best practices to bolster cybersecurity posture.
+  categories: [General]
+  mapping_schema_version: 1
+
+release:
+  tag: "2026.04.25-v1"
+  notes: |
+    Initial mapping pack. Covers six controls (3.10, 4.1, 5.2, 7.3, 7.4,
+    12.1, 18.3) using only fields exposed by rule_engine as of PR 0a-0d.
+    No sbom.* or product.* fields used.
+
+controls:
+
+  # ── 3.10 Encrypt Sensitive Data in Transit ─────────────────
+  - ref: "3.10"
+    title: Encrypt Sensitive Data in Transit
+    domain: Data Protection
+    testability: automated
+    canonical_guidance: |
+      Encrypt sensitive data in transit using algorithms specified in CIS
+      Benchmark recommendations or aligned with NIST SP 800-52r2.
+    mappings:
+      - key: cis_v8_3_10_cleartext_or_weak_crypto_any_source
+        when:
+          logic: AND
+          conditions:
+            - field: finding.cwe
+              op: contains_any
+              value: ["CWE-319", "CWE-326", "CWE-327"]
+            - field: finding.workflow_status
+              op: neq
+              value: resolved
+
+  # ── 4.1 Establish and Maintain a Secure Configuration Process ──
+  - ref: "4.1"
+    title: Establish and Maintain a Secure Configuration Process
+    domain: Secure Configuration
+    testability: partial
+    canonical_guidance: |
+      Maintain documented configuration standards. Findings against the
+      Nessus "Policy Compliance" family or EASM misconfiguration types
+      are evidence the documented standard is not enforced.
+    mappings:
+      - key: cis_v8_4_1_policy_compliance_failures_nessus
+        testability: automated
+        when:
+          logic: AND
+          conditions:
+            - field: finding.plugin_family
+              op: eq
+              value: "Policy Compliance"
+            - field: finding.workflow_status
+              op: neq
+              value: resolved
+      - key: cis_v8_4_1_easm_misconfiguration
+        testability: automated
+        when:
+          logic: AND
+          conditions:
+            - field: finding.plugin_family
+              op: eq
+              value: "EASM: HTTP"
+            - field: finding.severity
+              op: gte
+              value: 2
+
+  # ── 5.2 Use Unique Passwords ───────────────────────────────
+  - ref: "5.2"
+    title: Use Unique Passwords
+    domain: Account Management
+    testability: automated
+    canonical_guidance: |
+      Use unique passwords for all enterprise assets. Best practice is at
+      least 8-character passwords for accounts using MFA and 14-character
+      passwords without MFA.
+    mappings:
+      - key: cis_v8_5_2_weak_or_default_credentials_cwe
+        when:
+          logic: AND
+          conditions:
+            - field: finding.cwe
+              op: contains_any
+              value: ["CWE-521", "CWE-798", "CWE-522", "CWE-1391"]
+            - field: finding.workflow_status
+              op: neq
+              value: resolved
+      - key: cis_v8_5_2_kerberoastable_account_present
+        when:
+          logic: AND
+          conditions:
+            - field: inventory.kerberoastable_user
+              op: is_true
+
+  # ── 7.3 Perform Automated Operating System Patch Management ──
+  - ref: "7.3"
+    title: Perform Automated Operating System Patch Management
+    domain: Continuous Vulnerability Management
+    testability: automated
+    canonical_guidance: |
+      Perform operating system updates on enterprise assets through
+      automated patch management on a monthly, or more frequent, basis.
+    mappings:
+      - key: cis_v8_7_3_kev_breached_or_at_risk
+        when:
+          logic: AND
+          conditions:
+            - field: finding.is_kev
+              op: is_true
+            - field: finding.sla_status
+              op: in
+              value: [breached, at_risk]
+            - field: finding.workflow_status
+              op: not_in
+              value: [resolved, false_positive]
+      - key: cis_v8_7_3_unpatched_high_critical
+        when:
+          logic: AND
+          conditions:
+            - field: finding.plugin_family
+              op: eq
+              value: "Patch Management"
+            - field: finding.severity
+              op: gte
+              value: 3
+            - field: finding.workflow_status
+              op: neq
+              value: resolved
+
+  # ── 7.4 Perform Automated Application Patch Management ──────
+  - ref: "7.4"
+    title: Perform Automated Application Patch Management
+    domain: Continuous Vulnerability Management
+    testability: automated
+    canonical_guidance: |
+      Perform application updates on enterprise assets through automated
+      patch management on a monthly, or more frequent, basis.
+    mappings:
+      - key: cis_v8_7_4_app_cve_high_or_critical
+        when:
+          logic: AND
+          conditions:
+            - field: finding.has_cve
+              op: is_true
+            - field: finding.severity
+              op: gte
+              value: 3
+            - field: finding.workflow_status
+              op: not_in
+              value: [resolved, false_positive]
+
+  # ── 12.1 Ensure Network Infrastructure is Up-to-Date ────────
+  - ref: "12.1"
+    title: Ensure Network Infrastructure is Up-to-Date
+    domain: Network Infrastructure Management
+    testability: automated
+    canonical_guidance: |
+      Ensure network infrastructure is kept up-to-date. Examples include
+      router/switch/firewall firmware updates and EOL replacement.
+    mappings:
+      - key: cis_v8_12_1_network_device_security_findings_cisco
+        when:
+          logic: AND
+          conditions:
+            - field: finding.plugin_family
+              op: in
+              value:
+                - "CISCO"
+                - "Junos Local Security Checks"
+                - "Palo Alto Local Security Checks"
+                - "Firewalls"
+            - field: finding.severity
+              op: gte
+              value: 2
+            - field: finding.workflow_status
+              op: neq
+              value: resolved
+
+  # ── 18.3 Remediate Penetration Test Findings ────────────────
+  - ref: "18.3"
+    title: Remediate Penetration Test Findings
+    domain: Penetration Testing
+    testability: automated
+    canonical_guidance: |
+      Remediate penetration test findings based on the enterprise's policy
+      for remediation scope and prioritization. Treats KEV-listed
+      vulnerabilities and EASM-discovered subdomain takeovers as the
+      automated equivalent of a continuous external pen-test result.
+    mappings:
+      - key: cis_v8_18_3_kev_unresolved
+        when:
+          logic: AND
+          conditions:
+            - field: finding.is_kev
+              op: is_true
+            - field: finding.workflow_status
+              op: not_in
+              value: [resolved, false_positive, accepted_risk]
+      - key: cis_v8_18_3_subdomain_takeover_present
+        when:
+          logic: AND
+          conditions:
+            - field: finding.cwe
+              op: contains_any
+              value: ["CWE-1385"]
+            - field: finding.workflow_status
+              op: neq
+              value: resolved
+
+  # ── 16.1 Establish and Maintain a Secure Application Development Process ──
+  - ref: "16.1"
+    title: Establish and Maintain a Secure Application Development Process
+    domain: Application Software Security
+    testability: manual_only
+    canonical_guidance: |
+      Establish and maintain a secure application development process.
+      No automated mappings — covered by SDLC governance reviews. Surfaces
+      as not_applicable in the Compliance tab and requires evidence
+      attached out-of-band.
+    mappings: []

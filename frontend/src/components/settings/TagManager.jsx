@@ -10,6 +10,7 @@ import { useNavigate } from 'react-router-dom'
 import RuleBuilder from '../campaigns/RuleBuilder.jsx'
 import TagMappings from './TagMappings.jsx'
 import { getAssetDisplayName, getFindingAssetDisplay } from '../../utils/assetDisplay.js'
+import { capture } from '../../utils/analytics.js'
 
 const PALETTE = [
   '#6366f1', '#8b5cf6', '#ec4899', '#ef4444', '#f97316',
@@ -132,8 +133,14 @@ function TagForm({ tag, allTags, onSave, onCancel }) {
         color,
         description: description.trim() || null,
       }
-      if (isEdit) { await updateTag(tag.id, payload); toast.success('Tag updated') }
-      else { await createTag(payload); toast.success('Tag created') }
+      if (isEdit) {
+        await updateTag(tag.id, payload)
+        toast.success('Tag updated')
+      } else {
+        await createTag(payload)
+        capture('tag_created', { category: payload.category, has_parent: !!payload.parent_id })
+        toast.success('Tag created')
+      }
       onSave()
     } catch (e) {
       setError(e.message)

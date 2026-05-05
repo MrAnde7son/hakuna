@@ -7,6 +7,20 @@ echo "════════════════════════�
 echo "  Exposure Command Center"
 echo "═══════════════════════════════════════════════"
 
+# ── Postgres (compose) ───────────────────────────
+# Backend now requires Postgres — bring up just that service so a host-run
+# uvicorn can connect on localhost:5433.
+echo ""
+echo "→ Ensuring Postgres is up (compose service: postgres)..."
+docker compose up -d postgres >/dev/null
+until docker compose exec -T postgres pg_isready -U hakuna -d hakuna >/dev/null 2>&1; do
+  sleep 1
+done
+echo "  ✓ Postgres ready on localhost:5433"
+
+# Default DATABASE_URL for the host-run backend unless .env overrides it.
+export DATABASE_URL="${DATABASE_URL:-postgresql://hakuna:hakuna@localhost:5433/hakuna}"
+
 # ── Backend setup ────────────────────────────────
 echo ""
 echo "→ Setting up Python backend..."

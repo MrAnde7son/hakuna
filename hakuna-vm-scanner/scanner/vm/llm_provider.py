@@ -7,10 +7,10 @@ path and the env-var fallback chain for the others.
 
 Resolution order (same as backend _PROVIDER_DEFAULTS):
 
-    1. anthropic       — ANTHROPIC_API_KEY, default claude-sonnet-4-6
-    2. openai          — OPENAI_API_KEY, default gpt-4o
-    3. vertex_ai       — GOOGLE_CLOUD_PROJECT, default vertex/gemini-2.5-flash
-    4. google_gemini   — GOOGLE_API_KEY, default gemini-2.5-flash
+    1. vertex_ai       — GOOGLE_CLOUD_PROJECT, default vertex/gemini-2.5-pro
+    2. google_gemini   — GOOGLE_API_KEY, default gemini-2.5-pro
+    3. anthropic       — ANTHROPIC_API_KEY, default claude-sonnet-4-6
+    4. openai          — OPENAI_API_KEY, default gpt-4o
     5. groq            — GROQ_API_KEY, default llama-3.3-70b-versatile
     6. ollama          — base_url from integration_configs, default ollama/llama3
 
@@ -44,10 +44,10 @@ logger = logging.getLogger(__name__)
 
 
 _PROVIDER_DEFAULTS: list[tuple[str, str | None, str]] = [
+    ("vertex_ai",     "GOOGLE_CLOUD_PROJECT",  "vertex/gemini-2.5-pro"),
+    ("google_gemini", "GOOGLE_API_KEY",        "gemini-2.5-pro"),
     ("anthropic",     "ANTHROPIC_API_KEY",     "claude-sonnet-4-6"),
     ("openai",        "OPENAI_API_KEY",        "gpt-4o"),
-    ("vertex_ai",     "GOOGLE_CLOUD_PROJECT",  "vertex/gemini-2.5-flash"),
-    ("google_gemini", "GOOGLE_API_KEY",        "gemini-2.5-flash"),
     ("groq",          "GROQ_API_KEY",          "llama-3.3-70b-versatile"),
     ("ollama",        None,                    "ollama/llama3"),
 ]
@@ -99,6 +99,49 @@ async def fetch_integration_configs(conn) -> dict[str, dict]:
 
 
 # ── Pure resolver (test-friendly) ────────────────────────────────
+
+
+def resolve_specific_provider(
+    provider: str,
+    integration_configs: dict[str, dict] | None,
+    env: dict[str, str] | None = None,
+    model_override: str | None = None,
+) -> LLMProviderInfo | None:
+    """Try to resolve ONE specific provider, ignoring priority order.
+
+    Used for per-specialist model routing — authn wants Claude Sonnet
+    even when Vertex is the default, because authn is the composition
+    source and its orchestration matters more than its cost. Returns
+    None if the requested provider isn't configured; caller handles
+    the fallback to the default.
+
+    ``model_override`` pins a specific model id (e.g.
+    ``claude-sonnet-4-6``) when the provider is configured — so a
+    specialist can say "Anthropic, specifically Sonnet 4.6" instead of
+    accepting whatever default the DB row sets.
+    """
+    configs = integration_configs or {}
+    env = env if env is not None else dict(os.environ)
+
+    entry = next(
+        ((p, ev, fallback) for p, ev, fallback in _PROVIDER_DEFAULTS if p == provider),
+        None,
+    )
+    if entry is None:
+        return None
+    _, env_var, fallback_model = entry
+
+    cfg = configs.get(provider) or {}
+    if not _is_provider_configured(provider, cfg, env, env_var):
+        return None
+
+    model = model_override or cfg.get("default_model") or fallback_model
+    resolved_cfg = _build_resolved_config(provider, cfg, env)
+    logger.info(
+        "llm_provider: resolved specific %s (model=%s, source=%s)",
+        provider, model, _source_for_log(provider, cfg, env, env_var),
+    )
+    return LLMProviderInfo(provider=provider, model=model, config=resolved_cfg)
 
 
 def resolve_provider(
@@ -250,12 +293,34 @@ def _adapter_cache_key(info: LLMProviderInfo) -> tuple:
     return (info.provider, info.model, api_key[:12])
 
 
+def _is_claude_model(model: str) -> bool:
+    """Claude model IDs look like ``claude-sonnet-4-6`` (direct) or
+    ``claude-sonnet-4-5@20250929`` (Vertex-versioned). A ``vertex/``
+    prefix is sometimes applied by upstream config — strip it first.
+
+    Used inside ``build_adapter`` to route the vertex_ai provider to
+    the AnthropicVertex SDK when the model is Claude-shaped, while
+    keeping Gemini models on google-genai. Lets one provider serve
+    both model families with transparent dispatch.
+    """
+    m = (model or "").lower()
+    if m.startswith("vertex/"):
+        m = m[len("vertex/"):]
+    return m.startswith("claude-")
+
+
 def build_adapter(info: LLMProviderInfo) -> LLMAdapter:
     """Construct (or reuse) the adapter for a resolved provider.
 
     SDK imports happen inside the adapter constructor so the scanner
     process doesn't need every LLM SDK installed — only the ones for
     the provider it actually resolves to.
+
+    Special case: ``vertex_ai`` + a Claude model id routes to the
+    AnthropicVertex SDK instead of google-genai. That's the
+    "GCP-billed Claude" path — same ADC, same project, different
+    model family. Model-based dispatch avoids creating a fourth
+    provider namespace for what is logically still "Vertex".
     """
     key = _adapter_cache_key(info)
     cached = _adapter_cache.get(key)
@@ -267,6 +332,8 @@ def build_adapter(info: LLMProviderInfo) -> LLMAdapter:
         adapter: LLMAdapter = AnthropicAdapter(info)
     elif p in ("openai", "groq", "ollama"):
         adapter = OpenAIAdapter(info)
+    elif p == "vertex_ai" and _is_claude_model(info.model):
+        adapter = AnthropicVertexAdapter(info)
     elif p in ("vertex_ai", "google_gemini"):
         adapter = GoogleGenAIAdapter(info)
     else:
@@ -292,6 +359,79 @@ class AnthropicAdapter(LLMAdapter):
             raise LLMProviderError("anthropic: api_key not provided")
         self._client = anthropic.Anthropic(api_key=api_key)
         self._model = info.model
+
+    def turn(self, *, system, messages, tools, max_tokens):
+        try:
+            resp = self._client.messages.create(
+                model=self._model,
+                max_tokens=max_tokens,
+                system=system,
+                tools=tools,
+                messages=messages,
+            )
+        except Exception as e:
+            raise LLMProviderError(str(e)[:300])
+
+        blocks: list[dict] = []
+        for b in resp.content:
+            btype = getattr(b, "type", None)
+            if btype == "text":
+                blocks.append({"type": "text", "text": getattr(b, "text", "")})
+            elif btype == "tool_use":
+                blocks.append({
+                    "type": "tool_use",
+                    "id": getattr(b, "id", ""),
+                    "name": getattr(b, "name", ""),
+                    "input": getattr(b, "input", {}) or {},
+                })
+        return {"content": blocks, "stop_reason": getattr(resp, "stop_reason", "")}
+
+
+# ── Anthropic-on-Vertex adapter ──────────────────────────────────
+# Same wire protocol as direct Anthropic, different authentication
+# path: uses GCP Application Default Credentials via the anthropic
+# SDK's ``AnthropicVertex`` client. Billed through the GCP project
+# that owns the ADC token, not an Anthropic account. Claude on
+# Vertex is only served in specific regions (us-east5,
+# europe-west1, asia-southeast1, and recently us-central1 for some
+# models); the Gemini region in ``info.config['location']`` may not
+# have Claude enabled, so this adapter honours a separate
+# ``claude_location`` / ``AGENT_ANTHROPIC_VERTEX_REGION`` override
+# before falling back to the Gemini location.
+
+
+class AnthropicVertexAdapter(LLMAdapter):
+    provider_name = "vertex_ai_claude"
+
+    def __init__(self, info: LLMProviderInfo):
+        try:
+            from anthropic import AnthropicVertex  # type: ignore
+        except ImportError as e:
+            raise LLMProviderError(f"anthropic SDK not installed: {e}")
+
+        project = info.config.get("project_id") or ""
+        if not project:
+            raise LLMProviderError("vertex_ai (claude): project_id not provided")
+
+        # Region resolution — prefer explicit overrides, then default
+        # to "global". The global endpoint is Anthropic-on-Vertex's
+        # recommended region: Google routes to whichever backend has
+        # capacity, eliminating the per-region-deployment guesswork.
+        # Do NOT fall through to the Gemini location — Sonnet isn't
+        # deployed in the same regions as Gemini (e.g. us-central1
+        # serves Gemini but not Claude as of 2026-04), so inheriting
+        # the Gemini location would produce 400s.
+        region = (
+            info.config.get("claude_location")
+            or os.environ.get("AGENT_ANTHROPIC_VERTEX_REGION")
+            or "global"
+        )
+
+        self._client = AnthropicVertex(project_id=project, region=region)
+        self._model = info.model
+        if self._model.startswith("vertex/"):
+            self._model = self._model[len("vertex/"):]
+        self._region = region
 
     def turn(self, *, system, messages, tools, max_tokens):
         try:

@@ -9,11 +9,28 @@ Hakuna ships with a dedicated active scanner container that runs alongside the b
 - **Nuclei worker** — Signature and DAST coverage using the full community template set (4,800+) plus custom categories for OT (Siemens PLCs), IoT (Hikvision cameras), and AI surfaces (Ollama, LangChain, vector DBs)
 - **Template routing** — Templates are dispatched based on detected CPEs, tech stack fingerprints, and open ports. Port-based gating blocks irrelevant templates (e.g., web templates never hit a database-only host)
 - **Schemathesis worker** — Property-based fuzzing for OpenAPI and GraphQL schemas discovered during EASM. Catches 5xx crashes, response-schema violations, and content-type drift
-- **Specialist LLM agents** — Opt-in via `enable_agents: true` on scan creation. Five specialists (injection, XSS, SSRF, authentication, authorization) each get a 60-second/10-iteration budget per asset with a shared tool registry (`http_request`, `check_pattern`, `emit_finding`)
+- **Specialist LLM agents** — Opt-in via `enable_agents: true` on scan creation. Specialists cover injection, XSS, SSRF, authentication, authorization, plus LDAP, SMB, SNMP, and Linux host missions with dedicated tool palettes. Each gets a bounded time/iteration budget per asset
+- **Agent scheduler** — Replaces the single-pass specialist loop with a frontier scheduler that re-evaluates which agents are applicable after each one commits new facts. The authz specialist automatically re-runs once authn discovers credentials, enabling exploit-composition chains without hand-wired ordering
+- **Typed capabilities** — Specialists share structured facts (leaked credentials, JWTs, SSRF primitives, internal hosts, WAF presence, CSRF-weak endpoints) with confidence, scope, risk level, and provenance. Replaces opaque prose hints and is the foundation for reliable multi-step exploitation
+- **Protocol selectors** — Launch LDAP, SMB, SNMP, or SSH audits directly from the scan UI or `/api/vm/scan` payload
 - **Multi-provider LLM** — Specialists use the same provider chain as backend agents (Anthropic → OpenAI → Vertex AI → Gemini → Groq → Ollama) and gracefully skip when no key is configured
 - **Health endpoint** — `GET /api/vm/health` confirms the scanner container is reachable
 
 Trigger a scan from **Scan Management → New Scan** or via `POST /api/vm/scan`. Refresh or rescan via `/api/vm/refresh/{id}` and `/api/vm/rescan/{id}`.
+
+### Target Expansion
+
+VM scan targets accept CIDR ranges, URLs, and hostnames together. Type `192.168.1.0/24` into the targets box and Hakuna fans out a scan job per host. URLs and hostnames pass through untouched. A 1,024-host safety cap prevents accidental typos like `10.0.0.0/8` from queueing millions of tasks — if you really need that breadth, break it into narrower ranges.
+
+### Rescan Swap
+
+Rescans are atomic. The previous scan's findings and assets stay visible until the new run succeeds:
+
+- **In-progress isolation** — Each rescan gets a fresh `scan_run_id`. Mid-rescan queries are scoped to the current run only, so the UI never shows duplicated or half-ingested results
+- **Fail-safe** — If a rescan fails or is cancelled, the last known-good run is restored as current with no data loss
+- **Swap on success** — On a successful rescan, superseded findings are swapped out in a single commit and their Jira/ServiceNow tickets auto-resolve
+
+Trigger via **Scan Management → Rescan** or `POST /api/vm/rescan/{id}`.
 
 ### Authenticated Scanning (Auth Profiles)
 
@@ -217,6 +234,28 @@ EASM discovers your external-facing attack surface:
 5. **Synthetic import** — Results are imported as synthetic scans for correlation with internal data
 
 Setup is triggered automatically on registration with a corporate email, or manually via the scan management page.
+
+### HTTP Header Audit
+
+Every HTTPS response captured during EASM is graded against OWASP Secure Headers guidance:
+
+- **Missing or weak security headers** — HSTS (including `includeSubDomains` and `preload`), Content-Security-Policy, X-Frame-Options, Referrer-Policy, Permissions-Policy, X-Content-Type-Options
+- **Cookie hygiene** — Every `Set-Cookie` is inspected for missing `Secure`, `HttpOnly`, and `SameSite` attributes
+- **Severity-tagged findings** — Each issue surfaces as a finding on the asset with remediation guidance and reference links
+
+No configuration required — runs automatically on every external HTTP probe.
+
+### TLS Deep Audit
+
+Goes beyond the negotiated handshake to audit what the server *will* accept:
+
+- **Protocol and cipher enumeration** — Probes every TLS version and cipher suite; flags deprecated protocols (SSLv2/3, TLS 1.0/1.1) and weak ciphers (RC4, 3DES, NULL, EXPORT)
+- **Certificate chain validation** — Validates the full chain against a trust store and flags untrusted, self-signed, or expired intermediates
+- **OCSP revocation** — Checks revocation status against the issuing CA
+- **CAA / issuer cross-check** — Compares the cert's actual issuer against DNS CAA records and flags mismatches
+- **Hostname and SAN validation** — Confirms the certificate matches the audited hostname
+
+Findings are grouped per host and per-port so a misconfigured management interface on port 8443 shows up distinctly from the public 443 endpoint.
 
 ### Custom Fields
 
@@ -680,7 +719,7 @@ docker run -d --restart=unless-stopped \
   --name hakuna-relay-agent \
   -e HAKUNA_AGENT_TOKEN=<your-agent-token> \
   -e HAKUNA_CLOUD_URL=wss://<your-hakuna-host>/ws/relay \
-  hakuna/relay-agent:latest
+  me-west1-docker.pkg.dev/hakuna-prod-2026/hakuna-public/relay-agent:latest
 ```
 
 For agent-local credentials, add product-specific env vars (e.g., `JIRA_BASE_URL`, `JIRA_USERNAME`, `JIRA_PASSWORD`).

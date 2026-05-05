@@ -69,6 +69,22 @@ resource "google_secret_manager_secret_version" "sentry_dsn" {
   secret_data = var.sentry_dsn != "" ? var.sentry_dsn : "disabled"
 }
 
+# PostHog project API key — shared by backend + frontend. Public-by-design
+# (phc_... keys are meant to ship in browser bundles), but stored in Secret
+# Manager so rotation doesn't require a Terraform re-apply and deploy.sh
+# can pull it for the frontend build.
+resource "google_secret_manager_secret" "posthog_api_key" {
+  secret_id = "hakuna-posthog-api-key"
+  replication {
+    auto {}
+  }
+}
+
+resource "google_secret_manager_secret_version" "posthog_api_key" {
+  secret      = google_secret_manager_secret.posthog_api_key.id
+  secret_data = var.posthog_api_key != "" ? var.posthog_api_key : "disabled"
+}
+
 # AES-256 key for encrypting integration credentials (e.g. VulnCheck tokens)
 # MUST be stable — changing it invalidates all stored credentials and requires re-entering them.
 resource "google_secret_manager_secret" "integration_secret_key" {
@@ -81,6 +97,21 @@ resource "google_secret_manager_secret" "integration_secret_key" {
 resource "google_secret_manager_secret_version" "integration_secret_key" {
   secret      = google_secret_manager_secret.integration_secret_key.id
   secret_data = var.integration_secret_key
+}
+
+# Internal shared secret for /internal/relay/dispatch — the audit-worker uses
+# it in X-Internal-Token to call back into the API for relay dispatch (the API
+# owns the websocket; the worker can't reach agents directly).
+resource "google_secret_manager_secret" "internal_shared_secret" {
+  secret_id = "hakuna-internal-shared-secret"
+  replication {
+    auto {}
+  }
+}
+
+resource "google_secret_manager_secret_version" "internal_shared_secret" {
+  secret      = google_secret_manager_secret.internal_shared_secret.id
+  secret_data = var.internal_shared_secret
 }
 
 # ── Stripe billing secrets ────────────────────────────────────────────────────

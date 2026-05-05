@@ -1,11 +1,28 @@
-"""Relay broker — manages WebSocket connections to on-prem relay agents and routes tasks."""
+"""Relay broker — manages WebSocket connections to on-prem relay agents and routes tasks.
+
+Two flavors, same interface:
+
+* ``RelayBroker``        — in-process, owns the websocket. Used by the backend
+                           (uvicorn) where the ws endpoint runs.
+* ``RemoteRelayBroker``  — HTTP stub that forwards to the backend's
+                           ``/internal/relay/dispatch`` route. Used by
+                           out-of-process callers (audit-worker Celery
+                           processes) that can't hold the ws.
+
+``get_relay_broker()`` picks the right one based on ``HAKUNA_PROCESS_ROLE``.
+Call sites (``agents/tools/*_tools.py``, ``services/integrations.py``) never
+know which they got.
+"""
 
 import asyncio
+import json
 import logging
+import os
 import uuid
 from datetime import datetime
-from typing import Optional
+from typing import AsyncIterator, Optional
 
+import httpx
 from fastapi import WebSocket
 
 logger = logging.getLogger(__name__)
@@ -37,8 +54,23 @@ class RelayBroker:
         self._agent_info[agent_id] = info or {}
         logger.info("Relay agent %s connected", agent_id)
 
-    async def unregister(self, agent_id: str):
-        """Unregister a disconnected agent and fail any pending tasks."""
+    async def unregister(self, agent_id: str, ws: Optional[WebSocket] = None):
+        """Unregister a disconnected agent and fail any pending tasks.
+
+        ``ws`` (when provided) scopes the cleanup to that specific socket.
+        Without it, a stale handler whose connection was already superseded
+        by a fresh one would pop the live ws out of the map and silently
+        break every subsequent dispatch — that's the "relay agent ... is
+        not connected" / "Cannot call send once a close message has been
+        sent" race we kept seeing on reconnect.
+        """
+        if ws is not None and self._connections.get(agent_id) is not ws:
+            # A newer connection has already taken this slot. Don't clobber it.
+            logger.info(
+                "Relay agent %s: skipping unregister of stale socket (newer connection is active)",
+                agent_id,
+            )
+            return
         self._connections.pop(agent_id, None)
         self._agent_info.pop(agent_id, None)
 
@@ -94,6 +126,21 @@ class RelayBroker:
         except asyncio.TimeoutError:
             self._pending.pop(task_id, None)
             raise TimeoutError(f"Relay agent {agent_id} did not respond within {TASK_TIMEOUT}s")
+        except RuntimeError as e:
+            # Starlette raises RuntimeError("Cannot call \"send\" once a close
+            # message has been sent.") when the ws closed under us. Surface as
+            # a clean ConnectionError so tools handle it the same as "no
+            # connection at all". Also drop the dead ref so the next caller
+            # sees is_connected() == False instead of a stale entry.
+            self._pending.pop(task_id, None)
+            if "close message" in str(e) or "WebSocket is not connected" in str(e):
+                if self._connections.get(agent_id) is ws:
+                    self._connections.pop(agent_id, None)
+                    self._agent_info.pop(agent_id, None)
+                raise ConnectionError(
+                    f"Relay agent {agent_id} disconnected mid-task"
+                ) from e
+            raise
         except Exception:
             self._pending.pop(task_id, None)
             raise
@@ -192,13 +239,149 @@ class RelayBroker:
             await ws.send_json({"type": "ping"})
 
 
-# ── Singleton ──
-
-_broker: Optional[RelayBroker] = None
+# ── Remote broker (for out-of-process callers) ──
 
 
-def get_relay_broker() -> RelayBroker:
-    global _broker
-    if _broker is None:
-        _broker = RelayBroker()
-    return _broker
+class RemoteRelayBroker:
+    """HTTP-backed stub that forwards dispatch requests to the backend.
+
+    Mirrors the subset of ``RelayBroker`` that tools actually call
+    (``is_connected``, ``send_task``, ``send_streaming_task``). The backend's
+    ``/internal/relay/dispatch`` route runs the real ``RelayBroker.send_task``
+    and returns the result, so errors and semantics match what in-process
+    callers see. Exceptions are re-raised with the same types
+    (``ConnectionError``, ``TimeoutError``) so tool error-handling doesn't
+    need two code paths.
+    """
+
+    def __init__(self, base_url: str, token: str):
+        if not base_url:
+            raise RuntimeError("RemoteRelayBroker requires HAKUNA_BACKEND_URL")
+        if not token:
+            raise RuntimeError("RemoteRelayBroker requires INTERNAL_SHARED_SECRET")
+        self._base = base_url.rstrip("/")
+        self._headers = {"X-Internal-Token": token}
+        # Per-call timeout: task budget + slack so the backend's HTTPException(504)
+        # beats our own httpx.ReadTimeout.
+        self._timeout = TASK_TIMEOUT + 10
+        # Deliberately no long-lived AsyncClient: every tool dispatch wraps
+        # `send_task` in a fresh `asyncio.run(...)` (see agents/tools/*._run_async),
+        # and a client bound to an earlier event loop is unusable in the next one.
+        # A short-lived client per call is fine — the request count is low and
+        # localhost HTTP doesn't benefit meaningfully from connection pooling.
+
+    # `is_connected` is called synchronously by every tool handler as a
+    # pre-flight, so make it cheap in the happy path and *fail open* when it
+    # can't get a clean answer. The reason: `send_task` already surfaces a
+    # ConnectionError on a dead relay (via the backend's 502), so a false
+    # "connected=true" here at worst defers the error by one HTTP call. A
+    # false "connected=false" — which was happening when the backend was
+    # slow to answer the 3s probe — short-circuits perfectly good tool runs.
+    # Treat the probe as best-effort.
+    def is_connected(self, agent_id: str) -> bool:
+        try:
+            r = httpx.get(
+                f"{self._base}/internal/relay/{agent_id}/presence",
+                headers=self._headers, timeout=10,
+            )
+            if r.status_code == 200:
+                return bool(r.json().get("connected", False))
+            # 401 / 503 / etc. are configuration errors, not connectivity;
+            # assume the relay IS up and let send_task surface the real issue.
+            logger.warning(
+                "RemoteRelayBroker presence probe returned %s; assuming connected",
+                r.status_code,
+            )
+            return True
+        except httpx.HTTPError as e:
+            logger.warning(
+                "RemoteRelayBroker presence probe failed: %s; assuming connected",
+                e,
+            )
+            return True
+
+    async def send_task(
+        self, agent_id: str, method: str, config: dict,
+        credentials: Optional[dict] = None, params: Optional[dict] = None,
+        payload: Optional[dict] = None,
+    ) -> dict:
+        body = {
+            "agent_id": agent_id, "method": method, "config": config,
+            "credentials": credentials, "params": params, "payload": payload,
+        }
+        try:
+            async with httpx.AsyncClient(timeout=self._timeout, headers=self._headers) as c:
+                r = await c.post(f"{self._base}/internal/relay/dispatch", json=body)
+        except httpx.ConnectError as e:
+            raise ConnectionError(f"backend unreachable: {e}") from e
+        except httpx.ReadTimeout as e:
+            raise TimeoutError(f"backend read timeout: {e}") from e
+
+        if r.status_code == 502:
+            # Backend mapped broker ConnectionError → 502; re-raise as the
+            # type tools already know how to handle.
+            raise ConnectionError((r.json() or {}).get("detail", "relay not connected"))
+        if r.status_code == 504:
+            raise TimeoutError((r.json() or {}).get("detail", "relay timeout"))
+        if r.status_code == 422:
+            # Agent task_error — preserve the original message so tools see
+            # the same RuntimeError a local broker would raise.
+            raise RuntimeError((r.json() or {}).get("detail", "relay task error"))
+        if r.status_code >= 400:
+            detail = (r.json() or {}).get("detail", r.text[:200])
+            raise RuntimeError(f"relay dispatch HTTP {r.status_code}: {detail}")
+        return (r.json() or {}).get("result", {})
+
+    async def send_streaming_task(
+        self, agent_id: str, config: dict,
+        credentials: Optional[dict] = None, params: Optional[dict] = None,
+    ) -> AsyncIterator[list]:
+        # Streaming (fetch_all) is not yet routed through the internal bridge.
+        # Integration-builder syncs — the only caller today — run in-process in
+        # the backend and hit `RelayBroker.send_streaming_task` directly.
+        # Wire this endpoint when a worker-side caller actually needs it.
+        raise NotImplementedError(
+            "RemoteRelayBroker.send_streaming_task: workers don't stream yet. "
+            "Add the SSE route + client if/when a worker-side integration sync appears."
+        )
+
+
+
+# ── Singleton (role-aware) ──
+
+_local: Optional[RelayBroker] = None
+_remote: Optional[RemoteRelayBroker] = None
+
+
+def _role() -> str:
+    return os.environ.get("HAKUNA_PROCESS_ROLE", "api").lower()
+
+
+def get_relay_broker():
+    """Return the right broker flavor for the current process.
+
+    - ``HAKUNA_PROCESS_ROLE=worker`` (audit-worker / Celery) → RemoteRelayBroker
+      (HTTP stub pointing at the backend).
+    - Anything else (backend uvicorn, tests, CLI scripts) → in-process
+      ``RelayBroker``.
+
+    Callers never need to care which they got — the interface matches on the
+    methods tools actually use.
+    """
+    global _local, _remote
+    if _role() == "worker":
+        if _remote is None:
+            from core.auth import INTERNAL_SHARED_SECRET
+            _remote = RemoteRelayBroker(
+                base_url=os.environ.get("HAKUNA_BACKEND_URL", "http://backend:8000"),
+                token=INTERNAL_SHARED_SECRET,
+            )
+        return _remote
+    if _local is None:
+        _local = RelayBroker()
+    return _local
+
+
+# Back-compat alias: earlier code expected `get_relay_broker` to be typed
+# `-> RelayBroker`. Now it returns either flavor. Keep the old name working.
+_broker = None

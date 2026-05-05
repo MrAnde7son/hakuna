@@ -1,0 +1,44 @@
+{
+  "id": "aws_sagemaker_endpoint_configs",
+  "name": "AWS SageMaker — Endpoint Configs",
+  "description": "List endpoint configurations (instance types, model variants, VPC config). Used by the managed_ai mission to drill into a specific endpoint's network scope and detect endpoints without VPC isolation.",
+  "category": "AI Governance",
+  "logo": "/logos/vendors/aws.svg",
+  "direction": "pull",
+  "entity": "audit_only",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://api.sagemaker.{{credentials.region}}.amazonaws.com",
+    "method": "POST",
+    "path": "/",
+    "headers": {
+      "Content-Type": "application/x-amz-json-1.1",
+      "X-Amz-Target": "SageMaker.ListEndpointConfigs"
+    },
+    "body": {"MaxResults": 100},
+    "query_params": {},
+    "auth_strategy": "aws_sigv4",
+    "aws_service": "sagemaker",
+    "pagination": {
+      "strategy": "cursor",
+      "cursor_field": "NextToken",
+      "cursor_param": "NextToken",
+      "page_size": 100,
+      "page_size_param": "MaxResults"
+    }
+  },
+  "records_path": "EndpointConfigs",
+  "credential_acquisition": {
+    "pattern": "shared_credential",
+    "shared_with": "aws_iam_users"
+  },
+  "default_field_map": [],
+  "dedup_key": ["source_system", "source_id"],
+  "params_schema": {
+    "region": {
+      "type": "string",
+      "required": true,
+      "default": "us-east-1"
+    }
+  }
+}

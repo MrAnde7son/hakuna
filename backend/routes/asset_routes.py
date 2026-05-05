@@ -1,6 +1,7 @@
 """
 Asset endpoints — CRUD, relationships, graph, risk breakdown, sources.
 """
+import re
 from typing import Optional, List
 from datetime import datetime
 
@@ -11,10 +12,12 @@ from sqlalchemy import func, desc, or_, cast, Text
 from core.database import get_db
 from core.auth import get_current_user, get_accessible_org_ids, apply_scan_org_filter
 from core.builtin_team_roles import user_owner_scopes, apply_owner_scope_to_assets
+from core.time_utils import iso_utc
 import core.risk_config as risk_engine
 import services.dedup as dedup_engine
 import services.tags as tag_engine
 from services.asset_classifier import _is_private_ip
+from services.asset_properties import serialize_schema
 from models.models import (
     Asset, Finding, Scan, AssetRelationship, AssetObservation, FindingObservation,
     InventoryComputer, InventoryService, InventoryDatabaseInstance,
@@ -27,21 +30,14 @@ router = APIRouter()
 # ─── Helper: sort ────────────────────────────────────────────────────────────
 
 def _json_text_at(col, key: str):
-    """Return a SQL expression that extracts a JSON string value at `key` from a JSON column.
-
-    Portable: uses json_extract on SQLite and the ->> operator on Postgres.
-    """
-    from core.database import engine as _engine
-    if _engine.dialect.name == "postgresql":
-        return col.op("->>")(key)
-    return func.json_extract(col, f"$.{key}")
+    """Return a SQL expression that extracts a JSON string value at `key`."""
+    return col.op("->>")(key)
 
 
 def _apply_sort(q, model, sort_by: str, order: str, default_attr):
     """Apply ORDER BY to a query, falling back to default_attr if sort_by is invalid.
 
-    Supports `custom_fields.<key>` sort via the JSON column — works on both
-    SQLite (json_extract) and Postgres (->> operator).
+    Supports `custom_fields.<key>` sort via the JSON column.
     """
     col = None
     if sort_by and sort_by.startswith("custom_fields.") and hasattr(model, "custom_fields"):
@@ -319,11 +315,11 @@ def _asset_to_dict(a: Asset) -> dict:
         "inferred_team": a.inferred_team,
         "owner_confidence": a.owner_confidence or "low",
         # Lifecycle tracking
-        "first_seen": a.first_seen.isoformat() if a.first_seen else None,
-        "last_seen": a.last_seen.isoformat() if a.last_seen else None,
+        "first_seen": iso_utc(a.first_seen),
+        "last_seen": iso_utc(a.last_seen),
         "times_seen": a.times_seen or 1,
         "asset_status": a.asset_status or "active",
-        "stale_since": a.stale_since.isoformat() if a.stale_since else None,
+        "stale_since": iso_utc(a.stale_since),
         # Manual ownership (if set)
         "ownership": {
             "owner_name": own.owner_name,
@@ -372,6 +368,9 @@ def list_assets(
     expand_children: bool = False,
     asset_type: Optional[str] = None,
     credentialed: Optional[bool] = None,
+    has_port: Optional[int] = None,
+    tech: Optional[str] = None,
+    dns_record_type: Optional[str] = None,
     sort_by: str = "risk_score",
     order: str = "desc",
     page: int = 1,
@@ -438,6 +437,21 @@ def list_assets(
         q = q.filter(cast(Asset.source_systems, Text).ilike(f'%"{source}"%'))
     if min_sources is not None:
         q = q.filter(func.json_array_length(Asset.source_systems) >= min_sources)
+    if has_port is not None:
+        # \b{port}\b inside the open_ports array — avoids 80 matching 8080.
+        q = q.filter(cast(Asset.easm_data, Text).op("~")(
+            rf'"open_ports"\s*:\s*\[[^\]]*\y{has_port}\y[^\]]*\]'
+        ))
+    if tech:
+        tech_re = re.escape(tech)
+        q = q.filter(cast(Asset.easm_data, Text).op("~*")(
+            rf'"tech_stack"\s*:\s*\[[^\]]*{tech_re}[^\]]*\]'
+        ))
+    if dns_record_type:
+        dns_re = re.escape(dns_record_type)
+        q = q.filter(cast(Asset.easm_data, Text).op("~*")(
+            rf'"dns_records"\s*:\s*\{{[^}}]*"{dns_re}"\s*:'
+        ))
     # Custom field filters: ?cf_<key>=<value>
     q = _apply_custom_field_filters(q, Asset, request)
     if tags:
@@ -494,6 +508,20 @@ def list_asset_types(
     return {"types": types}
 
 
+@router.get("/api/assets/schema")
+def get_asset_schema(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    """Return the property registry that drives column picker, filters, and rule builder.
+
+    Static `Asset` columns + per-org `CustomFieldDefinition` entries are
+    merged into a single list, grouped, with operator hints per type.
+    """
+    return serialize_schema(db, list(org_ids or []))
+
+
 @router.get("/api/assets/{asset_id}")
 def get_asset(asset_id: int, db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
     query = db.query(Asset).join(Scan, Asset.scan_id == Scan.id).filter(Asset.id == asset_id)
@@ -522,8 +550,8 @@ def get_asset_sources(asset_id: int, db: Session = Depends(get_db), org_ids: Opt
             "id": obs.id,
             "source_system": obs.source_system,
             "raw_fields": obs.raw_fields or {},
-            "first_seen": obs.first_seen.isoformat() if obs.first_seen else None,
-            "last_seen": obs.last_seen.isoformat() if obs.last_seen else None,
+            "first_seen": iso_utc(obs.first_seen),
+            "last_seen": iso_utc(obs.last_seen),
             "times_seen": obs.times_seen,
         }
         for obs in observations
@@ -561,7 +589,7 @@ def get_asset_relationships(asset_id: int, db: Session = Depends(get_db), org_id
             "id": rel.id, "direction": "outbound", "relationship_type": rel.relationship_type,
             "confidence": rel.confidence, "source_detail": rel.source_detail or {},
             "related_asset": _rel_asset_summary(target) if target else None,
-            "created_at": rel.created_at.isoformat() if rel.created_at else None,
+            "created_at": iso_utc(rel.created_at),
         })
     for rel in inbound:
         source = asset_map.get(rel.source_asset_id)
@@ -569,7 +597,7 @@ def get_asset_relationships(asset_id: int, db: Session = Depends(get_db), org_id
             "id": rel.id, "direction": "inbound", "relationship_type": rel.relationship_type,
             "confidence": rel.confidence, "source_detail": rel.source_detail or {},
             "related_asset": _rel_asset_summary(source) if source else None,
-            "created_at": rel.created_at.isoformat() if rel.created_at else None,
+            "created_at": iso_utc(rel.created_at),
         })
     return results
 
@@ -613,7 +641,7 @@ def get_asset_siem_events(
         "events": [
             {
                 "id": ev.id,
-                "event_time": ev.event_time.isoformat() if ev.event_time else None,
+                "event_time": iso_utc(ev.event_time),
                 "source_system": ev.source_system,
                 "event_type": ev.event_type,
                 "severity": ev.severity,
@@ -660,7 +688,7 @@ def get_asset_alerts(
             "severity": a.severity,
             "status": a.status,
             "event_count": a.event_count,
-            "fired_at": a.fired_at.isoformat() if a.fired_at else None,
+            "fired_at": iso_utc(a.fired_at),
             "entity_type": a.entity_type,
             "entity_value": a.entity_value,
             "suppressed": a.suppressed,
@@ -870,8 +898,8 @@ def get_finding_sources(finding_id: int, db: Session = Depends(get_db), org_ids:
             "id": obs.id,
             "source_system": obs.source_system,
             "raw_fields": obs.raw_fields or {},
-            "first_seen": obs.first_seen.isoformat() if obs.first_seen else None,
-            "last_seen": obs.last_seen.isoformat() if obs.last_seen else None,
+            "first_seen": iso_utc(obs.first_seen),
+            "last_seen": iso_utc(obs.last_seen),
             "times_seen": obs.times_seen,
         }
         for obs in observations

@@ -3,10 +3,11 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import {
   Network, RefreshCw, ChevronRight, ChevronLeft, Sparkles, ShieldCheck,
-  LogIn, Target, HelpCircle, X as XIcon, Search as SearchIcon,
+  LogIn, Target, HelpCircle, X as XIcon, Search as SearchIcon, Link2,
 } from 'lucide-react'
 import {
   getJobStatus, getOrgContext, listAttackPaths, runCorrelation,
+  listPendingApprovals, approvePendingApproval, rejectPendingApproval,
 } from '../../api.js'
 import { useScan } from '../../App.jsx'
 import AttackPathGraph from './AttackPathGraph.jsx'
@@ -56,6 +57,7 @@ function normalizePath(p) {
     steps: safeJson(p.steps) || [],
     score_breakdown: safeJson(p.score_breakdown),
     recommended_mitigations: safeJson(p.recommended_mitigations) || [],
+    validated_chain_finding_id: p.validated_chain_finding_id ?? null,
   }
 }
 
@@ -356,6 +358,12 @@ function AttackPathCard({ path, onClick }) {
             )}
             <Pill label={`${path.chain_length} step${path.chain_length === 1 ? '' : 's'}`} color="var(--text-secondary)" />
             {path.narrative && <Pill label="Narrated" color="#7c3aed" />}
+            {path.validated_chain_finding_id != null && (
+              <span title="Validated end-to-end by the Chain Coordinator" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                <Link2 size={11} color="#0d9488" />
+                <Pill label="Chain" color="#0d9488" />
+              </span>
+            )}
           </div>
           <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
             {path.created_at ? new Date(path.created_at).toLocaleString() : ''}
@@ -589,6 +597,144 @@ const SORT_OPTIONS = [
   { value: 'chain_length', label: 'Chain length' },
   { value: 'created_at', label: 'Created' },
 ]
+
+// Coordinator pending-approvals queue. Approval-gated patterns
+// (currently only `cred_found`) emit hypotheses that the operator
+// must explicitly approve before the chain coordinator dispatches the
+// follow-up audit. Without this surface those hypotheses would be
+// silently dropped at dispatch time.
+function PendingApprovalsPanel() {
+  const { t } = useTranslation()
+  const [items, setItems] = useState(null)
+  const [error, setError] = useState(null)
+  const [busyId, setBusyId] = useState(null)
+  const [collapsed, setCollapsed] = useState(false)
+
+  async function reload() {
+    try {
+      const res = await listPendingApprovals('pending')
+      setItems(res?.items || [])
+      setError(null)
+    } catch (e) {
+      setError(e?.message || 'Failed to load')
+    }
+  }
+
+  useEffect(() => { reload() }, [])
+
+  async function decide(id, action) {
+    setBusyId(id)
+    try {
+      if (action === 'approve') await approvePendingApproval(id)
+      else await rejectPendingApproval(id)
+      await reload()
+    } catch (e) {
+      setError(e?.message || `${action} failed`)
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  // Hide the whole panel when there's nothing to act on — keeps the
+  // page calm in the common case (no `cred_found` enumerations).
+  if (items != null && items.length === 0 && !error) return null
+
+  return (
+    <div style={{
+      marginBottom: 12, padding: '10px 14px',
+      background: '#f59e0b15', border: '1px solid #f59e0b50',
+      borderRadius: 8, fontSize: 13,
+    }}>
+      <div style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        cursor: 'pointer',
+      }} onClick={() => setCollapsed(c => !c)}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <ShieldCheck size={14} color="#b45309" />
+          <strong style={{ color: 'var(--text-primary)' }}>
+            {t('attackPaths.pendingApprovalsTitle', 'Ready to validate')}
+          </strong>
+          {items != null && (
+            <Pill label={String(items.length)} color="#b45309" />
+          )}
+          <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>
+            {t(
+              'attackPaths.pendingApprovalsHint',
+              'Coordinator hypotheses awaiting explicit approval before dispatch.',
+            )}
+          </span>
+        </div>
+        <ChevronRight
+          size={14}
+          style={{ transform: collapsed ? 'none' : 'rotate(90deg)', transition: 'transform 0.15s' }}
+        />
+      </div>
+
+      {!collapsed && (
+        <div style={{ marginTop: 8 }}>
+          {error && (
+            <div style={{ color: '#dc2626', marginBottom: 6 }}>{error}</div>
+          )}
+          {items == null ? (
+            <div style={{ color: 'var(--text-muted)' }}>Loading…</div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {items.map(item => (
+                <div key={item.id} style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                  gap: 10, padding: '6px 8px', background: 'var(--bg-secondary)',
+                  border: '1px solid var(--border)', borderRadius: 6,
+                }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                      <Pill label={item.pattern} color="#b45309" />
+                      <span style={{ color: 'var(--text-primary)', fontWeight: 500 }}>
+                        {item.asset_label || `asset#${item.asset_id || '?'}`}
+                      </span>
+                      <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>
+                        → {item.protocol} / {item.mission}
+                      </span>
+                      <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>
+                        score {item.score?.toFixed?.(2) ?? item.score}
+                      </span>
+                    </div>
+                    {item.rationale && (
+                      <div style={{
+                        color: 'var(--text-secondary)', fontSize: 12,
+                        marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis',
+                      }}>
+                        {item.rationale}
+                      </div>
+                    )}
+                  </div>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      disabled={busyId === item.id}
+                      onClick={() => decide(item.id, 'approve')}
+                    >
+                      {t('attackPaths.approve', 'Approve')}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      disabled={busyId === item.id}
+                      onClick={() => decide(item.id, 'reject')}
+                    >
+                      {t('attackPaths.reject', 'Reject')}
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 
 export default function AttackPaths() {
   const { t } = useTranslation()
@@ -841,6 +987,8 @@ export default function AttackPaths() {
           </span>
         </div>
       )}
+
+      <PendingApprovalsPanel />
 
       {/* Filter bar — search + severity + reason dropdowns + min score + narrated toggle + sort */}
       <div style={{

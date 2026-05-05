@@ -15,7 +15,20 @@ import aiohttp
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ingest.cloud_ranges import identify_cloud_provider
+
 logger = logging.getLogger(__name__)
+
+# Liveness score (0–100, capped). Bumped on a confirmed_alive check,
+# decayed on missed/failed checks. Values calibrated so a single bad
+# scan doesn't suppress an asset (one miss = -15, recovery = +5 each
+# pass) but a sustained outage does (~5 consecutive misses = below the
+# 30 suppression threshold). The decay applied to assets that aren't
+# validated at all this cycle is in app.ingest.delta.decay_unseen_assets.
+_LIVENESS_BUMP_ALIVE = 5
+_LIVENESS_DECAY_UNCONFIRMED = 15
+_LIVENESS_DECAY_DEAD = 25
+_LIVENESS_SUPPRESS_THRESHOLD = 30
 
 # Path to the takeover fingerprint database. Loaded lazily so tests can
 # reload it (see `reload_takeover_db`).
@@ -28,44 +41,6 @@ _TAKEOVER_MAX_BODY_BYTES = 16_000
 # Per-probe HTTP timeout. Short enough that a hundred dangling hosts don't
 # stall discovery; long enough to catch slow cloud error pages.
 _TAKEOVER_HTTP_TIMEOUT = 5.0
-
-# Known cloud provider IP ranges (CIDR prefixes) for dangling DNS detection.
-# This is a simplified check — production should use published IP range files.
-CLOUD_PROVIDER_PREFIXES = {
-    "aws": [
-        "3.", "13.", "15.", "18.", "34.", "35.", "44.", "46.51.", "50.", "52.",
-        "54.", "63.", "72.44.", "75.2.", "76.223.", "99.", "100.", "107.",
-        "108.", "142.", "143.", "150.", "157.", "160.", "161.", "162.",
-        "168.", "170.", "174.", "175.", "176.", "177.", "178.", "184.",
-        "185.", "192.0.2.",
-    ],
-    "gcp": ["34.64.", "34.80.", "34.96.", "34.104.", "34.120.", "34.128.", "35."],
-    "azure": [
-        "13.64.", "13.65.", "13.66.", "13.67.", "13.68.", "13.69.",
-        "13.70.", "13.71.", "13.72.", "13.73.", "13.74.", "13.75.",
-        "13.76.", "13.77.", "13.78.", "13.79.", "13.80.", "13.81.",
-        "13.82.", "13.83.", "13.84.", "13.85.", "13.86.", "13.87.",
-        "13.88.", "13.89.", "13.90.", "13.91.", "13.92.", "13.93.",
-        "20.", "23.", "40.", "51.", "52.", "65.", "70.", "102.", "104.",
-        "137.", "138.", "157.", "168.", "191.",
-    ],
-    "cloudflare": ["104.16.", "104.17.", "104.18.", "104.19.", "104.20.",
-                   "104.21.", "104.22.", "104.23.", "104.24.", "104.25.",
-                   "172.64.", "172.65.", "172.66.", "172.67.", "173.245.",
-                   "188.114.", "190.93.", "197.234.", "198.41."],
-}
-
-
-def identify_cloud_provider(ip: str) -> str | None:
-    """Return cloud provider name if IP matches a known range, else None."""
-    if not ip:
-        return None
-    for provider, prefixes in CLOUD_PROVIDER_PREFIXES.items():
-        for prefix in prefixes:
-            if ip.startswith(prefix):
-                return provider
-    return None
-
 
 def _load_takeover_db() -> list[dict]:
     """Load the takeover fingerprint database from disk."""
@@ -296,18 +271,34 @@ async def validate_and_update_assets(
         if checks_passed >= threshold:
             new_state = "confirmed_alive"
             new_failures = 0
+            score_delta = _LIVENESS_BUMP_ALIVE
             summary["confirmed_alive"] += 1
         elif checks_passed == 1:
             new_state = "unconfirmed"
             new_failures = old_failures + 1
+            score_delta = -_LIVENESS_DECAY_UNCONFIRMED
             summary["unconfirmed"] += 1
         else:
             new_failures = old_failures + 1
             if new_failures >= 3:
                 new_state = "likely_dead"
+                score_delta = -_LIVENESS_DECAY_DEAD
             else:
                 new_state = "unconfirmed"
+                score_delta = -_LIVENESS_DECAY_UNCONFIRMED
             summary["likely_dead" if new_state == "likely_dead" else "unconfirmed"] += 1
+
+        # Cloud-provider attribution runs for every asset that resolved to
+        # at least one IP — not just dangling ones. This drives the
+        # inventory cloud filter, the takeover-severity bump below, and
+        # tenant attribution downstream. First non-None match wins so a
+        # multi-record (A) asset is attributed to whichever provider
+        # answered first.
+        cloud_provider: str | None = None
+        for ip in resolved_ips:
+            cloud_provider = identify_cloud_provider(ip)
+            if cloud_provider:
+                break
 
         # Dangling DNS detection: DNS resolves but no port responds
         is_dangling = dns_ok and not port_ok
@@ -316,26 +307,28 @@ async def validate_and_update_assets(
                 tags.append("dangling_dns")
             summary["dangling_dns"] += 1
 
-            # Check for cloud provider → potential subdomain takeover
-            cloud_provider = None
-            for ip in resolved_ips:
-                cloud_provider = identify_cloud_provider(ip)
-                if cloud_provider:
-                    break
-
             if cloud_provider and "potential_takeover" not in tags:
                 tags.append("potential_takeover")
         else:
             # Remove dangling tags if asset is now responding
             tags = [t for t in tags if t not in ("dangling_dns", "potential_takeover")]
 
+        # Only touch cloud_provider when DNS actually resolved — if the
+        # lookup returns None on a successful resolve we want to clear a
+        # stale value (asset moved off the cloud), but if DNS failed we
+        # have no signal and should leave the previous classification
+        # alone.
         await db.execute(
             text("""
                 UPDATE assets SET
                     liveness_state = :state,
                     consecutive_failures = :failures,
                     last_validated_at = :now,
-                    tags = :tags
+                    tags = :tags,
+                    cloud_provider = CASE WHEN :did_resolve
+                        THEN :cloud_provider ELSE cloud_provider END,
+                    liveness_score = LEAST(100, GREATEST(0,
+                        COALESCE(liveness_score, 100) + :score_delta))
                 WHERE id = :id
             """),
             {
@@ -343,6 +336,9 @@ async def validate_and_update_assets(
                 "failures": new_failures,
                 "now": now,
                 "tags": tags,
+                "did_resolve": dns_ok,
+                "cloud_provider": cloud_provider,
+                "score_delta": score_delta,
                 "id": asset_id,
             },
         )

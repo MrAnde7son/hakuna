@@ -28,7 +28,7 @@ The script will:
 docker compose up --build
 ```
 
-Backend runs on port 8000, frontend on port 3000. SQLite data is persisted in a Docker volume.
+Backend runs on port 8000, frontend on port 3000. PostgreSQL runs as the `postgres` service and data is persisted in the `postgres-data` volume.
 
 ### Option 3: Manual Setup
 

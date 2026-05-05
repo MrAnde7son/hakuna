@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from core.database import get_db
 from core.auth import get_current_user, get_accessible_org_ids
 from core.audit import log_audit
+from core.time_utils import iso_utc
 from models.models import DetectionRule, Alert, SuppressionRule
 
 router = APIRouter()
@@ -88,23 +89,23 @@ def _rule_to_dict(r: DetectionRule) -> dict:
         "mitre_techniques": r.mitre_techniques, "asset_filter": r.asset_filter,
         "source": r.source,
         "sigma_rule_id": r.sigma_rule_id,
-        "last_run_at": r.last_run_at.isoformat() if r.last_run_at else None,
-        "last_alert_at": r.last_alert_at.isoformat() if r.last_alert_at else None,
-        "created_at": r.created_at.isoformat() if r.created_at else None,
+        "last_run_at": iso_utc(r.last_run_at),
+        "last_alert_at": iso_utc(r.last_alert_at),
+        "created_at": iso_utc(r.created_at),
     }
 
 
 def _alert_to_dict(a: Alert) -> dict:
     return {
         "id": a.id, "org_id": a.org_id, "rule_id": a.rule_id,
-        "fired_at": a.fired_at.isoformat() if a.fired_at else None,
+        "fired_at": iso_utc(a.fired_at),
         "severity": a.severity, "status": a.status, "event_count": a.event_count,
         "group_key": a.group_key, "first_event_id": a.first_event_id,
         "last_event_id": a.last_event_id, "context": a.context,
         "asset_id": a.asset_id, "assigned_to": a.assigned_to,
         "campaign_id": a.campaign_id,
         "rule_name": a.rule.name if a.rule else None,
-        "created_at": a.created_at.isoformat() if a.created_at else None,
+        "created_at": iso_utc(a.created_at),
         # Entity identification
         "entity_type": a.entity_type,
         "entity_value": a.entity_value,
@@ -247,7 +248,7 @@ async def test_rule(
         "would_fire": total >= body.threshold,
         "matching_events": total,
         "threshold": body.threshold,
-        "sample": [{"id": e.id, "event_time": e.event_time.isoformat() if e.event_time else None,
+        "sample": [{"id": e.id, "event_time": iso_utc(e.event_time),
                      "severity": e.severity, "message": (e.message or "")[:200]} for e in sample],
     }
 
@@ -404,9 +405,9 @@ def _suppression_to_dict(s: SuppressionRule) -> dict:
         "id": s.id, "org_id": s.org_id, "name": s.name, "description": s.description,
         "conditions": s.conditions, "conditions_logic": s.conditions_logic,
         "rule_id": s.rule_id, "reason": s.reason, "enabled": s.enabled,
-        "expires_at": s.expires_at.isoformat() if s.expires_at else None,
+        "expires_at": iso_utc(s.expires_at),
         "created_by": s.created_by, "suppressed_count": s.suppressed_count,
-        "created_at": s.created_at.isoformat() if s.created_at else None,
+        "created_at": iso_utc(s.created_at),
     }
 
 

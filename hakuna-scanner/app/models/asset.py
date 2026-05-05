@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, SmallInteger, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import ARRAY, INET, JSON, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -19,15 +19,35 @@ class Asset(Base):
     asn: Mapped[str | None] = mapped_column(String(32), nullable=True)
     asn_org: Mapped[str | None] = mapped_column(Text, nullable=True)
     open_ports: Mapped[list[int] | None] = mapped_column(ARRAY(Integer), nullable=True)
+    # UDP-side counterpart populated from nmap UDP scan (see migration 014).
+    # Kept separate because UDP "open" semantics differ from TCP and we want
+    # transport-aware port_change events for the audit auto-trigger.
+    open_udp_ports: Mapped[list[int] | None] = mapped_column(ARRAY(Integer), nullable=True)
     services: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
     http_title: Mapped[str | None] = mapped_column(Text, nullable=True)
     http_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     tech_stack: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     cdn_provider: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Hosting cloud provider derived from the asset's resolved IP — distinct
+    # from cdn_provider (which describes the fronting CDN). Populated by
+    # liveness.py via app.ingest.cloud_ranges.identify_cloud_provider.
+    cloud_provider: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    # Tenant attribution for cloud-hosted assets — who controls the
+    # resource on a shared cloud IP. Populated by app.ingest.attribution
+    # only when cloud_provider is non-null. See migration 020 for shape.
+    attribution: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     waf: Mapped[str | None] = mapped_column(String(64), nullable=True)
     tls_cert: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Normalized HTTP-header + cookie audit — see app.ingest.http_header_audit.
+    # Denormalized from asset_enrichments.httpx_full.security_audit so the
+    # AssetResponse API can return it without joining.
+    security_audit: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     dns_records: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Phase-2 EASM blob — banner_findings from _do_banner_grab land here under
+    # the ``banner_findings`` key. Backend's CVE correlator reads from it via
+    # services.cve_correlator._banner_components.
+    easm_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     tags: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True, default=list)
     first_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     last_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
@@ -44,11 +64,24 @@ class Asset(Base):
     liveness_state: Mapped[str] = mapped_column(String(32), default="unconfirmed")
     consecutive_failures: Mapped[int] = mapped_column(Integer, default=0)
     last_validated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Decaying 0–100 freshness score. 100 = fully alive this cycle; <30 =
+    # suppressed from active findings (kept in inventory with a stale badge).
+    # Bumped/decayed in liveness.validate_and_update_assets and
+    # delta.decay_unseen_assets. See migration 019.
+    liveness_score: Mapped[int] = mapped_column(SmallInteger, default=100, server_default="100", index=True)
 
     # Extension 4: Nmap fingerprinting
     nmap_status: Mapped[str] = mapped_column(String(32), default="pending")
     nmap_last_run: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     os_fingerprint: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Port-scan outcome tracking (migration 015). Distinguishes "scan ran
+    # successfully with zero open ports found" from "never scanned" or
+    # "scan failed/timed out". Empty-but-scanned hosts have
+    # port_scan_state='scanned' and open_ports='{}' (zero-length array).
+    # Values: pending | scanned | failed.
+    port_scan_state: Mapped[str] = mapped_column(String(32), default="pending")
+    port_scan_last_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     org: Mapped["Org"] = relationship(back_populates="assets")  # noqa: F821
     events: Mapped[list["AssetEvent"]] = relationship(back_populates="asset", cascade="all, delete-orphan")
@@ -69,10 +102,32 @@ class AssetPort(Base):
     protocol: Mapped[str] = mapped_column(String(16), default="tcp")
     service_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
     service_version: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    # Normalized service identity (migration 017). PR #1 of the service-type
+    # gating refactor — all per-port writers populate these. PR #2 will flip
+    # downstream gates from port-number checks to service_type checks so a
+    # non-canonical port (SSH on 2222, HTTP on 8088) is still scanned by the
+    # right module. ``service_confidence`` lets a later high-confidence
+    # writer (banner probe = 90) overwrite an earlier low-confidence guess
+    # (httpx scheme = 70) on the same (asset, port, protocol) row.
+    service_type: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    service_product: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    service_confidence: Mapped[int | None] = mapped_column(Integer, nullable=True)
     banner: Mapped[str | None] = mapped_column(Text, nullable=True)
     cpe_list: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     tls_cert: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # Deep-audit result (sslyze cipher enum + chain validation + OCSP + CAA)
+    # produced by app.ingest.tls_deep_audit. See migration 013.
+    tls_deep_audit: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     nmap_scripts: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # Per-port HTTP fingerprint from httpx (migration 016). Lets downstream
+    # scanners target every web service on a host (e.g. admin UI on 8088)
+    # instead of just the canonical 80/443 URL on assets.http_url.
+    http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    http_title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    http_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    http_webserver: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    http_tech_stack: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    last_http_probed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     asset: Mapped["Asset"] = relationship(back_populates="ports")

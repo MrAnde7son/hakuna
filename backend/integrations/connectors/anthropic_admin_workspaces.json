@@ -1,0 +1,72 @@
+{
+  "id": "anthropic_admin_workspaces",
+  "name": "Anthropic Admin — Workspaces",
+  "description": "List workspaces in the Anthropic organization (governance audit input). Requires an admin API key (sk-ant-admin...).",
+  "category": "AI Governance",
+  "logo": "/logos/vendors/anthropic.svg",
+  "direction": "pull",
+  "entity": "audit_only",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://api.anthropic.com/v1",
+    "method": "GET",
+    "path": "/organizations/workspaces",
+    "headers": {
+      "x-api-key": "{{credentials.admin_api_key}}",
+      "anthropic-version": "2023-06-01"
+    },
+    "query_params": {},
+    "pagination": {
+      "strategy": "cursor",
+      "cursor_field": "last_id",
+      "cursor_param": "after_id",
+      "page_size": 100,
+      "page_size_param": "limit"
+    }
+  },
+  "records_path": "data",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "steps": [
+      {
+        "instruction": "Sign in at console.anthropic.com with an account that has the Primary Owner role on the organization."
+      },
+      {
+        "instruction": "Confirm you understand that an admin API key has org-wide visibility (all workspaces, members, keys).",
+        "capture": {
+          "field": "_acknowledge_admin_scope",
+          "label": "I understand this key grants org-wide visibility and will be stored encrypted in Hakuna's vault.",
+          "type": "checkbox",
+          "required": true
+        }
+      },
+      {
+        "instruction": "Open Settings → Admin Keys → Create new admin API key.",
+        "deeplink_path": "https://console.anthropic.com/settings/admin-keys"
+      },
+      {
+        "instruction": "Copy the admin key (starts with sk-ant-admin...).",
+        "capture": {
+          "field": "admin_api_key",
+          "label": "Paste Anthropic admin API key",
+          "type": "password",
+          "auto_validate": true
+        }
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/organizations/workspaces",
+      "query_params": {"limit": "1"},
+      "headers": {
+        "x-api-key": "{{admin_api_key}}",
+        "anthropic-version": "2023-06-01"
+      },
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with Anthropic Admin API. Verify the key starts with sk-ant-admin and the calling user has Primary Owner role."
+    }
+  },
+  "default_field_map": [],
+  "dedup_key": ["source_system", "source_id"],
+  "params_schema": {}
+}

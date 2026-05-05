@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
-import { Bell, X, Check, CheckCheck, ShieldAlert, Server, Scan, Target, AlertTriangle, Skull, Clock, XCircle, Siren } from 'lucide-react'
-import { getNotifications, getUnreadNotificationCount, markNotificationRead, markAllNotificationsRead } from '../../api'
+import { Bell, X, Check, CheckCheck, ShieldAlert, ShieldCheck, Server, Scan, Target, AlertTriangle, Skull, Clock, XCircle, Siren, CheckCircle } from 'lucide-react'
+import { getNotifications, getUnreadNotificationCount, markNotificationRead, markAllNotificationsRead, decideAgentApproval } from '../../api'
 
 const POLL_INTERVAL = 60_000 // 60s
 const CATEGORY_CONFIG = {
@@ -16,6 +16,7 @@ const CATEGORY_CONFIG = {
   new_threat_groups: { icon: Skull,         color: '#be185d' },
   eol_update:        { icon: AlertTriangle, color: '#9333ea' },
   security_alert:    { icon: Siren,         color: '#e11d48' },
+  approval_required: { icon: ShieldCheck,   color: '#f59e0b' },
 }
 
 function timeAgo(dateStr) {
@@ -35,7 +36,12 @@ export default function NotificationBell({ bottomOffset = 20, rightOffset = 120 
   const [open, setOpen] = useState(false)
   const [unreadCount, setUnreadCount] = useState(0)
   const [notifications, setNotifications] = useState([])
+  const [hasFetched, setHasFetched] = useState(false)
   const [loading, setLoading] = useState(false)
+  // Inline approval state: tracks per-notification decision lifecycle so we can
+  // disable buttons mid-flight and show a confirmation state without re-fetching.
+  // Shape: { [notificationId]: { status: 'pending'|'approved'|'rejected'|'error', error?: string } }
+  const [approvalState, setApprovalState] = useState({})
   const panelRef = useRef(null)
 
   // Poll unread count
@@ -51,15 +57,18 @@ export default function NotificationBell({ bottomOffset = 20, rightOffset = 120 
     return () => clearInterval(interval)
   }, [fetchCount])
 
-  // Fetch notifications when panel opens
+  // Fetch notifications when panel opens — show stale list while refreshing
   useEffect(() => {
     if (!open) return
-    setLoading(true)
+    if (!hasFetched) setLoading(true)
     getNotifications({ page_size: 30 })
-      .then(data => setNotifications(data.items || []))
+      .then(data => {
+        setNotifications(data.items || [])
+        setHasFetched(true)
+      })
       .catch(() => {})
       .finally(() => setLoading(false))
-  }, [open])
+  }, [open, hasFetched])
 
   // Close on click outside
   useEffect(() => {
@@ -93,6 +102,31 @@ export default function NotificationBell({ bottomOffset = 20, rightOffset = 120 
     if (notif.link) {
       navigate(notif.link)
       setOpen(false)
+    }
+  }
+
+  const handleApprovalDecide = async (notif, decision, e) => {
+    e.stopPropagation()
+    const approvalId = notif.entity_id
+    if (!approvalId) return
+    setApprovalState(prev => ({ ...prev, [notif.id]: { status: 'pending' } }))
+    try {
+      await decideAgentApproval(approvalId, decision)
+      setApprovalState(prev => ({ ...prev, [notif.id]: { status: decision } }))
+      if (!notif.is_read) {
+        markNotificationRead(notif.id).catch(() => {})
+        setNotifications(prev => prev.map(n => n.id === notif.id ? { ...n, is_read: true } : n))
+        setUnreadCount(prev => Math.max(0, prev - 1))
+      }
+    } catch (err) {
+      // 404 = already decided elsewhere; treat as resolved rather than an error
+      const alreadyDecided = err?.status === 404
+      setApprovalState(prev => ({
+        ...prev,
+        [notif.id]: alreadyDecided
+          ? { status: 'resolved' }
+          : { status: 'error', error: typeof err?.message === 'string' ? err.message : 'Failed' },
+      }))
     }
   }
 
@@ -173,7 +207,7 @@ export default function NotificationBell({ bottomOffset = 20, rightOffset = 120 
 
           {/* List */}
           <div style={{ overflowY: 'auto', flex: 1 }}>
-            {loading && (
+            {loading && notifications.length === 0 && (
               <div style={{ padding: 24, textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>
                 Loading...
               </div>
@@ -183,9 +217,11 @@ export default function NotificationBell({ bottomOffset = 20, rightOffset = 120 
                 {t('notifications.noNotifications', 'No notifications yet')}
               </div>
             )}
-            {!loading && notifications.map(n => {
+            {notifications.map(n => {
               const cfg = CATEGORY_CONFIG[n.category] || { icon: Bell, color: 'var(--text-muted)' }
               const Icon = cfg.icon
+              const isApproval = n.category === 'approval_required' && n.entity_type === 'agent_approval' && n.entity_id
+              const aState = approvalState[n.id]
               return (
                 <div
                   key={n.id}
@@ -227,6 +263,64 @@ export default function NotificationBell({ bottomOffset = 20, rightOffset = 120 
                     <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>
                       {n.created_at ? timeAgo(n.created_at) : ''}
                     </div>
+                    {isApproval && (
+                      <div style={{ marginTop: 8 }}>
+                        {!aState && (
+                          <div style={{ display: 'flex', gap: 6 }}>
+                            <button
+                              onClick={(e) => handleApprovalDecide(n, 'approved', e)}
+                              style={{
+                                flex: 1, padding: '5px 10px', borderRadius: 6, border: 'none',
+                                background: 'var(--success, #16a34a)', color: '#fff',
+                                cursor: 'pointer', fontSize: 12, fontWeight: 600,
+                                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4,
+                              }}
+                            >
+                              <CheckCircle size={12} />
+                              {t('notifications.approve', 'Approve')}
+                            </button>
+                            <button
+                              onClick={(e) => handleApprovalDecide(n, 'rejected', e)}
+                              style={{
+                                flex: 1, padding: '5px 10px', borderRadius: 6,
+                                border: '1px solid var(--danger, #dc2626)', background: 'transparent',
+                                color: 'var(--danger, #dc2626)', cursor: 'pointer',
+                                fontSize: 12, fontWeight: 600,
+                                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4,
+                              }}
+                            >
+                              <XCircle size={12} />
+                              {t('notifications.deny', 'Deny')}
+                            </button>
+                          </div>
+                        )}
+                        {aState?.status === 'pending' && (
+                          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                            {t('notifications.deciding', 'Submitting…')}
+                          </div>
+                        )}
+                        {aState?.status === 'approved' && (
+                          <div style={{ fontSize: 11, color: 'var(--success, #16a34a)', fontWeight: 600 }}>
+                            ✓ {t('notifications.approved', 'Approved')}
+                          </div>
+                        )}
+                        {aState?.status === 'rejected' && (
+                          <div style={{ fontSize: 11, color: 'var(--danger, #dc2626)', fontWeight: 600 }}>
+                            ✗ {t('notifications.denied', 'Denied')}
+                          </div>
+                        )}
+                        {aState?.status === 'resolved' && (
+                          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                            {t('notifications.alreadyDecided', 'Already decided')}
+                          </div>
+                        )}
+                        {aState?.status === 'error' && (
+                          <div style={{ fontSize: 11, color: 'var(--danger, #dc2626)' }}>
+                            {aState.error || t('notifications.decideFailed', 'Failed — try the approval queue')}
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                   {!n.is_read && (
                     <button

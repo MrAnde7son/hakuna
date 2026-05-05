@@ -7,47 +7,57 @@ from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 logger = logging.getLogger(__name__)
 
-DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///./nessus_remediation.db")
+# Runtime production path is Postgres-only. The unit-test suite still uses
+# in-memory SQLite for speed (see backend/tests/conftest.py) — that code path
+# is gated on TESTING=1, set by conftest before core.database is imported.
+_TESTING = os.environ.get("TESTING") == "1"
+DATABASE_URL = os.environ.get("DATABASE_URL")
 
-_connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
-_pool_kwargs = {} if DATABASE_URL.startswith("sqlite") else {
-    "pool_size": 10,         # persistent connections in the pool
-    "max_overflow": 20,      # extra connections allowed above pool_size under load
-    "pool_timeout": 30,      # seconds to wait for a connection before raising
-    "pool_recycle": 1800,    # recycle connections every 30 min to avoid idle timeouts
-    "pool_pre_ping": True,   # detect stale connections (important for Cloud Run cold starts)
-}
-engine = create_engine(DATABASE_URL, connect_args=_connect_args, **_pool_kwargs)
+if not _TESTING:
+    if not DATABASE_URL:
+        raise RuntimeError(
+            "DATABASE_URL is required (postgresql://...). SQLite is no longer "
+            "supported at runtime; bring up the compose stack or point at Cloud SQL."
+        )
+    if not DATABASE_URL.startswith("postgresql"):
+        raise RuntimeError(
+            f"Unsupported DATABASE_URL scheme: {DATABASE_URL.split(':', 1)[0]}. "
+            "Only postgresql:// is supported."
+        )
+else:
+    # Under pytest, default to in-memory SQLite when the caller didn't set one.
+    DATABASE_URL = DATABASE_URL or "sqlite:///:memory:"
 
-# SQLite requires PRAGMA foreign_keys=ON per connection for ON DELETE CASCADE to work
-if DATABASE_URL.startswith("sqlite"):
+_IS_SQLITE = DATABASE_URL.startswith("sqlite")
+
+if _IS_SQLITE:
+    engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+
     @event.listens_for(engine, "connect")
     def _set_sqlite_pragma(dbapi_conn, connection_record):
         cursor = dbapi_conn.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
-        # WAL lets readers proceed while a writer holds the DB — without it, a
-        # long scan-upload transaction blocks every other request (including
-        # the auth SELECT on users) with "database is locked".
-        cursor.execute("PRAGMA journal_mode=WAL")
-        # Wait up to 30s for a contended lock instead of erroring immediately.
-        # Background jobs (correlation, EASM enrichment, report rendering) can
-        # hold write locks for tens of seconds; at 10s we saw spurious
-        # 'database is locked' errors from the APScheduler event-cursor updates
-        # while correlation was running.
-        cursor.execute("PRAGMA busy_timeout=30000")
-        cursor.execute("PRAGMA synchronous=NORMAL")
         cursor.close()
+else:
+    engine = create_engine(
+        DATABASE_URL,
+        pool_size=10,         # persistent connections in the pool
+        max_overflow=20,      # extra connections allowed above pool_size under load
+        pool_timeout=30,      # seconds to wait for a connection before raising
+        pool_recycle=1800,    # recycle connections every 30 min to avoid idle timeouts
+        pool_pre_ping=True,   # detect stale connections (important for Cloud Run cold starts)
+    )
 
-# Postgres: enforce a default statement timeout so a runaway query on one
-# endpoint can't saturate the connection pool or DB CPU. The default is
-# reset on every checkout so a long-running job that temporarily raised
-# the limit can't leak that state into the next request via pool reuse.
-# TODO: 27 background-job sites open their own SessionLocal() and may issue
-# statements >30s (threat-intel sync, EASM scheduler, report PDFs, lake
-# maintenance, agent runs). Audit those before tightening below 120s, and
-# wrap any legitimate long-running statement in disable_statement_timeout().
-_DEFAULT_STATEMENT_TIMEOUT_MS = int(os.environ.get("DB_STATEMENT_TIMEOUT_MS", "120000"))
-if DATABASE_URL.startswith("postgresql"):
+    # Enforce a default statement timeout so a runaway query on one endpoint
+    # can't saturate the connection pool or DB CPU. The default is reset on
+    # every checkout so a long-running job that temporarily raised the limit
+    # can't leak that state into the next request via pool reuse.
+    # TODO: 27 background-job sites open their own SessionLocal() and may issue
+    # statements >30s (threat-intel sync, EASM scheduler, report PDFs, lake
+    # maintenance, agent runs). Audit those before tightening below 120s, and
+    # wrap any legitimate long-running statement in disable_statement_timeout().
+    _DEFAULT_STATEMENT_TIMEOUT_MS = int(os.environ.get("DB_STATEMENT_TIMEOUT_MS", "120000"))
+
     @event.listens_for(engine, "connect")
     def _set_pg_connect_defaults(dbapi_conn, connection_record):
         cursor = dbapi_conn.cursor()
@@ -126,7 +136,11 @@ def init_db():
 
 
 def _migrate_add_columns():
-    """Add columns to existing tables that create_all won't handle."""
+    """Add columns to existing tables that create_all won't handle.
+
+    All column types are Postgres-compatible. `VARCHAR` with no length is
+    TEXT-equivalent on Postgres and is used throughout the schema.
+    """
     migrations = {
         "assets": [
             ("inferred_primary_user", "VARCHAR"),
@@ -180,6 +194,8 @@ def _migrate_add_columns():
             ("user_edited_fields", "JSON"),
             ("source_systems", "JSON"),
             ("custom_fields", "JSON"),
+            ("cwe_ids", "JSON"),
+            ("cwe_names", "JSON"),
         ],
         "threat_cves": [
             ("cvss4_score", "FLOAT"),
@@ -321,7 +337,6 @@ def _migrate_add_columns():
         ],
     }
     insp = inspect(engine)
-    is_pg = DATABASE_URL.startswith("postgresql")
     for table, columns in migrations.items():
         try:
             existing = {c["name"] for c in insp.get_columns(table)}
@@ -399,7 +414,7 @@ def _run_migrations():
 
 
 def get_pool_status() -> dict:
-    """Return connection pool metrics. Works for QueuePool (Postgres); SQLite uses StaticPool."""
+    """Return connection pool metrics for the Postgres QueuePool."""
     pool = engine.pool
     pool_class = type(pool).__name__
     status = {"pool_class": pool_class}

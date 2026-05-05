@@ -13,6 +13,7 @@ from sqlalchemy import func, desc
 
 from core.database import get_db
 from core.audit import log_audit, diff as _diff
+from core.time_utils import iso_utc
 from core.auth import (
     get_current_user, get_accessible_org_ids,
     apply_org_filter, apply_scan_org_filter,
@@ -276,7 +277,7 @@ def resolve_finding(finding_id: int, db: Session = Depends(get_db)):
     finding.sla_status = "resolved"
     db.commit()
     _endpoint_cache.clear()
-    return {"ok": True, "finding_id": finding_id, "resolved_at": finding.resolved_at.isoformat()}
+    return {"ok": True, "finding_id": finding_id, "resolved_at": iso_utc(finding.resolved_at)}
 
 
 @router.patch("/api/findings/{finding_id}/unresolve")
@@ -440,9 +441,9 @@ def list_integrations(db: Session = Depends(get_db), org_ids: Optional[List[int]
             "is_enabled": cfg.is_enabled if cfg else False,
             "is_configured": cfg is not None,
             "last_test_status": cfg.last_test_status if cfg else None,
-            "last_test_at": cfg.last_test_at.isoformat() if cfg and cfg.last_test_at else None,
+            "last_test_at": iso_utc(cfg.last_test_at) if cfg else None,
             "last_test_detail": cfg.last_test_detail if cfg else None,
-            "updated_at": cfg.updated_at.isoformat() if cfg and cfg.updated_at else None,
+            "updated_at": iso_utc(cfg.updated_at) if cfg else None,
             "fields": schema["fields"],
         })
     return result
@@ -472,7 +473,7 @@ def get_integration(provider: str, db: Session = Depends(get_db)):
         "config": safe_config,
         "fields": schema["fields"],
         "last_test_status": cfg.last_test_status if cfg else None,
-        "last_test_at": cfg.last_test_at.isoformat() if cfg and cfg.last_test_at else None,
+        "last_test_at": iso_utc(cfg.last_test_at) if cfg else None,
         "last_test_detail": cfg.last_test_detail if cfg else None,
     }
     # For email, indicate whether Brevo fallback is available
@@ -630,10 +631,10 @@ def list_exceptions(
             "condition_logic": e.condition_logic or "AND",
             "reason": e.reason, "approved_by": e.approved_by,
             "exclude_from_reports": e.exclude_from_reports if e.exclude_from_reports is not None else True,
-            "expires_at": e.expires_at.isoformat() if e.expires_at else None,
-            "review_by": e.review_by.isoformat() if e.review_by else None,
+            "expires_at": iso_utc(e.expires_at),
+            "review_by": iso_utc(e.review_by),
             "is_active": e.is_active,
-            "created_at": e.created_at.isoformat() if e.created_at else None,
+            "created_at": iso_utc(e.created_at),
             "affected_findings": db.query(func.count(Finding.id)).filter(
                 Finding.exception_id == e.id,
             ).scalar() if e.is_active else 0,
@@ -709,10 +710,10 @@ def get_exception(exception_id: int, db: Session = Depends(get_db)):
         "condition_logic": exc.condition_logic or "AND",
         "reason": exc.reason, "approved_by": exc.approved_by,
         "exclude_from_reports": exc.exclude_from_reports if exc.exclude_from_reports is not None else True,
-        "expires_at": exc.expires_at.isoformat() if exc.expires_at else None,
-        "review_by": exc.review_by.isoformat() if exc.review_by else None,
+        "expires_at": iso_utc(exc.expires_at),
+        "review_by": iso_utc(exc.review_by),
         "is_active": exc.is_active,
-        "created_at": exc.created_at.isoformat() if exc.created_at else None,
+        "created_at": iso_utc(exc.created_at),
         "affected_findings": affected,
     }
 
@@ -863,7 +864,7 @@ def _agg_solution_to_dict(a: AggregatedSolution, db: Session, asset_cache: dict 
         # Operational
         "effort_level": a.effort_level,
         "owner_suggestion": a.owner_suggestion,
-        "created_at": a.created_at.isoformat() if a.created_at else None,
+        "created_at": iso_utc(a.created_at),
     }
 
 

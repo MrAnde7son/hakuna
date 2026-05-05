@@ -8,8 +8,23 @@ class Settings(BaseSettings):
 
     celery_concurrency: int = 4
     scan_timeout_seconds: int = 600
+
+    # When True, naabu probes the union of nmap's top-1000 TCP ports and the
+    # `naabu_ports` specialty list below. When False, only `naabu_ports` is
+    # probed (legacy fast-scan profile for large internal batches).
+    naabu_use_top1000: bool = True
+
+    # Per-host probe budget (seconds) for naabu when scanning the wide
+    # top-1000 + specialty union. Top-1000 is ~16x more probes than the
+    # legacy curated list, so the per-batch timeout needs to scale.
+    naabu_per_host_seconds_top1000: float = 1.5
+
+    # Specialty ports added on top of nmap top-1000. Keep this focused on
+    # protocols/services that aren't in nmap's default top-1000 list —
+    # OT/ICS, AI/LLM infra, vendor-specific cameras/DVRs, etc. Standard
+    # ports (80/443/8080/8443/22/etc.) are already covered by top-1000.
     naabu_ports: str = (
-        # ── Standard IT services ──
+        # ── Standard IT services (kept for legacy `use_top1000=False`) ──
         "21,22,23,25,53,80,110,111,135,139,143,443,445,993,995,"
         "1433,1521,2049,3306,3389,5432,5900,5985,6379,8080,8443,"
         "8888,9000,9443,3000,5000,27017,"
@@ -90,6 +105,16 @@ class Settings(BaseSettings):
     # the single biggest slowdown — ~1s per host — so large scans trade the
     # UX nicety for wall-time).
     screenshot_max_hosts: int = 500
+
+    # Deep TLS audit (sslyze cipher enum + chain + OCSP + CAA). Each host
+    # runs ~5 handshakes per TLS version, so per-host wall time is 10-30s.
+    # Disabled by default — flip on per-deployment once you've sized workers.
+    tls_deep_audit_enabled: bool = False
+    tls_deep_audit_concurrency: int = 8
+    tls_deep_audit_host_timeout: int = 60
+    # Cap at this many hosts per scan to avoid runaway wall time on large
+    # scans; the rest are skipped with a log message.
+    tls_deep_audit_max_hosts: int = 500
 
     # JS fingerprinting: detect client-side libraries (jQuery, Moment.js, etc.)
     # by fetching HTML + JS files and matching version patterns.
@@ -196,6 +221,13 @@ class Settings(BaseSettings):
     censys_api_secret: str = ""
     fofa_email: str = ""
     fofa_key: str = ""
+    otx_api_key: str = ""
+
+    # Cloud-provider IP-range matching (app.ingest.cloud_ranges). The
+    # refresh task (app.tasks.cloud_ranges) writes per-provider JSON files
+    # here once a day; the matcher loads them lazily on first lookup.
+    # Falls back to a bundled seed when the directory is empty.
+    cloud_ranges_dir: str = "/data/cloud_ranges"
 
     model_config = {"env_file": ".env", "extra": "ignore"}
 

@@ -225,6 +225,102 @@ class TestTriggerVmScanForEasmAssets:
         assert result is None
         mock_start.assert_not_called()
 
+    def test_shodan_vulns_asset_bypasses_top_n(self, db_session):
+        """An asset with shodan_vulns is queued even when 30 higher-scoring
+        web apps would otherwise consume the MAX_AUTO_VM_TARGETS slots.
+
+        This is the exposed-VPN-with-RCE flow — the whole reason the bypass
+        exists. Without it a Fortinet/Pulse box surfaced by Shodan loses to
+        N web apps with richer tech stacks in the score sort.
+        """
+        from models.models import Asset
+
+        session, org = db_session
+        scan = _make_easm_scan(session, org)
+
+        # 25 web apps, each with multiple high-value ports + tech stacks —
+        # all would beat a port-22-only VPN box on the score sort.
+        for i in range(25):
+            _make_easm_asset(
+                session, scan.id, f"app{i}.example.com",
+                ports=[443, 8080, 8443], tech=["nginx", "React", "Express"],
+            )
+
+        # The exposed VPN box. Lone port, no tech stack, but Shodan reported
+        # a known CVE banner. It must be queued.
+        vpn_asset = Asset(
+            scan_id=scan.id,
+            hostname="vpn",
+            fqdn="vpn.example.com",
+            is_internet_facing=True,
+            environment_tag="external",
+            criticality=5,
+            easm_data={
+                "open_ports": [443],
+                "shodan_vulns": ["CVE-2024-21762"],
+                "tech_stack": [],
+                "http_status": 200,
+            },
+            source_systems=["easm"],
+        )
+        session.add(vpn_asset)
+        session.flush()
+
+        with patch("services.vm_scanner.start_vm_scan", new_callable=AsyncMock) as mock_start:
+            mock_start.return_value = {"scan_id": 999, "job_ids": ["j1"], "status": "running"}
+            from services.vm_scanner import trigger_vm_scan_for_easm_assets
+            _run(trigger_vm_scan_for_easm_assets(session, org, scan.id, "example.com"))
+
+        targets = mock_start.call_args[0][2]
+        asset_ids = mock_start.call_args[1]["asset_ids"]
+
+        # vpn.example.com must be in the queued set despite losing the score
+        # sort to 25 richer web apps.
+        assert "vpn.example.com" in targets
+        assert vpn_asset.id in asset_ids
+        # vpn comes first (bypass list is prepended).
+        assert targets[0] == "vpn.example.com"
+
+    def test_shodan_bypass_capped(self, db_session):
+        """Bypass list is capped at MAX_AUTO_VM_BYPASS_TARGETS to keep one bad
+        EASM run from blowing up the VM scan budget."""
+        from models.models import Asset
+
+        session, org = db_session
+        scan = _make_easm_scan(session, org)
+
+        # 60 shodan_vulns assets — bypass cap is 50.
+        for i in range(60):
+            asset = Asset(
+                scan_id=scan.id,
+                hostname=f"vpn{i}",
+                fqdn=f"vpn{i}.example.com",
+                is_internet_facing=True,
+                environment_tag="external",
+                criticality=5,
+                easm_data={
+                    "open_ports": [443],
+                    "shodan_vulns": ["CVE-2024-21762"],
+                    "http_status": 200,
+                },
+                source_systems=["easm"],
+            )
+            session.add(asset)
+        session.flush()
+
+        with patch("services.vm_scanner.start_vm_scan", new_callable=AsyncMock) as mock_start:
+            mock_start.return_value = {"scan_id": 999, "job_ids": ["j1"], "status": "running"}
+            from services.vm_scanner import (
+                trigger_vm_scan_for_easm_assets,
+                MAX_AUTO_VM_BYPASS_TARGETS,
+            )
+            _run(trigger_vm_scan_for_easm_assets(session, org, scan.id, "example.com"))
+
+        targets = mock_start.call_args[0][2]
+        # No more than the bypass cap (the score-sort list is empty since
+        # every asset is in the bypass set).
+        assert len(targets) == MAX_AUTO_VM_BYPASS_TARGETS
+
 
 class TestPostIngestAutoVmStep:
     """Tests that the post-ingest pipeline triggers VM scan only for EASM scans."""
@@ -253,21 +349,60 @@ class TestPostIngestAutoVmStep:
         assert result is None
         mock_trigger.assert_not_called()
 
-    def test_triggers_for_easm_scan(self, db_session):
-        """VM auto-scan step fires for EASM source type."""
+    def test_flags_easm_scan_for_sweeper(self, db_session):
+        """VM auto-scan step persists `needs_auto_vm_scan` instead of dispatching inline.
+
+        Dispatch happens out-of-band in `process_pending_easm_vm_triggers` so it
+        survives Cloud Run container restarts mid-finalize.
+        """
+        from models.models import Scan
         session, org = db_session
         scan = _make_easm_scan(session, org)
         _make_easm_asset(session, scan.id, "app.example.com", ports=[443])
 
         with patch("services.vm_scanner.trigger_vm_scan_for_easm_assets", new_callable=AsyncMock) as mock_trigger:
-            mock_trigger.return_value = {"scan_id": 999, "job_ids": ["j1"], "status": "running"}
-
             from services.post_ingest import _auto_vm_scan_for_easm
             result = _auto_vm_scan_for_easm(session, org.id, scan.id)
 
         assert result is not None
-        assert result["triggered"] is True
+        assert result["queued"] is True
         assert result["domain"] == "example.com"
+        # Inline dispatch must NOT happen — that was the bug.
+        mock_trigger.assert_not_called()
+        # Flag must be persisted so a restart-resilient sweeper can pick it up.
+        session.refresh(scan)
+        assert scan.raw_metadata.get("needs_auto_vm_scan") is True
+
+    def test_suppress_auto_followup_skips_queueing(self, db_session):
+        """When the EASM scan was created with ``suppress_auto_followup=True``
+        (operator unchecked the "Run automated follow-up scans" box), the VM
+        auto-trigger refuses to queue — and the flag is NOT written. Same flag
+        also blocks the audit auto-trigger; see test_audit_auto_trigger.py."""
+        session, org = db_session
+        scan = _make_easm_scan(session, org)
+        scan.raw_metadata = {**(scan.raw_metadata or {}), "suppress_auto_followup": True}
+        session.commit()
+
+        from services.post_ingest import _auto_vm_scan_for_easm
+        result = _auto_vm_scan_for_easm(session, org.id, scan.id)
+
+        assert result["queued"] is False
+        assert result["suppressed"] is True
+        session.refresh(scan)
+        assert "needs_auto_vm_scan" not in (scan.raw_metadata or {})
+
+    def test_idempotent_when_already_pending(self, db_session):
+        """Re-running the step on an already-flagged scan is a no-op."""
+        session, org = db_session
+        scan = _make_easm_scan(session, org)
+        scan.raw_metadata = {**scan.raw_metadata, "needs_auto_vm_scan": True}
+        session.commit()
+
+        from services.post_ingest import _auto_vm_scan_for_easm
+        result = _auto_vm_scan_for_easm(session, org.id, scan.id)
+
+        assert result["queued"] is True
+        assert result["already_pending"] is True
 
     def test_step_in_finalize_pipeline(self, db_session):
         """The auto_vm_scan step appears in finalize_scan results for EASM scans."""
@@ -281,6 +416,97 @@ class TestPostIngestAutoVmStep:
             results = finalize_scan(session, scan_id=scan.id, org_id=org.id)
 
         assert "auto_vm_scan" in results
+
+
+# ─────────────────────────────────────────────────────────────────────
+# EASM → VM trigger sweeper (durable handoff)
+# ─────────────────────────────────────────────────────────────────────
+
+
+class TestProcessPendingEasmVmTriggers:
+    """Tests for vm_scanner.process_pending_easm_vm_triggers — the periodic
+    sweeper that dispatches VM scans for EASM scans flagged by post_ingest."""
+
+    def _flag(self, session, scan):
+        scan.raw_metadata = {**(scan.raw_metadata or {}), "needs_auto_vm_scan": True}
+        session.commit()
+
+    def test_dispatches_flagged_scan_and_clears_flag(self, db_session):
+        session, org = db_session
+        scan = _make_easm_scan(session, org)
+        _make_easm_asset(session, scan.id, "app.example.com", ports=[443])
+        self._flag(session, scan)
+
+        with patch("services.vm_scanner.start_vm_scan", new_callable=AsyncMock) as mock_start:
+            mock_start.return_value = {"scan_id": 999, "job_ids": ["j1"], "status": "running"}
+
+            from services.vm_scanner import process_pending_easm_vm_triggers
+            stats = process_pending_easm_vm_triggers(session)
+
+        assert stats["swept"] == 1
+        assert stats["dispatched"] == 1
+        mock_start.assert_called_once()
+
+        session.refresh(scan)
+        # Flag must be cleared so the next sweep doesn't re-dispatch.
+        assert "needs_auto_vm_scan" not in (scan.raw_metadata or {})
+
+    def test_skips_unflagged_scan(self, db_session):
+        session, org = db_session
+        scan = _make_easm_scan(session, org)
+        _make_easm_asset(session, scan.id, "app.example.com", ports=[443])
+        # No flag set.
+
+        with patch("services.vm_scanner.start_vm_scan", new_callable=AsyncMock) as mock_start:
+            from services.vm_scanner import process_pending_easm_vm_triggers
+            stats = process_pending_easm_vm_triggers(session)
+
+        assert stats["swept"] == 0
+        assert stats["dispatched"] == 0
+        mock_start.assert_not_called()
+
+    def test_clears_flag_when_no_scannable_assets(self, db_session):
+        """When trigger returns None (no eligible assets) the flag is still cleared
+        — re-sweeping won't change the outcome until the EASM scan re-runs."""
+        session, org = db_session
+        scan = _make_easm_scan(session, org)
+        _make_easm_asset(session, scan.id, "dead.example.com", ports=[], http_status=None)
+        self._flag(session, scan)
+
+        with patch("services.vm_scanner.start_vm_scan", new_callable=AsyncMock) as mock_start:
+            from services.vm_scanner import process_pending_easm_vm_triggers
+            stats = process_pending_easm_vm_triggers(session)
+
+        assert stats["swept"] == 1
+        assert stats["dispatched"] == 0
+        assert stats["skipped"] == 1
+        mock_start.assert_not_called()
+
+        session.refresh(scan)
+        assert "needs_auto_vm_scan" not in (scan.raw_metadata or {})
+
+    def test_keeps_flag_on_dispatch_error(self, db_session):
+        """Transient dispatch failure leaves the flag set so the next tick retries."""
+        session, org = db_session
+        scan = _make_easm_scan(session, org)
+        _make_easm_asset(session, scan.id, "app.example.com", ports=[443])
+        self._flag(session, scan)
+
+        with patch(
+            "services.vm_scanner.trigger_vm_scan_for_easm_assets",
+            new_callable=AsyncMock,
+        ) as mock_trigger:
+            mock_trigger.side_effect = RuntimeError("vm-api 503")
+
+            from services.vm_scanner import process_pending_easm_vm_triggers
+            stats = process_pending_easm_vm_triggers(session)
+
+        assert stats["errors"] == 1
+        assert stats["dispatched"] == 0
+
+        session.refresh(scan)
+        # Flag must still be set so the next sweep retries.
+        assert scan.raw_metadata.get("needs_auto_vm_scan") is True
 
 
 # ─────────────────────────────────────────────────────────────────────

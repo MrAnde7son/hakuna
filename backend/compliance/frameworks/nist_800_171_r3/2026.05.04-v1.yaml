@@ -1,0 +1,263 @@
+# NIST SP 800-171 Revision 3 — initial mapping pack.
+#
+# Scope: protecting Controlled Unclassified Information (CUU) in non-federal
+# systems. CMMC Level 2 mirrors this catalogue, so the rule set here doubles
+# as the substrate for CMMC mappings — keep them in sync by control family.
+
+framework:
+  slug: nist_800_171_r3
+  name: NIST SP 800-171
+  version: "Rev. 3"
+  authority: NIST
+  published_at: 2024-05-14
+  description: |
+    NIST SP 800-171 Revision 3 — Protecting Controlled Unclassified
+    Information in Nonfederal Systems and Organizations. Required for
+    DoD contractors and the DIB; substrate for CMMC 2.0 Level 2.
+  categories: [Federal, CUI]
+  mapping_schema_version: 1
+
+release:
+  tag: "2026.05.04-v1"
+  notes: |
+    Initial 800-171 r3 mapping pack covering 03.04 (Configuration Management),
+    03.11 (Risk Assessment), 03.13 (System and Communications Protection),
+    03.14 (System and Information Integrity), and selected 03.01 (Access
+    Control) and 03.03 (Audit and Accountability) requirements.
+
+controls:
+
+  # ── 03.01: Access Control ──────────────────────────────────
+  - ref: "03.01.01"
+    title: Account Management
+    domain: Access Control
+    testability: manual_only
+    canonical_guidance: |
+      Account lifecycle is process-based. Mark satisfied via compensating-
+      control note linking to JML records and the IAM system.
+    mappings: []
+
+  - ref: "03.01.12"
+    title: Remote Access
+    domain: Remote Access
+    testability: automated
+    canonical_guidance: |
+      Remote access sessions must be controlled and monitored. Exposed
+      remote-admin services on internet-facing assets fail this requirement.
+    mappings:
+      - key: nist_800_171_r3_03_01_12_remote_admin_exposed
+        when:
+          logic: AND
+          conditions:
+            - field: finding.plugin_family
+              op: eq
+              value: "EASM: Exposed Service"
+            - field: inventory.is_internet_facing
+              op: is_true
+            - field: finding.workflow_status
+              op: neq
+              value: resolved
+
+  # ── 03.03: Audit and Accountability ────────────────────────
+  - ref: "03.03.05"
+    title: Audit Record Review, Analysis, and Reporting
+    domain: Audit Logging
+    testability: automated
+    canonical_guidance: |
+      Audit records must be reviewed and acted upon. Open critical SIEM
+      alerts indicate review is not being completed.
+    mappings:
+      - key: nist_800_171_r3_03_03_05_open_critical_alerts
+        when:
+          logic: AND
+          conditions:
+            - field: siem.has_active_alerts
+              op: is_true
+            - field: siem.critical_alert_count
+              op: gte
+              value: 1
+
+  # ── 03.04: Configuration Management ────────────────────────
+  - ref: "03.04.01"
+    title: Baseline Configuration
+    domain: Configuration Management
+    testability: manual_only
+    canonical_guidance: |
+      Baseline maintenance is evidence-based. Mark satisfied via
+      compensating-control note linking to baseline + drift records.
+    mappings: []
+
+  - ref: "03.04.06"
+    title: Least Functionality
+    domain: Hardening
+    testability: automated
+    canonical_guidance: |
+      Only essential capabilities must be enabled. EASM-discovered services
+      on internet-facing assets indicate excess functionality.
+    mappings:
+      - key: nist_800_171_r3_03_04_06_excess_services
+        when:
+          logic: AND
+          conditions:
+            - field: finding.plugin_family
+              op: eq
+              value: "EASM: Exposed Service"
+            - field: inventory.is_internet_facing
+              op: is_true
+            - field: finding.workflow_status
+              op: neq
+              value: resolved
+
+  # ── 03.11: Risk Assessment ─────────────────────────────────
+  - ref: "03.11.02"
+    title: Vulnerability Monitoring and Scanning
+    domain: Vulnerability Management
+    testability: automated
+    canonical_guidance: |
+      Vulnerabilities must be scanned for and remediated. KEV-listed
+      findings past SLA, or unresolved High+ CVEs, fail this requirement.
+    mappings:
+      - key: nist_800_171_r3_03_11_02_kev_breached
+        when:
+          logic: AND
+          conditions:
+            - field: finding.is_kev
+              op: is_true
+            - field: finding.sla_status
+              op: in
+              value: [breached, at_risk]
+            - field: finding.workflow_status
+              op: not_in
+              value: [resolved, false_positive]
+      - key: nist_800_171_r3_03_11_02_unresolved_high_cve
+        when:
+          logic: AND
+          conditions:
+            - field: finding.has_cve
+              op: is_true
+            - field: finding.severity
+              op: gte
+              value: 3
+            - field: finding.workflow_status
+              op: not_in
+              value: [resolved, false_positive, accepted_risk]
+
+  # ── 03.13: System and Communications Protection ────────────
+  - ref: "03.13.01"
+    title: Boundary Protection
+    domain: Network Security
+    testability: automated
+    canonical_guidance: |
+      External communications must be monitored and controlled.
+      EASM-discovered services on internet-facing CUI-bearing assets fail.
+    mappings:
+      - key: nist_800_171_r3_03_13_01_boundary_easm
+        when:
+          logic: AND
+          conditions:
+            - field: finding.plugin_family
+              op: eq
+              value: "EASM: Exposed Service"
+            - field: finding.workflow_status
+              op: not_in
+              value: [resolved, false_positive]
+
+  - ref: "03.13.08"
+    title: Transmission Confidentiality
+    domain: Cryptography
+    testability: automated
+    canonical_guidance: |
+      CUI in transit must be protected with FIPS-validated cryptography.
+      CWE-319/326/327 findings indicate failure.
+    mappings:
+      - key: nist_800_171_r3_03_13_08_transit_crypto
+        when:
+          logic: AND
+          conditions:
+            - field: finding.cwe
+              op: contains_any
+              value: ["CWE-319", "CWE-326", "CWE-327"]
+            - field: finding.workflow_status
+              op: neq
+              value: resolved
+
+  - ref: "03.13.11"
+    title: Cryptographic Protection
+    domain: Cryptography
+    testability: automated
+    canonical_guidance: |
+      Approved cryptography must be used. Missing or weak crypto findings
+      (CWE-311, CWE-326, CWE-327) fail this requirement.
+    mappings:
+      - key: nist_800_171_r3_03_13_11_weak_crypto
+        when:
+          logic: AND
+          conditions:
+            - field: finding.cwe
+              op: contains_any
+              value: ["CWE-311", "CWE-326", "CWE-327"]
+            - field: finding.workflow_status
+              op: neq
+              value: resolved
+
+  # ── 03.14: System and Information Integrity ────────────────
+  - ref: "03.14.01"
+    title: Flaw Remediation
+    domain: Patch Management
+    testability: automated
+    canonical_guidance: |
+      System flaws must be remediated. Patch Management family findings
+      at High+ severity past SLA fail this requirement.
+    mappings:
+      - key: nist_800_171_r3_03_14_01_patch_breached
+        when:
+          logic: AND
+          conditions:
+            - field: finding.plugin_family
+              op: eq
+              value: "Patch Management"
+            - field: finding.severity
+              op: gte
+              value: 3
+            - field: finding.sla_status
+              op: in
+              value: [breached, at_risk]
+            - field: finding.workflow_status
+              op: neq
+              value: resolved
+
+  - ref: "03.14.02"
+    title: Malicious Code Protection
+    domain: Endpoint Protection
+    testability: automated
+    canonical_guidance: |
+      Malicious-code protection mechanisms must be in place. Assets
+      missing AV or EDR fail this requirement.
+    mappings:
+      - key: nist_800_171_r3_03_14_02_missing_endpoint_protection
+        when:
+          logic: OR
+          conditions:
+            - field: inventory.no_av
+              op: is_true
+            - field: inventory.no_edr
+              op: is_true
+
+  - ref: "03.14.06"
+    title: System Monitoring
+    domain: Detection
+    testability: automated
+    canonical_guidance: |
+      The system must be monitored to detect attacks. Active critical SIEM
+      alerts or observed ATT&CK TTPs indicate either active compromise or
+      monitoring gaps requiring response.
+    mappings:
+      - key: nist_800_171_r3_03_14_06_attack_ttps
+        when:
+          logic: AND
+          conditions:
+            - field: finding.has_ttps
+              op: is_true
+            - field: finding.workflow_status
+              op: not_in
+              value: [resolved, false_positive]

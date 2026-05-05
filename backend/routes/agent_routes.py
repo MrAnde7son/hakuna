@@ -14,10 +14,18 @@ from sqlalchemy.orm import Session
 
 from core.database import get_db, SessionLocal
 from core.limiter import limiter
-from models.models import Agent, AgentRun, AgentSchedule, AgentDocument, AgentApproval, User
+from core.time_utils import iso_utc
+from models.models import Agent, AgentRun, AgentSchedule, AgentDocument, AgentApproval, LLMInteraction, User
 from core.auth import get_current_user, get_accessible_org_ids, apply_org_filter
 from agents.agent_tools import get_tool_catalog
-from agents.agent_engine import run_agent, run_agent_streaming, update_agent_memory, resume_agent_run
+from agents.agent_engine import (
+    run_agent,
+    run_agent_streaming,
+    update_agent_memory,
+    resume_agent_run,
+    record_approval_decision,
+    continue_after_decision,
+)
 from agents.agent_pipeline import get_available_pipelines, PIPELINE_REGISTRY
 from agents.agent_prompts import ENHANCED_PROMPTS
 
@@ -72,7 +80,14 @@ def available_models(db: Session = Depends(get_db)):
 def list_agents(db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
     q = db.query(Agent).filter(Agent.name != "__copilot__").order_by(Agent.updated_at.desc())
     q = apply_org_filter(q, Agent, org_ids)
-    agents = q.all()
+    # Scratch agents are spawned per-(asset, mission) by the audit runner and
+    # are scan-internal; their traces surface from the Scan detail panel, not
+    # the Agents list. Filter in Python so we don't need dialect-specific
+    # JSON operators (tests run on SQLite, prod on Postgres).
+    agents = [
+        a for a in q.all()
+        if not (isinstance(a.guardrails, dict) and a.guardrails.get("scratch") is True)
+    ]
     agent_ids = [a.id for a in agents]
 
     # Gather last run per agent (status + timestamp + run_count)
@@ -95,7 +110,7 @@ def list_agents(db: Session = Depends(get_db), org_ids: Optional[List[int]] = De
         for r in latest:
             last_runs[r.agent_id] = {
                 "status": r.status,
-                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "created_at": iso_utc(r.created_at),
                 "input": (r.input or "")[:100],
             }
         # Run count per agent
@@ -118,7 +133,7 @@ def list_agents(db: Session = Depends(get_db), org_ids: Optional[List[int]] = De
         for s in scheds:
             schedule_map.setdefault(s.agent_id, []).append({
                 "cron_expression": s.cron_expression,
-                "next_run_at": s.next_run_at.isoformat() if s.next_run_at else None,
+                "next_run_at": iso_utc(s.next_run_at),
             })
 
     result = []
@@ -453,7 +468,7 @@ def _doc_to_dict(d: AgentDocument):
         "content_type": d.content_type,
         "size_bytes": d.size_bytes,
         "chunk_count": d.chunk_count,
-        "created_at": d.created_at.isoformat() if d.created_at else None,
+        "created_at": iso_utc(d.created_at),
     }
 
 
@@ -462,6 +477,11 @@ def _doc_to_dict(d: AgentDocument):
 class ApprovalDecide(BaseModel):
     decision: str          # "approved" | "rejected"
     reason: Optional[str] = None
+    # When set to "run", an "approved" decision also auto-approves any future
+    # calls of the same tool for the rest of this agent run, and bulk-approves
+    # any other pending rows in the queue for the same tool. Omit (or pass
+    # null) for the default per-call behavior.
+    grant_scope: Optional[str] = None
 
 
 @router.get("/approvals")
@@ -512,6 +532,8 @@ def decide_approval(
     """Approve or reject a pending tool call. Resumes the agent run."""
     if body.decision not in ("approved", "rejected"):
         raise HTTPException(400, "decision must be 'approved' or 'rejected'")
+    if body.grant_scope is not None and body.grant_scope != "run":
+        raise HTTPException(400, "grant_scope must be 'run' if provided")
 
     q = (
         db.query(AgentApproval)
@@ -523,14 +545,72 @@ def decide_approval(
     if not approval:
         raise HTTPException(404, "Pending approval not found")
 
-    run = resume_agent_run(
-        run_id=approval.agent_run_id,
+    approval_id_for_cleanup = approval.id
+    run_id = approval.agent_run_id
+
+    # Record the decision synchronously so the queue/UI sees the new
+    # status immediately. The actual tool execution + LLM continuation
+    # can take many seconds and runs in the background below.
+    record_approval_decision(
+        run_id=run_id,
         decision=body.decision,
         reason=body.reason,
         decider_id=current_user.id if current_user else None,
         db=db,
+        grant_scope=body.grant_scope,
     )
-    return {"ok": True, "run": _run_to_dict(run)}
+
+    # The notification that pointed at this approval is no longer
+    # actionable — drop it so the bell stops surfacing stale work.
+    from services.approval_lifecycle import clear_approval_notification
+    if clear_approval_notification(db, approval_id_for_cleanup):
+        db.commit()
+
+    # Continue the agent loop off the request thread — keeps the HTTP
+    # response fast even when the approved tool is slow (SSH commands,
+    # multi-step LLM round-trips, further tool executions).
+    #
+    # Audit-driven runs (those tied to a Scan) resume on the same Celery
+    # queue that ran the initial dispatch so the full lifecycle stays
+    # visible in audit-worker logs and survives a backend restart. Manual
+    # non-audit runs keep the in-process path so dev without the audits
+    # profile still works.
+    is_audit_run = bool(
+        ((approval.agent.memory or {}).get("_run_ctx") or {}).get("_scan_id")
+    )
+
+    from services.job_manager import dispatch
+
+    if is_audit_run:
+        from services.audit_worker import continue_agent_run_task
+        try:
+            result = continue_agent_run_task.apply_async(
+                args=(run_id,),
+                queue="audits",
+                ignore_result=True,
+            )
+            return {"ok": True, "run_id": run_id, "task_id": result.id}
+        except Exception:
+            # Broker unreachable. The decision is already committed, so we
+            # can't bounce the request — fall through to the in-process
+            # path so the run still resumes. The audit-worker logs won't
+            # show the resume in this degraded mode, but progress is
+            # better than a stuck run.
+            import logging
+            logging.getLogger(__name__).exception(
+                "audit resume celery dispatch failed for run=%s; falling back to in-process",
+                run_id,
+            )
+
+    def _continue():
+        bg_db = SessionLocal()
+        try:
+            continue_after_decision(run_id, bg_db)
+        finally:
+            bg_db.close()
+
+    job = dispatch(f"agent_resume_{run_id}", _continue)
+    return {"ok": True, "run_id": run_id, "job_id": job.id}
 
 
 # ── Agent by ID (parameterized routes last) ──────────────────────────
@@ -570,6 +650,12 @@ def delete_agent(agent_id: int, db: Session = Depends(get_db), org_ids: Optional
     # so clear them explicitly before deleting the agent.
     db.query(AgentApproval).filter(AgentApproval.agent_id == agent_id).delete(synchronize_session=False)
     db.query(AgentSchedule).filter(AgentSchedule.agent_id == agent_id).delete(synchronize_session=False)
+    # llm_interactions is an audit log that should outlive the agent — NULL
+    # the FKs so cascading the agent (and its runs) doesn't trip the FK.
+    run_id_subq = db.query(AgentRun.id).filter(AgentRun.agent_id == agent_id).subquery()
+    db.query(LLMInteraction).filter(
+        (LLMInteraction.agent_id == agent_id) | (LLMInteraction.agent_run_id.in_(run_id_subq))
+    ).update({"agent_id": None, "agent_run_id": None}, synchronize_session=False)
     db.delete(agent)
     db.commit()
     return {"ok": True}
@@ -626,13 +712,30 @@ async def run_agent_stream(agent_id: int, body: AgentRunRequest, request: Reques
     async def event_stream():
         # Use a fresh DB session for the background work
         stream_db = SessionLocal()
+        run_id: Optional[int] = None
         try:
             ag = stream_db.query(Agent).filter(Agent.id == agent_data["id"]).first()
             for event in run_agent_streaming(ag, user_input, stream_db):
+                if event.get("type") == "start" and event.get("run_id"):
+                    run_id = event["run_id"]
                 yield f"data: {json.dumps(event)}\n\n"
                 await asyncio.sleep(0)  # yield control
             yield "data: [DONE]\n\n"
         finally:
+            # If the client disconnected (or any other error killed the generator)
+            # before run_agent_streaming finalized the row, the AgentRun row is
+            # stuck in 'running'. Mark it failed now so it shows up correctly in
+            # the UI immediately, instead of waiting for the 10-minute janitor.
+            if run_id is not None:
+                try:
+                    run = stream_db.query(AgentRun).filter(AgentRun.id == run_id).first()
+                    if run and run.status == "running":
+                        run.status = "failed"
+                        run.error = "Client disconnected before run completed"
+                        run.finished_at = datetime.utcnow()
+                        stream_db.commit()
+                except Exception:
+                    stream_db.rollback()
             stream_db.close()
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
@@ -649,12 +752,14 @@ def list_runs(agent_id: int, limit: int = 20, db: Session = Depends(get_db)):
         .limit(limit)
         .all()
     )
-    # Auto-expire stale "running" runs (stuck due to disconnected streams)
+    # Safety net: the SSE endpoint marks runs failed in its finally: block on
+    # disconnect, but if that path didn't run (worker crash, etc.) sweep stale
+    # 'running' rows here so the UI doesn't show them as in-flight forever.
     stale_cutoff = datetime.utcnow() - timedelta(minutes=10)
     for r in runs:
         if r.status == "running" and r.created_at and r.created_at < stale_cutoff:
             r.status = "failed"
-            r.error = "Run timed out (stream disconnected)"
+            r.error = "Run abandoned (no completion signal)"
             r.finished_at = datetime.utcnow()
     db.commit()
     return [_run_to_dict(r, include_trace=False) for r in runs]
@@ -689,8 +794,8 @@ def _agent_to_dict(a: Agent):
         "guardrails": a.guardrails, "memory": a.memory,
         "model": a.model,
         "document_count": len(a.documents) if a.documents else 0,
-        "created_at": a.created_at.isoformat() if a.created_at else None,
-        "updated_at": a.updated_at.isoformat() if a.updated_at else None,
+        "created_at": iso_utc(a.created_at),
+        "updated_at": iso_utc(a.updated_at),
     }
 
 
@@ -699,8 +804,8 @@ def _run_to_dict(r: AgentRun, include_trace: bool = True):
         "id": r.id, "agent_id": r.agent_id, "input": r.input,
         "output": r.output, "status": r.status, "error": r.error,
         "steps_used": r.steps_used,
-        "created_at": r.created_at.isoformat() if r.created_at else None,
-        "finished_at": r.finished_at.isoformat() if r.finished_at else None,
+        "created_at": iso_utc(r.created_at),
+        "finished_at": iso_utc(r.finished_at),
     }
     if include_trace:
         d["trace"] = r.trace
@@ -828,7 +933,8 @@ AGENT_TEMPLATES = [
             "get_remediation_grouping", "get_plugin_family_stats", "get_owner_workload",
             "get_finding_detail", "get_asset_profile",
             "create_campaign", "list_campaigns", "get_campaign",
-            "create_campaign_workflow", "list_workflows", "list_workflow_templates",
+            "create_campaign_workflow", "create_workflow_from_template",
+            "list_workflows", "list_workflow_templates",
             "create_tag", "tag_assets", "bulk_tag_findings",
             "list_tags", "list_scans",
             "read_scratchpad", "write_scratchpad", "request_clarification",
@@ -1117,17 +1223,18 @@ AGENT_TEMPLATES = [
     {
         "id": "validator_agent",
         "name": "Vulnerability Validator",
-        "description": "Autonomous validator for high/critical findings. Runs safe probes to confirm or refute exploitability, then requests a human approval before writing the verdict.",
+        "description": "Autonomous validator for high/critical findings. Runs safe probes to confirm or refute exploitability, then writes a verdict the analyst can review or override.",
         "icon": "shield-check",
         "system_prompt": ENHANCED_PROMPTS["validator_agent"],
         "tools": [
             # Probes
             "probe_url_status", "probe_tcp_connect",
             "fetch_response_headers", "check_response_body",
-            # Verdict writer (HITL-gated)
+            # Verdict writer
             "update_finding_validation",
             # Read-only context
             "get_finding_detail", "get_asset_profile",
+            "get_threat_cves", "list_exceptions",
             "fetch_url", "search_web",
             # Memory + clarification
             "read_scratchpad", "write_scratchpad", "request_clarification",
@@ -1135,11 +1242,48 @@ AGENT_TEMPLATES = [
         "guardrails": {
             "max_steps": 10,
             "read_only": False,  # must write the verdict
-            "autonomy_level": "conservative",  # HITL required on update_finding_validation
+            "autonomy_level": "conservative",
         },
         "suggested_input": "Validate finding {finding_id} — determine whether it's truly exploitable and record your verdict.",
     },
 ]
+
+
+# ── Protocol Audit templates (auto-expanded from AUDITS registry) ────
+#
+# One template per (protocol, mission) tuple. Kept after the hand-written
+# entries above so the static validator_agent etc. remain the source of truth
+# for their shape; protocol audits are a uniform family so we generate them.
+def _build_protocol_audit_templates() -> list[dict]:
+    from agents.audit_registry import AUDITS
+
+    out: list[dict] = []
+    for proto, audit in AUDITS.items():
+        for mission in audit.missions:
+            prompt = ENHANCED_PROMPTS.get(mission.prompt_key)
+            if not prompt:
+                continue
+            out.append({
+                "id": f"{proto}_audit_{mission.key}",
+                "name": f"{audit.label} — {mission.label}",
+                "description": mission.description,
+                "icon": "shield-alert",
+                "system_prompt": prompt,
+                "tools": list(audit.tool_names),
+                "guardrails": {
+                    "max_steps": mission.suggested_budget,
+                    "read_only": False,           # emit_finding writes Finding rows
+                    "autonomy_level": "autonomous",  # read-only probes; no HITL needed
+                },
+                "suggested_input": (
+                    f"Audit asset {{asset_id}} for {mission.label.lower()} exposures via {proto.upper()}."
+                ),
+                "hidden": True,  # not user-browsable; kicked off via /api/audits/run
+            })
+    return out
+
+
+AGENT_TEMPLATES.extend(_build_protocol_audit_templates())
 
 
 def _schedule_to_dict(s: AgentSchedule):
@@ -1147,9 +1291,9 @@ def _schedule_to_dict(s: AgentSchedule):
         "id": s.id, "agent_id": s.agent_id,
         "cron_expression": s.cron_expression, "input": s.input_template,
         "is_enabled": s.is_enabled,
-        "last_run_at": s.last_run_at.isoformat() if s.last_run_at else None,
-        "next_run_at": s.next_run_at.isoformat() if s.next_run_at else None,
-        "created_at": s.created_at.isoformat() if s.created_at else None,
+        "last_run_at": iso_utc(s.last_run_at),
+        "next_run_at": iso_utc(s.next_run_at),
+        "created_at": iso_utc(s.created_at),
     }
 
 
@@ -1164,10 +1308,14 @@ def _approval_to_dict(a: AgentApproval, include_snapshot: bool = False):
         "model_name": a.model_name,
         "current_step": a.current_step,
         "status": a.status,
-        "requested_at": a.requested_at.isoformat() if a.requested_at else None,
-        "decided_at": a.decided_at.isoformat() if a.decided_at else None,
+        "requested_at": iso_utc(a.requested_at),
+        "decided_at": iso_utc(a.decided_at),
         "decided_by": a.decided_by,
         "rejection_reason": a.rejection_reason,
+        # Tool names already bulk-approved for this run — lets the UI hide
+        # the "Approve all <tool>" affordance for tools the user has
+        # already granted.
+        "run_auto_approved_tools": list((a.run.auto_approved_tools or [])) if a.run else [],
     }
     if include_snapshot:
         d["assistant_content"] = a.assistant_content

@@ -100,16 +100,20 @@ export default function Login() {
           </p>
         </div>
 
-        <GoogleSignInButton />
+        {import.meta.env.VITE_GOOGLE_CLIENT_ID && (
+          <>
+            <GoogleSignInButton />
 
-        <div style={{
-          display: 'flex', alignItems: 'center', gap: 12, margin: '16px 0',
-          color: 'var(--muted, #71717a)', fontSize: 13,
-        }}>
-          <div style={{ flex: 1, height: 1, background: 'var(--border)' }} />
-          or
-          <div style={{ flex: 1, height: 1, background: 'var(--border)' }} />
-        </div>
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 12, margin: '16px 0',
+              color: 'var(--muted, #71717a)', fontSize: 13,
+            }}>
+              <div style={{ flex: 1, height: 1, background: 'var(--border)' }} />
+              or
+              <div style={{ flex: 1, height: 1, background: 'var(--border)' }} />
+            </div>
+          </>
+        )}
 
         {/* SSO discovery banner */}
         {ssoInfo && (

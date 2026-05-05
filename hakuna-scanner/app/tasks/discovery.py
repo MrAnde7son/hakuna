@@ -19,7 +19,12 @@ from app.celery_app import celery
 from app.config import settings
 from app.database import get_task_session
 from app.ingest.assets import upsert_discovered_hosts, update_dns_records, update_ports
-from app.ingest.delta import emit_new_asset_events, detect_gone_assets
+from app.ingest.delta import (
+    apply_shodan_observations,
+    decay_unseen_assets,
+    detect_gone_assets,
+    emit_new_asset_events,
+)
 from app.ingest.liveness import (
     check_dns_resolution,
     create_dangling_dns_finding,
@@ -28,11 +33,14 @@ from app.ingest.liveness import (
 )
 from app.ingest.wildcard import detect_wildcard, filter_wildcard_results
 from app.ingest.crtsh import query_crtsh
-from app.runner.base import BaseRunner, batch_hosts, run_batches_parallel
+from app.ingest.otx_passive_dns import query_otx_passive_dns
+from app.ingest.shodan_discovery import query_shodan
+from app.runner.base import BaseRunner, batch_hosts, run_batches_parallel, run_batches_parallel_with_outcomes
 from app.tasks.scoping import (
     build_stale_clause,
     build_target_scope,
     compose_where,
+    count_assets_in_scan_scope,
     load_scan_run_scope,
 )
 from app.runner.tools import (
@@ -149,7 +157,14 @@ async def _get_assets_with_ports(
     apply_stale: bool = False,
     stale_hours: int = 24,
 ) -> list[dict]:
-    """Assets that have open ports (for liveness HTTP check)."""
+    """Assets that have open ports (for liveness HTTP check).
+
+    PR #2: each asset dict carries ``port_service_types`` so the
+    liveness HTTP gate can prefer service identity over the canonical
+    {80, 443, 8080, 8443} port set.
+    """
+    from app.ingest.service_lookup import attach_port_service_types
+
     scope_sql, scope_params = build_target_scope(target_scope)
     stale_sql = build_stale_clause(enabled=apply_stale, stale_hours=stale_hours)
     extra = compose_where(scope_sql, stale_sql)
@@ -162,10 +177,12 @@ async def _get_assets_with_ports(
             """),
             params,
         )
-        return [
+        assets = [
             {"id": row.id, "hostname": row.hostname, "ip": row.ip, "open_ports": row.open_ports}
             for row in result.fetchall()
         ]
+        await attach_port_service_types(db, assets)
+        return assets
 
 
 # --- Step functions ---
@@ -302,6 +319,46 @@ async def _do_uncover(sf, org_id: str, target_scope: str | None = None) -> dict:
     return {"hosts_found": len(all_hosts), "upserted": total, "new": len(new_ids)}
 
 
+async def _do_shodan(sf, org_id: str, target_scope: str | None = None) -> dict:
+    """Query Shodan for hosts pivoting on the org's seed domains.
+
+    Catches shadow-IT and orphan assets that DNS/CT enumeration miss:
+    forgotten dev boxes serving a corp cert, hosts with hostnames Shodan
+    resolved that the org never published. Skipped silently when no
+    SHODAN_API_KEY is configured.
+    """
+    api_key = settings.shodan_api_key
+    if not api_key:
+        logger.info("shodan: SHODAN_API_KEY not set — skipping")
+        return {"hosts_found": 0, "upserted": 0, "new": 0, "skipped": True}
+
+    domains = await _get_target_domains(sf, org_id, target_scope=target_scope)
+    all_hosts: list[dict] = []
+    for domain in domains:
+        hosts = await query_shodan(api_key, domain)
+        all_hosts.extend(hosts)
+
+    if not all_hosts:
+        return {"hosts_found": 0, "upserted": 0, "new": 0}
+
+    async with sf() as db:
+        total, new_ids = await upsert_discovered_hosts(db, uuid.UUID(org_id), all_hosts, "shodan")
+        await emit_new_asset_events(db, uuid.UUID(org_id), new_ids)
+        # Merge Shodan port/banner/CVE data and synthesize port_change events
+        # for newly-observed ports. Lets the audit auto-trigger fire on
+        # Shodan-discovered services (exposed SMB, SNMP, datastore, etc.) the
+        # same way it fires on naabu-discovered ports — without waiting for an
+        # internal port sweep that may never reach an orphan IP.
+        shodan_meta = await apply_shodan_observations(db, uuid.UUID(org_id), all_hosts)
+
+    return {
+        "hosts_found": len(all_hosts),
+        "upserted": total,
+        "new": len(new_ids),
+        "shodan_observations": shodan_meta,
+    }
+
+
 async def _do_crtsh(sf, org_id: str, target_scope: str | None = None) -> dict:
     """Query certificate transparency logs (crt.sh) for subdomain discovery."""
     domains = await _get_target_domains(sf, org_id, target_scope=target_scope)
@@ -316,6 +373,33 @@ async def _do_crtsh(sf, org_id: str, target_scope: str | None = None) -> dict:
 
     async with sf() as db:
         total, new_ids = await upsert_discovered_hosts(db, uuid.UUID(org_id), all_hosts, "crtsh")
+        await emit_new_asset_events(db, uuid.UUID(org_id), new_ids)
+
+    return {"hosts_found": len(all_hosts), "upserted": total, "new": len(new_ids)}
+
+
+async def _do_otx(sf, org_id: str, target_scope: str | None = None) -> dict:
+    """Query AlienVault OTX passive DNS for subdomain discovery.
+
+    Catches subdomains that resolved historically but never appeared in a
+    public certificate (so crt.sh missed them). No-op when otx_api_key is
+    unset — keeps dev environments quiet.
+    """
+    if not settings.otx_api_key:
+        return {"hosts_found": 0, "upserted": 0, "new": 0, "skipped": "no_api_key"}
+
+    domains = await _get_target_domains(sf, org_id, target_scope=target_scope)
+    all_hosts: list[dict] = []
+    for domain in domains:
+        hostnames = await query_otx_passive_dns(domain, settings.otx_api_key)
+        for h in hostnames:
+            all_hosts.append({"host": h})
+
+    if not all_hosts:
+        return {"hosts_found": 0, "upserted": 0, "new": 0}
+
+    async with sf() as db:
+        total, new_ids = await upsert_discovered_hosts(db, uuid.UUID(org_id), all_hosts, "otx")
         await emit_new_asset_events(db, uuid.UUID(org_id), new_ids)
 
     return {"hosts_found": len(all_hosts), "upserted": total, "new": len(new_ids)}
@@ -364,12 +448,18 @@ async def _do_naabu(sf, org_id: str, target_scope: str | None = None) -> dict:
         return {"scanned": 0, "skipped_fresh": True}
 
     batches = batch_hosts(hostnames, 1000)
-    per_batch_timeout = BaseRunner.timeout_for_host_count(1000, per_host_seconds=0.5)
-    logger.info("org=%s naabu hosts=%d batches=%d concurrency=%d per_batch_timeout=%ds",
+    per_host_seconds = (
+        settings.naabu_per_host_seconds_top1000
+        if settings.naabu_use_top1000
+        else 0.5
+    )
+    per_batch_timeout = BaseRunner.timeout_for_host_count(1000, per_host_seconds=per_host_seconds)
+    logger.info("org=%s naabu hosts=%d batches=%d concurrency=%d per_batch_timeout=%ds top1000=%s",
                 org_id, len(hostnames), len(batches),
-                settings.discovery_batch_concurrency, per_batch_timeout)
+                settings.discovery_batch_concurrency, per_batch_timeout,
+                settings.naabu_use_top1000)
 
-    all_results = await run_batches_parallel(
+    outcomes = await run_batches_parallel_with_outcomes(
         build_runner=lambda batch: NaabuRunner(batch, timeout=per_batch_timeout),
         batches=batches,
         org_id=org_id,
@@ -377,10 +467,33 @@ async def _do_naabu(sf, org_id: str, target_scope: str | None = None) -> dict:
         stage_name="naabu",
     )
 
-    async with sf() as db:
-        updated = await update_ports(db, uuid.UUID(org_id), all_results)
+    all_results: list[dict] = []
+    scanned_hosts: list[str] = []
+    failed_hosts: list[str] = []
+    for o in outcomes:
+        if o.success:
+            all_results.extend(o.results)
+            scanned_hosts.extend(o.batch_input)
+        else:
+            failed_hosts.extend(o.batch_input)
 
-    return {"ports_found": len(all_results), "hosts_updated": updated, "batches": len(batches)}
+    if failed_hosts:
+        logger.warning("org=%s naabu: %d hosts in failed/timed-out batches",
+                       org_id, len(failed_hosts))
+
+    async with sf() as db:
+        updated = await update_ports(
+            db, uuid.UUID(org_id), all_results,
+            scanned_hosts=scanned_hosts, failed_hosts=failed_hosts,
+        )
+
+    return {
+        "ports_found": len(all_results),
+        "hosts_updated": updated,
+        "hosts_scanned": len(scanned_hosts),
+        "hosts_failed": len(failed_hosts),
+        "batches": len(batches),
+    }
 
 
 async def _do_liveness_gate(sf, org_id: str, target_scope: str | None = None) -> dict:
@@ -443,12 +556,20 @@ async def _do_liveness_gate(sf, org_id: str, target_scope: str | None = None) ->
                 port_check_results[host] = True
 
     # Check 3: HTTP probe on web ports
+    # PR #2: service_type-driven gate with legacy port fallback.
+    # An asset newly stamped as "http"/"https" on 8081 (post PR #1)
+    # gets liveness-probed even though 8081 isn't in the canonical set.
+    from app.ingest.service_lookup import asset_has_matching_port
     http_check_results: dict[str, bool] = {}
-    HTTP_PORTS = {80, 443, 8080, 8443}
+    _HTTP_SERVICE_TYPES = {"http", "https"}
+    _HTTP_LEGACY_PORTS = {80, 443, 8080, 8443}
     http_hosts = []
     for a in assets_data:
-        ports = set(a.get("open_ports") or [])
-        if ports & HTTP_PORTS:
+        if asset_has_matching_port(
+            a,
+            service_types=_HTTP_SERVICE_TYPES,
+            legacy_ports=_HTTP_LEGACY_PORTS,
+        ):
             http_hosts.append(a["hostname"])
 
     if http_hosts:
@@ -541,6 +662,11 @@ def run_uncover(self, org_id: str, target_scope: str | None = None) -> dict:
     return _run_async(_do_uncover(get_task_session(), org_id, target_scope=target_scope))
 
 
+@celery.task(bind=True, name="discovery.run_shodan")
+def run_shodan(self, org_id: str, target_scope: str | None = None) -> dict:
+    return _run_async(_do_shodan(get_task_session(), org_id, target_scope=target_scope))
+
+
 @celery.task(bind=True, name="discovery.run_dnsx")
 def run_dnsx(self, org_id: str, target_scope: str | None = None) -> dict:
     return _run_async(_do_dnsx(get_task_session(), org_id, target_scope=target_scope))
@@ -561,7 +687,7 @@ def run_liveness_gate(self, org_id: str, target_scope: str | None = None) -> dic
 def run_discovery_chain(self, org_id: str, scan_run_id: str | None = None) -> dict:
     """Full discovery chain, organized into parallel groups.
 
-    Group 1 (parallel): subfinder, wildcard_bruteforce, uncover
+    Group 1 (parallel): subfinder, wildcard_bruteforce, uncover, crtsh, shodan
         All three read target_domains and append to assets via idempotent
         upserts. No inter-step dependency, so they run concurrently.
 
@@ -589,6 +715,8 @@ def run_discovery_chain(self, org_id: str, scan_run_id: str | None = None) -> di
                 ("wildcard_bruteforce", _do_wildcard_and_bruteforce),
                 ("uncover", _do_uncover),
                 ("crtsh", _do_crtsh),
+                ("otx", _do_otx),
+                ("shodan", _do_shodan),
             ],
             [
                 ("dnsx", _do_dnsx),
@@ -711,9 +839,14 @@ def run_discovery_chain(self, org_id: str, scan_run_id: str | None = None) -> di
                     )
                     await db.commit()
 
-        # Post-discovery: detect gone assets
+        # Post-discovery: decay assets that weren't validated this cycle,
+        # then emit asset_gone events for hosts unseen across multiple
+        # scans. The decay must run BEFORE detect_gone_assets so the score
+        # reflects this scan's outcome before downstream consumers read it.
         sf2 = get_task_session()
         async with sf2() as db:
+            decayed = await decay_unseen_assets(db, uuid.UUID(org_id))
+            results["liveness_decayed"] = decayed
             gone = await detect_gone_assets(db, uuid.UUID(org_id))
             results["gone_assets"] = gone
 
@@ -777,8 +910,33 @@ def run_discovery_chain(self, org_id: str, scan_run_id: str | None = None) -> di
 async def _mark_failed(scan_run_id: str, error: str):
     sf = get_task_session()
     async with sf() as db:
-        await db.execute(
-            text("UPDATE scan_runs SET status = 'failed', finished_at = :now, error = :err WHERE id = :id"),
-            {"id": scan_run_id, "now": datetime.now(timezone.utc), "err": error},
-        )
+        # Best-effort partial-progress count: if upstream stages already
+        # populated assets before the failure, surface that on the UI
+        # instead of leaving assets_found at the default 0.
+        partial = None
+        try:
+            partial = await count_assets_in_scan_scope(db, scan_run_id)
+        except Exception:
+            logger.exception("scan_run=%s partial asset count failed", scan_run_id)
+
+        if partial is None:
+            await db.execute(
+                text("UPDATE scan_runs SET status = 'failed', finished_at = :now, error = :err WHERE id = :id"),
+                {"id": scan_run_id, "now": datetime.now(timezone.utc), "err": error},
+            )
+        else:
+            await db.execute(
+                text("""
+                    UPDATE scan_runs
+                    SET status = 'failed', finished_at = :now, error = :err,
+                        assets_found = :found
+                    WHERE id = :id
+                """),
+                {
+                    "id": scan_run_id,
+                    "now": datetime.now(timezone.utc),
+                    "err": error,
+                    "found": partial,
+                },
+            )
         await db.commit()

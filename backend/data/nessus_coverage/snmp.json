@@ -1,0 +1,3439 @@
+{
+  "protocol": "snmp",
+  "total": 113,
+  "credentialed_total": 92,
+  "cve_count": 92,
+  "nbin_count": 0,
+  "family_counts": [
+    [
+      "CISCO",
+      70
+    ],
+    [
+      "SNMP",
+      32
+    ],
+    [
+      "Misc.",
+      6
+    ],
+    [
+      "General",
+      3
+    ],
+    [
+      "",
+      1
+    ],
+    [
+      "Netware",
+      1
+    ]
+  ],
+  "cluster_counts": [
+    [
+      "patch_cve",
+      92
+    ],
+    [
+      "service_inventory",
+      23
+    ],
+    [
+      "information_disclosure",
+      11
+    ],
+    [
+      "other",
+      8
+    ],
+    [
+      "privilege_and_acl",
+      6
+    ],
+    [
+      "misconfiguration",
+      2
+    ],
+    [
+      "authentication_weakness",
+      1
+    ],
+    [
+      "malware_detection",
+      1
+    ]
+  ],
+  "category_counts": [
+    [
+      "ACT_GATHER_INFO",
+      108
+    ],
+    [
+      "ACT_DENIAL",
+      3
+    ],
+    [
+      "ACT_KILL_HOST",
+      1
+    ],
+    [
+      "ACT_ATTACK",
+      1
+    ]
+  ],
+  "plugins": [
+    {
+      "plugin_id": 10264,
+      "source": "nasl_header",
+      "name": "SNMP Agent Default Community Names",
+      "family": "SNMP",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The community names of the remote SNMP server can be guessed.",
+      "description": "It is possible to obtain the default community names of the remote\nSNMP server.\n\nAn attacker can use this information to gain more knowledge about the\nremote host or to change the configuration of the remote system (if\nthe default community allows such modifications).",
+      "solution": "Disable the SNMP service on the remote host if you do not use it,\nfilter incoming UDP packets going to this port, or change the default\ncommunity string.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-1999-0186",
+        "CVE-1999-0254",
+        "CVE-1999-0472",
+        "CVE-1999-0516",
+        "CVE-1999-0517",
+        "CVE-1999-0792",
+        "CVE-2000-0147",
+        "CVE-2001-0380",
+        "CVE-2001-0514",
+        "CVE-2001-1210",
+        "CVE-2002-0109",
+        "CVE-2002-0478",
+        "CVE-2002-1229",
+        "CVE-2004-0311",
+        "CVE-2004-1474",
+        "CVE-2010-1574"
+      ],
+      "require_keys": [],
+      "require_ports": [],
+      "dependencies": [
+        "find_service2.nasl"
+      ],
+      "filename": "snmp_default_communities.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 10266,
+      "source": "nasl_header",
+      "name": "SNMP Zero Length UDP Packet Remote DoS",
+      "family": "SNMP",
+      "category": "ACT_KILL_HOST",
+      "synopsis": "",
+      "description": "",
+      "solution": "",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-2000-0221"
+      ],
+      "require_keys": [
+        "Settings/ParanoidReport"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "snmp_dos.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 10546,
+      "source": "nasl_header",
+      "name": "Microsoft Windows LAN Manager SNMP LanMan Users Disclosure",
+      "family": "SNMP",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The list of LanMan users of the remote host can be obtained via SNMP.",
+      "description": "It is possible to obtain the list of LanMan users on the remote host\n\tby sending SNMP requests with the OID 1.3.6.1.4.1.77.1.2.25.1.1\n\n\tAn attacker may use this information to gain more knowledge about the\n\ttarget host.",
+      "solution": "Disable the SNMP service on the remote host if you do not use it, or\n\tfilter incoming UDP packets going to this port.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-1999-0499"
+      ],
+      "require_keys": [
+        "SNMP/community"
+      ],
+      "require_ports": [],
+      "dependencies": [
+        "snmp_settings.nasl",
+        "find_service2.nasl"
+      ],
+      "filename": "snmp_lanman_users.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 10547,
+      "source": "nasl_header",
+      "name": "Microsoft Windows LAN Manager SNMP LanMan Services Disclosure",
+      "family": "SNMP",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The list of LanMan services running on the remote host can be obtained\nvia SNMP.",
+      "description": "It is possible to obtain the list of LanMan services on the remote\nhost by sending SNMP requests with the OID 1.3.6.1.4.1.77.1.2.3.1.1\n\nAn attacker may use this information to gain more knowledge about\nthe target host.",
+      "solution": "Disable the SNMP service on the remote host if you do not use it,\nor filter incoming UDP packets going to this port.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-1999-0499"
+      ],
+      "require_keys": [
+        "SNMP/community"
+      ],
+      "require_ports": [],
+      "dependencies": [
+        "snmp_settings.nasl",
+        "find_service2.nasl"
+      ],
+      "filename": "snmp_lanman_services.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 10548,
+      "source": "nasl_header",
+      "name": "Microsoft Windows LAN Manager SNMP LanMan Shares Disclosure",
+      "family": "SNMP",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The list of LanMan shares of the remote host can be obtained via SNMP.",
+      "description": "It is possible to obtain the list of LanMan shares on the remote host\n\tby sending SNMP requests with the OID 1.3.6.1.4.1.77.1.2.27.1.1. \n\n\tAn attacker may use this information to gain more knowledge about the\n\ttarget host.",
+      "solution": "Disable the SNMP service on the remote host if you do not use it, or\n\tfilter incoming UDP packets going to this port.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-1999-0499"
+      ],
+      "require_keys": [
+        "SNMP/community"
+      ],
+      "require_ports": [],
+      "dependencies": [
+        "snmp_settings.nasl",
+        "find_service2.nasl"
+      ],
+      "filename": "snmp_lanman_shares.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 10550,
+      "source": "nasl_header",
+      "name": "SNMP Query Running Process List Disclosure",
+      "family": "SNMP",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The list of processes running on the remote host can be obtained via SNMP.",
+      "description": "It is possible to obtain the list of running processes on the remote\nhost by sending SNMP requests with the OID 1.3.6.1.2.1.25.4.2.1.2\n\nAn attacker may use this information to gain more knowledge about\nthe target host.",
+      "solution": "Disable the SNMP service on the remote host if you do not use it,\nor filter incoming UDP packets going to this port.",
+      "risk_factor": "None",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [],
+      "require_keys": [
+        "SNMP/community"
+      ],
+      "require_ports": [],
+      "dependencies": [
+        "snmp_settings.nasl",
+        "find_service2.nasl"
+      ],
+      "filename": "snmp_processes.nasl",
+      "clusters": [
+        "service_inventory"
+      ],
+      "primary_cluster": "service_inventory"
+    },
+    {
+      "plugin_id": 10551,
+      "source": "nasl_header",
+      "name": "SNMP Request Network Interfaces Enumeration",
+      "family": "SNMP",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The list of network interfaces cards of the remote host can be obtained via\nSNMP.",
+      "description": "It is possible to obtain the list of the network interfaces installed\non the remote host by sending SNMP requests with the OID 1.3.6.1.2.1.2.1.0\n\nAn attacker may use this information to gain more knowledge about\nthe target host.",
+      "solution": "Disable the SNMP service on the remote host if you do not use it,\nor filter incoming UDP packets going to this port.",
+      "risk_factor": "None",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [],
+      "require_keys": [
+        "SNMP/community"
+      ],
+      "require_ports": [],
+      "dependencies": [
+        "snmp_settings.nasl",
+        "find_service2.nasl"
+      ],
+      "filename": "snmp_ifaces.nasl",
+      "clusters": [
+        "other"
+      ],
+      "primary_cluster": "other"
+    },
+    {
+      "plugin_id": 10688,
+      "source": "nasl_header",
+      "name": "Cisco CatOS VACM read-write Community String Device Configuration Manipulation",
+      "family": "SNMP",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The SNMP private community strings can be retrieved using SNMP.",
+      "description": "It is possible to obtain the remote private community strings using\nthe View-Based Access Control MIB (VACM) of the remote Cisco router. \nAn attacker may use this flaw to gain read/write SNMP access on this\nrouter.\n\nNote that a value in this table does not necessarily mean that an\ninstance with the value exists in table vacmAccessTable.  The SNMP\nprivate community string(s) returned may only allow read access.",
+      "solution": "Disable the SNMP service on the remote host if you do not use it, or\nfilter incoming UDP packets going to this port or install Cisco patch.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-2004-1775"
+      ],
+      "require_keys": [
+        "SNMP/community"
+      ],
+      "require_ports": [],
+      "dependencies": [
+        "snmp_settings.nasl",
+        "snmp_sysDesc.nasl"
+      ],
+      "filename": "snmp_vacm.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 10800,
+      "source": "nasl_header",
+      "name": "SNMP Query System Information Disclosure",
+      "family": "SNMP",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The System Information of the remote host can be obtained via SNMP.",
+      "description": "It is possible to obtain the system information about the remote\nhost by sending SNMP requests with the OID 1.3.6.1.2.1.1.1.\n\nAn attacker may use this information to gain more knowledge about\nthe target host.",
+      "solution": "Disable the SNMP service on the remote host if you do not use it,\nor filter incoming UDP packets going to this port.",
+      "risk_factor": "None",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [],
+      "require_keys": [
+        "SNMP/community"
+      ],
+      "require_ports": [],
+      "dependencies": [
+        "snmp_settings.nasl",
+        "find_service2.nasl"
+      ],
+      "filename": "snmp_sysDesc.nasl",
+      "clusters": [
+        "information_disclosure"
+      ],
+      "primary_cluster": "information_disclosure"
+    },
+    {
+      "plugin_id": 10857,
+      "source": "nasl_header",
+      "name": "Multiple Vendor Malformed SNMP Message-Handling DoS",
+      "family": "SNMP",
+      "category": "ACT_DENIAL",
+      "synopsis": "",
+      "description": "",
+      "solution": "",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-2002-0013"
+      ],
+      "require_keys": [
+        "Settings/ParanoidReport",
+        "SNMP/community"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "snmp_oversized_length_field_dos.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 10858,
+      "source": "nasl_header",
+      "name": "Multiple Vendor Malformed SNMP Trap Handling DoS",
+      "family": "SNMP",
+      "category": "ACT_DENIAL",
+      "synopsis": "",
+      "description": "",
+      "solution": "",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-2002-0012"
+      ],
+      "require_keys": [
+        "Settings/ParanoidReport",
+        "SNMP/community"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "snmp_oversized_length_field_two.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 10969,
+      "source": "nasl_header",
+      "name": "SNMP Request Cisco Router Information Disclosure",
+      "family": "SNMP",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The model of the remote CISCO router can be obtained via SNMP.",
+      "description": "It is possible to determine the model of the remote CISCO system by\nsending SNMP requests with the OID 1.3.6.1.4.1.9.1.\n\nAn attacker may use this information to gain more knowledge about the\nremote host.",
+      "solution": "Disable the SNMP service on the remote host if you do not use it, or\nfilter incoming UDP packets going to this port.",
+      "risk_factor": "Low",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/OID"
+      ],
+      "require_ports": [],
+      "dependencies": [
+        "snmp_sysDesc.nasl"
+      ],
+      "filename": "snmp_cisco_type.nasl",
+      "clusters": [
+        "information_disclosure"
+      ],
+      "primary_cluster": "information_disclosure"
+    },
+    {
+      "plugin_id": 10970,
+      "source": "nasl_header",
+      "name": "Cisco 12000 Series Routers Multiple Vulnerabilities (DoS, ACL Bypass)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote router has multiple security bypass vulnerabilities.",
+      "description": "",
+      "solution": "Apply the fix referenced in the vendor's advisory.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2001-0862",
+        "CVE-2001-0863",
+        "CVE-2001-0864",
+        "CVE-2001-0865",
+        "CVE-2001-0866",
+        "CVE-2001-0867"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "cisco_gsr_acl.nasl",
+      "clusters": [
+        "patch_cve",
+        "privilege_and_acl"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 10971,
+      "source": "nasl_header",
+      "name": "Cisco 12000 Series Router ICMP Unreachable DoS",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote router has a denial of service vulnerability.",
+      "description": "The remote device appears to be a Cisco 12000 Series router.\nAccording to its version number, it is vulnerable to a denial of\nservice issue.  Forcing it to send a large number of ICMP unreachable\npackets can slow down throughput.  A remote attacker could use this to\ndegrade the performance of the network.",
+      "solution": "",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2001-0861"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "cisco_gsr_unreachable.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 10972,
+      "source": "nasl_header",
+      "name": "Cisco Devices Multiple SSH Information Disclosure Vulnerabilities",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote network device is running an SSH server with multiple\nvulnerabilities.",
+      "description": "According to its version number, the remote host is a Cisco router\nor switch running a vulnerable SSH daemon.\n\nBy exploiting weaknesses in the SSH protocol, it is possible to\ninsert arbitrary commands into an established SSH session, collect\ninformation that may help in brute-force key recovery, or brute-force\na session key.",
+      "solution": "Apply the fix referenced in the vendor's advisory.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-2001-0361",
+        "CVE-2001-0572"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "cisco_ssh_multiple_vulns.nasl",
+      "clusters": [
+        "patch_cve",
+        "information_disclosure"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 10973,
+      "source": "nasl_header",
+      "name": "Cisco IOS established Keyword ACL Bypass (CSCdi34061)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote device is missing a vendor-supplied security patch.",
+      "description": "The remote device seems to be vulnerable to a flaw in IOS when\nthe keyword 'established' is being used in the ACLs.\n\nThis bug can, under very specific circumstances and only with\ncertain IP host implementations, allow unauthorized packets to\ncircumvent a filtering router.\n\nThis vulnerability is documented as Cisco Bug ID CSCdi34061.",
+      "solution": "http://www.nessus.org/u?096cac5c",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-1999-0162"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "CSCdi34061.nasl",
+      "clusters": [
+        "patch_cve",
+        "privilege_and_acl"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 10974,
+      "source": "nasl_header",
+      "name": "Cisco IOS tacacs Keyword ACL Bypass (CSCdi36962)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote device is missing a vendor-supplied security patch.",
+      "description": "The remote device seems to be vulnerable to a flaw in IOS when\nthe keyword 'tacacs-ds' or 'tacacs' is being used in\nextended ACLs.\n\nThis bug can, under very specific circumstances and only with\ncertain IP host implementations, allow unauthorized packets to\ncircumvent a filtering router.\n\nThis vulnerability is documented as Cisco Bug ID CSCdi36962.",
+      "solution": "http://www.nessus.org/u?a0cafc92",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-1999-0161"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "CSCdi36962.nasl",
+      "clusters": [
+        "patch_cve",
+        "privilege_and_acl"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 10975,
+      "source": "nasl_header",
+      "name": "Cisco Gigabit Switch Routers (GSR) Line Card Failure ACL Bypas (CSCdp35794)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote device is missing a vendor-supplied security patch.",
+      "description": "A defect in Cisco IOS Software running on all models of Gigabit \nSwitch Routers (GSRs) configured with Gigabit Ethernet or Fast \nEthernet cards may cause packets to be forwarded without correctly \nevaluating configured access control lists (ACLs). In addition to \ncircumventing the access control lists, it is possible to stop an \ninterface from forwarding any packets, thus causing a denial of \nservice.\n\nThis vulnerability is documented as Cisco bug ID CSCdp35794.",
+      "solution": "http://www.nessus.org/u?23472f49",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2000-0700"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "CSCdp35794.nasl",
+      "clusters": [
+        "patch_cve",
+        "privilege_and_acl"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 10976,
+      "source": "nasl_header",
+      "name": "Cisco IOS TCP Sequence Prediction Connection Hijacking (CSCds04747)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote device is missing a vendor-supplied security patch.",
+      "description": "Cisco IOS Software contains a flaw that permits the successful \nprediction of TCP Initial Sequence Numbers.\n\nThis vulnerability is present in all released versions of Cisco IOS \nsoftware running on Cisco routers and switches. It only affects the \nsecurity of TCP connections that originate or terminate on the \naffected Cisco device itself; it does not apply to TCP traffic \nforwarded through the affected device in transit between two other \nhosts.\n\nThis vulnerability is documented as Cisco bug ID CSCds04747.",
+      "solution": "http://www.nessus.org/u?021e980a",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2001-0288",
+        "CVE-2001-0328"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [
+        "snmp_sysDesc.nasl",
+        "snmp_cisco_type.nasl"
+      ],
+      "filename": "CSCds04747.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 10977,
+      "source": "nasl_header",
+      "name": "Cisco IOS Port Scan Remote DoS (CSCds07326)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote device is missing a vendor-supplied security patch",
+      "description": "Some security scanners can force a Cisco device to reload.\n\nAn attacker may use this flaw to prevent your network\nfrom working properly.\n\nThis vulnerability is documented as Cisco Bug ID CSCds07326.",
+      "solution": "http://www.nessus.org/u?3794b3d8",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2001-0750"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "CSCds07326.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 10978,
+      "source": "nasl_header",
+      "name": "Cisco Catalyst Telnetd Authentication Failure Saturation Memory Leak Remote DoS (CSCds66191)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote device is missing a vendor-supplied security patch.",
+      "description": "A series of failed telnet authentication attempts to the switch can \ncause the Catalyst Switch to fail to pass traffic or accept \nmanagement connections until the system is rebooted or a power cycle \nis performed. All types of telnet authentication are affected, \nincluding Kerberized telnet, and AAA authentication.\n\nThis vulnerability is documented as Cisco bug ID CSCds66191.",
+      "solution": "http://www.nessus.org/u?2d0daaea",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2001-0041"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "CSCds66191.nasl",
+      "clusters": [
+        "patch_cve",
+        "information_disclosure"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 10979,
+      "source": "nasl_header",
+      "name": "Cisco IOS Malformed PPTP Packet Remote DoS (CSCdt46181)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote device is missing a vendor-supplied security patch.",
+      "description": "Point-to-Point Tunneling Protocol (PPTP) allows users to tunnel to an \nInternet Protocol (IP) network using a Point-to-Point Protocol (PPP). \nThe protocol is described in RFC2637.\n\nPPTP implementation using Cisco IOS software releases contains a \nvulnerability that will crash a router if it receives a malformed or \ncrafted PPTP packet. To expose this vulnerability, PPTP must be \nenabled on the router. PPTP is disabled by default. No additional \nspecial conditions are required.\n\nAn attacker may use this issue to prevent your network\nfrom working properly.\n\nThis vulnerability is documented as Cisco Bug ID CSCdt46181.",
+      "solution": "http://www.nessus.org/u?1583fe45",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2001-1183"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "CSCdt46181.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 10980,
+      "source": "nasl_header",
+      "name": "Cisco Catalyst 5000 Series Frame STP Port Broadcast DoS (CSCdt62732)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote device is missing a vendor-supplied security patch.",
+      "description": "When an 802.1x (IEEE standard for port based network access control) \nframe is received by an affected Catalyst 5000 series switch on a STP \n(Spanning Tree Protocol) blocked port it is forwarded in that VLAN \n(Virtual Local Area Network) instead of being dropped. This causes a \nperformance impacting 802.1x frames network storm in that part of the \nnetwork, which is made up of the affected Catalyst 5000 series \nswitches. This network storm only subsides when the source of the \n802.1x frames is removed or one of the workarounds in the workaround \nsection is applied.\n\nThis vulnerability is documented as Cisco bug ID CSCdt62732.",
+      "solution": "http://www.nessus.org/u?e0c2952e",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2001-0429"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "CSCdt62732.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 10981,
+      "source": "nasl_header",
+      "name": "Cisco 6400 NRP2 Unauthenticated Telnet Access (CSCdt65960)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote device is missing a vendor-supplied security patch.",
+      "description": "The Cisco 6400 Access Concentrator Node Route Processor 2 (NRP2) \nmodule allows Telnet access when no password has been set. The \ncorrect response is to disallow any remote access to the module until \nthe password has been set. This vulnerability may result in users \ngaining unintended access to secure systems.\n\nThis vulnerability is documented as Cisco bug ID CSCdt65960.",
+      "solution": "http://www.nessus.org/u?63852177",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2001-0757"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "CSCdt65960.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 10982,
+      "source": "nasl_header",
+      "name": "Cisco NTP ntpd readvar Variable Remote Overflow (CSCdt93866)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote device is missing a vendor-supplied security patch",
+      "description": "By sending a crafted NTP control packet, it is possible to trigger a\nbuffer overflow in the NTP daemon.  This vulnerability can be exploited\nremotely.  The successful exploitation may cause arbitrary code to be\nexecuted on the target machine. \n\nThis vulnerability is documented as Cisco Bug ID CSCdt93866. \n\nAn attacker may use this flaw to execute arbitrary code on the remote\nhost (although it's not believed to be doable)",
+      "solution": "Apply the relevant update referenced in Cisco Security Advisory\ncisco-sa-20020508-ntp-vulnerability.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2001-0414"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [
+        "snmp_sysDesc.nasl",
+        "snmp_cisco_type.nasl"
+      ],
+      "filename": "CSCdt93866.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 10983,
+      "source": "nasl_header",
+      "name": "Cisco IOS Cisco Express Forwarding (CEF) Previous Packet Information Disclosure (CSCdu20643)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote device is missing a vendor-supplied security patch.",
+      "description": "If the remote device has Cisco Express Forwarding (CEF) enabled,\nit may leak information from previous packets that have been\nhandled by the device.\n\nAn attacker may use this flaw to sniff your network remotely.\n\nThis vulnerability is documented as Cisco Bug ID CSCdu20643.",
+      "solution": "http://www.nessus.org/u?b6d00f24",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2002-0339"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [
+        "snmp_sysDesc.nasl",
+        "snmp_cisco_type.nasl"
+      ],
+      "filename": "CSCdu20643.nasl",
+      "clusters": [
+        "patch_cve",
+        "information_disclosure"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 10984,
+      "source": "nasl_header",
+      "name": "Cisco IOS ARP Table Overwrite DoS (CSCdu81936)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote device is missing a vendor-supplied security patch.",
+      "description": "It is possible to send an Address Resolution Protocol (ARP) packet on \na local broadcast interface (for example, Ethernet, cable, Token \nRing, FDDI) which could cause a router or switch running specific \nversions of Cisco IOS Software Release to stop sending and receiving \nARP packets on the local router interface.  This will, in a short time, \ncause the router and local hosts to be unable to send packets to each \nother. ARP packets received by the router for the router's own \ninterface address but a different Media Access Control (MAC) address \nwill overwrite the router's MAC address in the ARP table with the one \nfrom the received ARP packet.  This was demonstrated to attendees of  \nthe Black Hat conference and should be considered to be public \nknowledge.  This attack is only successful against devices on the \nsegment local to the attacker or attacking host.\nThis vulnerability is documented in Cisco Bug ID CSCdu81936.\n\nA local attacker may use this flaw to prevent your network from\nworking properly.",
+      "solution": "http://www.nessus.org/u?fb24d347",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2001-0895"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "CSCdu81936.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 10985,
+      "source": "nasl_header",
+      "name": "Cisco IOS Firewall CBAC ACL Bypass (CSCdv48261)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote device is missing a vendor-supplied security patch.",
+      "description": "The IOS Firewall Feature set, also known as Cisco Secure Integrated\nSoftware, also known as Context Based Access Control (CBAC), and\nintroduced in IOS version 11.2P, has a vulnerability that permits\ntraffic normally expected to be denied by the dynamic access control \nlists.\n\nAn attacker may use this flaw to break into your network even though\nit was explicitly denied.\n\nThis vulnerability is documented as Cisco Bug ID CSCdv48261.",
+      "solution": "http://www.nessus.org/u?3fbe8d75\n\nReference : http://online.securityfocus.com/archive/1/242844",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2001-0929"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "CSCdv48261.nasl",
+      "clusters": [
+        "patch_cve",
+        "privilege_and_acl",
+        "service_inventory"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 10986,
+      "source": "nasl_header",
+      "name": "Cisco CatOS Telnet Option Handling Overflow (CSCdw19195)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote device is missing a vendor-supplied security patch.",
+      "description": "Some Cisco Catalyst switches, running certain CatOS based software\nreleases, have a vulnerability wherein a buffer overflow in the telnet\noption handling can cause the telnet daemon to crash and result in a\nswitch reload. This vulnerability can be exploited to initiate a \ndenial of service (DoS) attack.\n\nThis vulnerability is documented as Cisco bug ID CSCdw19195.",
+      "solution": "http://www.nessus.org/u?c67eaadb\n\nReference : http://online.securityfocus.com/archive/1/252833",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2001-0554"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "CSCdw19195.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 10987,
+      "source": "nasl_header",
+      "name": "Cisco Malformed SNMP Message Handling DoS (CSCdw67458)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote device is missing a vendor-supplied security patch.",
+      "description": "There is a vulnerability in the way the remote device handles\nSNMP messages. An attacker may use this flaw to crash the remote\ndevice continuously.\n\nThis vulnerability is documented as Cisco bug ID CSCdw67458.",
+      "solution": "http://www.nessus.org/u?a1f3c81e\n\nReference : http://online.securityfocus.com/archive/1/255807",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2002-0012",
+        "CVE-2002-0013"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "CSCdw67458.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 11056,
+      "source": "nasl_header",
+      "name": "Cisco TFTP Server Long Filename DoS (CSCdy03429)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote device is missing a vendor-supplied security patch.",
+      "description": "Trivial File Transfer Protocol (TFTP) is a protocol which allows for \neasy transfer of files between network connected devices. \n\nA vulnerability has been discovered in the processing of filenames \nwithin a TFTP read request when Cisco IOS is configured to act as a \nTFTP server.\n\nThis vulnerability is documented as Cisco Bug ID CSCdy03429.",
+      "solution": "http://www.nessus.org/u?1212ca9e",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2002-0813"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "CSCdy03429.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 11283,
+      "source": "nasl_header",
+      "name": "Cisco IOS OSPF Neighbor Announcement Remote Overflow (CSCdp58462)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote device is missing a vendor-supplied security patch",
+      "description": "The Open Shortest Path First (OSPF) implementation in remote\nCisco IOS software versions is vulnerable to a denial of service\nif it receives a flood of neighbor announcements in which more than\n255 hosts try to establish a neighbor relationship per interface.\n\nAn attacker may use this flaw to prevent your router from working\nproperly\n\nThis vulnerability is documented as Cisco Bug ID CSCdp58462.",
+      "solution": "http://www.nessus.org/u?b37db228",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2003-0100"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [
+        "snmp_sysDesc.nasl",
+        "snmp_cisco_type.nasl"
+      ],
+      "filename": "CSCdp58462.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 11285,
+      "source": "nasl_header",
+      "name": "Cisco Catalyst Switches Embedded HTTP Server Long HTTP Request DoS (CSCdy26428)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote device is missing a vendor-supplied security patch.",
+      "description": "The remote switch is vulnerable to a buffer overflow\nin its embedded HTTP server. An attacker may use this\nflaw to make your switch reboot continuously, resulting\nin a denial of service.\n\nThis vulnerability is documented with the CISCO\nbug ID CSCdy26428.",
+      "solution": "Apply the update or workaround as recommend in the vendor advisory.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-2002-1222"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "CSCdy26428.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 11287,
+      "source": "nasl_header",
+      "name": "Cisco VPN 3000 Concentrator Multiple Vulnerabilities (CSCdt56514, CSCdv66718)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote device is missing a vendor-supplied security patch.",
+      "description": "The remote VPN concentrator is vulnerable to an internal PPTP / IPSEC\nauthentication login attack. \n\nThis vulnerability is documented as Cisco bug ID CSCdt56514.",
+      "solution": "http://www.nessus.org/u?d2dd6759",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2002-1092",
+        "CVE-2002-1095"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "CSCdt56514.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 11288,
+      "source": "nasl_header",
+      "name": "Cisco VPN 3000 Concentrator HTML Interface Long URL DoS (CSCdu15622)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote device is missing a vendor-supplied security patch.",
+      "description": "The remote VPN concentrator has a vulnerability in its HTML parser\nprocessor. \n\nThis vulnerability is documented as Cisco bug ID CSCdu15622.",
+      "solution": "http://www.nessus.org/u?d2dd6759",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2002-1093"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "CSCdu15622.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 11289,
+      "source": "nasl_header",
+      "name": "Cisco VPN 3000 Concentrator Multiple Service Banner System Information Disclosure (CSCdu35577)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote VPN concentrator reveals application layer banners.",
+      "description": "According to its banner, the remote VPN concentrator gives out\ntoo much information in application layer banners. This\nvulnerability is documented as Cisco bug ID CSCdu35577.",
+      "solution": "Apply vendor-supplied patches.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2002-1094"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "CSCdu35577.nasl",
+      "clusters": [
+        "patch_cve",
+        "information_disclosure",
+        "service_inventory"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 11290,
+      "source": "nasl_header",
+      "name": "Cisco VPN Concentrator Invalid Login DoS (CSCdu82823)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote device is missing a vendor-supplied security patch.",
+      "description": "The remote VPN concentrator has a bug in its\nimplementation of telnetd.\n\nThis vulnerability is documented as Cisco bug ID CSCdu82823.",
+      "solution": "Apply the update or workaround as recommend in the vendory advisory.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-2001-0427"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [
+        "23"
+      ],
+      "dependencies": [
+        "snmp_sysDesc.nasl"
+      ],
+      "filename": "CSCdu82823.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 11291,
+      "source": "nasl_header",
+      "name": "Cisco VPN 3000 Concentrator PPTP/IPSEC Group Credential Authentication Bypass (CSCdv66718)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote device is missing a vendor-supplied security patch.",
+      "description": "The remote VPN concentrator has a bug in its PPTP client.\n\nThis vulnerability is documented as Cisco bug ID CSCdv66718.",
+      "solution": "http://www.nessus.org/u?d2dd6759",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-2002-1092"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [
+        "23"
+      ],
+      "dependencies": [],
+      "filename": "CSCdv66718.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 11292,
+      "source": "nasl_header",
+      "name": "Cisco VPN 3000 Concentrator HTML Source Plaintext User Password Disclosure (CSCdv88230, CSCdw22408)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote device is missing a vendor-supplied security patch.",
+      "description": "The remote VPN concentrator discloses the passwords of\nits users in the source HTML of the embedded web server.\n\nThis vulnerability is documented as Cisco bug ID CSCdv88230 and CSCdw22408.",
+      "solution": "http://www.nessus.org/u?d2dd6759",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-2002-1096"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [
+        "Services/www",
+        "80"
+      ],
+      "dependencies": [],
+      "filename": "CSCdv88230.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 11293,
+      "source": "nasl_header",
+      "name": "Cisco VPN 3000 Concentrator Multiple Vulnerabilities (CSCdx07754, CSCdx24622, CSCdx24632)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote device is missing a vendor-supplied security patch.",
+      "description": "The remote VPN concentrator is subject to multiple flaws :\n\n- XML public rule\n- HTML pages access\n- HTML login processing\n\nThis vulnerability is documented as Cisco bug ID CSCdx07754, \nCSCdx24622 and CSCdx24632.",
+      "solution": "http://www.nessus.org/u?d2dd6759",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-2002-1100",
+        "CVE-2002-1098"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [
+        "Services/www",
+        "80"
+      ],
+      "dependencies": [],
+      "filename": "CSCdx07754.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 11294,
+      "source": "nasl_header",
+      "name": "Cisco VPN 3000 Concentrator Certificate Management Page HTML Source Certificate Password Disclosure (CSCdw50657)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote device is missing a vendor-supplied security patch.",
+      "description": "The remote VPN concentrator discloses the certificate passwords \nof its users in the source HTML pages of the embedded web server.\n\nThis vulnerability is documented as Cisco bug ID CSCdw50657.",
+      "solution": "http://www.nessus.org/u?d2dd6759",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-2002-1097"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [
+        "Services/www",
+        "80"
+      ],
+      "dependencies": [],
+      "filename": "CSCdw50657.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 11295,
+      "source": "nasl_header",
+      "name": "Cisco VPN 3000 Concentrator PPTP No Encryption Option Remote DoS (CSCdx39981)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote device is missing a vendor-supplied security patch.",
+      "description": "The remote VPN concentrator is subject to a VPN client\nauthentication vulnerability that can force a reload of the\nconcentrator when a very large string for the username prompt is sent.\n\nThis vulnerability is documented as Cisco bug ID CSCdx39981.",
+      "solution": "http://www.nessus.org/u?d2dd6759",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2002-1095"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "CSCdx39981.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 11296,
+      "source": "nasl_header",
+      "name": "Cisco VPN 3000 Concentrator LAN-to-LAN IPSEC Tunnel Connection Termination DoS (CSCdx54675)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote device is missing a vendor-supplied security patch.",
+      "description": "The remote VPN concentrator is subject to a LAN-to-LAN\nIPSEC tunnel vulnerability which allows remote attackers\nto cause a denial of service. Existing associations might\nbe removed when a new connection is made and no check is done\nin order to determine if the connection comes from the proper\nnetwork.\n\nThis vulnerability is documented as Cisco bug ID CSCdx54675",
+      "solution": "http://www.nessus.org/u?d2dd6759",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2002-1102"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "CSCdx54675.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 11297,
+      "source": "nasl_header",
+      "name": "Cisco VPN 3000 Concentrator Malformed ISAKMP Packet Remote DoS (CSCdy38035)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote VPN concentrator is affected by ISAKMP package processing\nvulnerability.",
+      "description": "According to its banner, the remote VPN concentrator is subject to an \nISAKMP package processing vulnerability. Malformed or a very large \nnumber of ISAKMP packets might cause a reload of the concentrator. The \nvulnerability is aggravated if debug is turned on. This vulnerability \nis documented as Cisco bug ID CSCdy38035.",
+      "solution": "Apply vendor-supplied patches.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2002-1103"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "CSCdy38035.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 11317,
+      "source": "nasl_header",
+      "name": "HP JetDirect Device SNMP Request Cleartext Admin Credential Disclosure",
+      "family": "SNMP",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The administrative password of the remote HP JetDirect printer can be obtained\nusing SNMP.",
+      "description": "It is possible to obtain the password of the remote HP JetDirect\nweb server by sending SNMP requests.\n\nAn attacker may use this information to gain administrative access\nto the remote printer.",
+      "solution": "Disable the SNMP service on the remote host if you do not use it,\nor filter incoming UDP packets going to this port.\n\nhttp://www.securityfocus.com/archive/1/313714/2003-03-01/2003-03-07/0",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-2002-1048"
+      ],
+      "require_keys": [
+        "SNMP/OID",
+        "SNMP/community"
+      ],
+      "require_ports": [],
+      "dependencies": [
+        "snmp_sysDesc.nasl"
+      ],
+      "filename": "snmp_hpJetDirectEWS.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 11335,
+      "source": "nasl_header",
+      "name": "Solaris mibiisa MIB Parsing Remote Overflow",
+      "family": "SNMP",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote host contains a program that may be prone to a buffer\noverflow attack.",
+      "description": "The remote host is running mibiisa.\n\nThere is a buffer overflow in older versions of this software, which\nmay allow an attacker to gain a root shell on this host.\n\nNote that Nessus did not actually check for this vulnerability so this\nmight be a false positive.",
+      "solution": "Apply the appropriate patch referenced in Sun's advisory.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-2002-0797"
+      ],
+      "require_keys": [
+        "Settings/ParanoidReport"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "mibiisa_overflow.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 11379,
+      "source": "nasl_header",
+      "name": "Cisco IOS ICMP Redirect Message Spoofing Remote DoS (CSCdx92043)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote device is missing a vendor-supplied security patch",
+      "description": "Sending bogus ICMP redirect packets, a malicious\nuser can either disrupt or intercept communication\nfrom a router.\n\nThis vulnerability is documented with the CISCO\nbug ID CSCdx92043",
+      "solution": "Upgrade your version of IOS",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2003-1398"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [
+        "snmp_sysDesc.nasl",
+        "snmp_cisco_type.nasl"
+      ],
+      "filename": "CSCdx92043.nasl",
+      "clusters": [
+        "patch_cve",
+        "service_inventory"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 11380,
+      "source": "nasl_header",
+      "name": "Cisco SIP Crafted INVITE Message Handling DoS (CSCdz39284, CSCdz41124)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote device is missing a vendor-supplied security patch.",
+      "description": "It is possible to make the remote IOS crash when sending\nit malformed SIP packets.\n\nThese vulnerabilities are documented as CISCO bug id CSCdz39284 and\nCSCdz41124.",
+      "solution": "See http://www.nessus.org/u?d6cc6d97",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2003-1109"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "CSCdz39284.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 11381,
+      "source": "nasl_header",
+      "name": "Cisco IOS SSH Large Packet CPU Consumption DoS (CSCdw33027)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote device is missing a vendor-supplied security patch.",
+      "description": "It is possible to make the remote IOS crash when sending\nit malformed SSH packets.",
+      "solution": "See http://www.nessus.org/u?7641e722",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2002-1024"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "CSCdw33027.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 11382,
+      "source": "nasl_header",
+      "name": "Cisco Catalyst SSH Large Packet CPU Consumption DoS (CSCdv85279, CSCdw59394)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote device is missing a vendor-supplied security patch",
+      "description": "It is possible to make the remote CatOS crash\nwhen sending malformed SSH packets.\n\nThis vulnerability is documented with the CISCO\nbug ID CSCdv85279 and CSCdw59394",
+      "solution": "http://www.nessus.org/u?7641e722",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2002-1024"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "CSCdv85279.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 11383,
+      "source": "nasl_header",
+      "name": "Cisco SSH2 Server/Client Malformed Packet Remote DoS (CSCdz60229, CSCdy87221, CSCdu75477)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote device is missing a vendor-supplied security patch.",
+      "description": "It is possible to make the remote IOS crash when sending\nit malformed SSH packets during the key exchange.\n\nThese flaws are documented as CISCO bug ID CSCdz60229, CSCdy87221 and \nCSCdu75477.",
+      "solution": "See \nhttp://www.nessus.org/u?aed52b80",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2002-1357",
+        "CVE-2002-1358",
+        "CVE-2002-1359",
+        "CVE-2002-1360"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "CSCdz60229.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 11396,
+      "source": "nasl_header",
+      "name": "HP JetDirect < Q.24.09 Multiple Vulnerabilities",
+      "family": "Misc.",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote print server is affected by multiple vulnerabilities.",
+      "description": "The remote HP JetDirect is, according to its version number,\nvulnerable to an issue that may allow an attacker to\ngain unauthorized access on this printer, or crash it.",
+      "solution": "Upgrade to Firmware Q.24.09 or later.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "hp_jetdirect_vulns.nasl",
+      "clusters": [
+        "other"
+      ],
+      "primary_cluster": "other"
+    },
+    {
+      "plugin_id": 11490,
+      "source": "nasl_header",
+      "name": "D-Link DSL Broadband Modem SNMP Cleartext ISP Credential Disclosure",
+      "family": "SNMP",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "",
+      "description": "",
+      "solution": "",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [],
+      "require_keys": [
+        "SNMP/community"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "snmp_dlink_user_pass_disclosure.nasl",
+      "clusters": [
+        "other"
+      ],
+      "primary_cluster": "other"
+    },
+    {
+      "plugin_id": 11547,
+      "source": "nasl_header",
+      "name": "Cisco Catalyst Enable Access Authentication Bypass (CSCea42030)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote device is missing a vendor-supplied security patch.",
+      "description": "The remote Catalyst is affected by a password bypass vulnerability. \nBasically, an attacker who has a command line access may gain the\n'enable' privileges without having to know the right password, which\nwould allow him to reconfigure this host remotely. \n\nThis vulnerability is documented with the CISCO bug ID CSCde42030.",
+      "solution": "http://www.nessus.org/u?62e6a495",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2003-0216"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "CSCea42030.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 11559,
+      "source": "nasl_header",
+      "name": "Network Chemistry Wireless Sensor Detection",
+      "family": "",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "",
+      "description": "",
+      "solution": "",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-MAP-NOMATCH"
+      ],
+      "require_keys": [
+        "SNMP/sysDesc"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "wireless_sensor_detection.nasl",
+      "clusters": [
+        "patch_cve",
+        "service_inventory"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 11594,
+      "source": "nasl_header",
+      "name": "Cisco VPN 3000 Series Multiple Vulnerabilities (CSCdea77143, CSCdz15393, CSCdt84906)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote device is missing a vendor-supplied security patch.",
+      "description": "The remote Cisco VPN 3000 concentrator is affected by several\nvulnerabilities that could allow an attacker to use this device\nto break into a VPN, disable the remote device by sending\na malformed SSH initialization packet or disable the\nremote device by sending a flood of malformed ICMP packets.\n\nThese vulnerabilities are documented with the CISCO\nbug IDs CSCdea77143, CSCdz15393 and CSCdt84906.",
+      "solution": "http://www.nessus.org/u?a98c23a3",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2003-0258",
+        "CVE-2003-0259",
+        "CVE-2003-0260"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "CSCea77143.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 11632,
+      "source": "nasl_header",
+      "name": "Cisco IOS SAA Malformed RTR Packet DoS (CSCdx17916, CSCdx61997)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote device is missing a vendor-supplied security patch.",
+      "description": "It is possible to crash the remote router by sending malformed\nResponse Time Responder (RTR) packets. \nFor this flaw to be exploitable, the router needs to have RTR\nresponder enabled.\n\nThis bug is referenced as CISCO bug id CSCdx17916 and CSCdx61997.",
+      "solution": "See http://www.nessus.org/u?7e84eef2",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "",
+      "cve_ids": [
+        "CVE-2003-0305"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "CSCdx17916.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 11791,
+      "source": "nasl_header",
+      "name": "Cisco IOS Malformed IPv4 Packet Remote DoS",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote network device has a denial of service vulnerability.",
+      "description": "According to its version number, the remote router or switch is running\na vulnerable version of Cisco IOS.  Sending a specific sequence of IPv4\npackets can cause the input interface to stop accepting traffic. \n\nNote that this vulnerability does not affect devices that only use\nIPv6.",
+      "solution": "Upgrade to the version of IOS referenced in the vendor's advisory.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2003-0567"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc"
+      ],
+      "require_ports": [],
+      "dependencies": [
+        "snmp_sysDesc.nasl",
+        "snmp_cisco_type.nasl"
+      ],
+      "filename": "cisco_ipv4_dos.nasl",
+      "clusters": [
+        "patch_cve",
+        "service_inventory"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 12023,
+      "source": "nasl_header",
+      "name": "Cisco IOS H.323 Protocol Implementation Flaws",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote network device has a buffer overflow vulnerability.",
+      "description": "According to its version number, the remote host is running a\nvulnerable version of Cisco IOS.  The affected versions have multiple\nbuffer overflow vulnerabilities in the H.323 processing routines.\nH.323 is a standard that defines several protocols used for\naudio/visual applications, including IP telephony.\n\nA remote attacker could use this to cause a denial of service, or\npotentially execute arbitrary code.",
+      "solution": "Upgrade to the latest version of IOS, or block all H.323 traffic.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2004-0054"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [
+        "snmp_sysDesc.nasl",
+        "snmp_cisco_type.nasl"
+      ],
+      "filename": "cisco_h323_dos.nasl",
+      "clusters": [
+        "patch_cve",
+        "service_inventory"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 12039,
+      "source": "nasl_header",
+      "name": "Cisco IOS 6000/6500/7600 Series Layer 2 Frame DoS (CSCdy15598, CSCeb56052)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote device is missing a vendor-supplied security patch.",
+      "description": "The remote router contains a version of IOS which has multiple flaws when\ndealing with specially layer 2 packets.\n\nCISCO identifies this vulnerability as bug id CSCdy15598 and CSCeb56052.\n\nAn attacker may use this flaw to render this router inoperable.",
+      "solution": "http://www.nessus.org/u?efcdea28",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2004-0244"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "CSCdy15598.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 12199,
+      "source": "nasl_header",
+      "name": "Cisco IPSec VPNSM IKE Packet DoS (CSCed30113)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote device is missing a vendor-supplied security patch",
+      "description": "The remote router contains a version of IOS which has multiple flaws when\ndealing with malformed IKE packets.\n\nCISCO identifies this vulnerability as bug id CSCed30113\n\nAn attacker may use this flaw to render this router inoperable",
+      "solution": "http://www.nessus.org/u?960d6682",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2004-0710"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "CSCed30113.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 12270,
+      "source": "nasl_header",
+      "name": "Cisco CatOS TCP-ACK Remote DoS (CSCec42751, CSCed45576, CSCed48590)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote device is missing a vendor-supplied security patch.",
+      "description": "The remote switch is vulnerable to various flaws that could allow an\nattacker to disable this device remotely by doing a TCP-ACK denial\nof service attack.\n\nThis vulnerability is documented with the CISCO bugs ID CSCec42751,\nCSCed45576 and CSCed48590.",
+      "solution": "http://www.nessus.org/u?02497fd0",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2004-0551"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "CSCec42751.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 14337,
+      "source": "nasl_header",
+      "name": "Cisco IOS OSPF Packet Handling DoS (CSCec16481)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote device is missing a vendor-supplied security patch.",
+      "description": "The target is a Cisco device running a version of IOS that is vulnerable\nto a DoS attack from a malformed OSPF packet.  Given knowledge of OSPF\narea number, netmask, hello, and dead timers that are configured on the\ntargeted interface, a remote attacker can send a malformed OSPF packet and\ncause the device to be reset, which may take several minutes. Note,\nthough, that the OSPF protocol is not enabled by default.\n\nThis vulnerability is documented as Cisco Bug ID CSCec16481.",
+      "solution": "http://www.nessus.org/u?fefa1e85",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2004-1454"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "CSCec16481.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 15627,
+      "source": "nasl_header",
+      "name": "Cisco IOS Telnet Service DoS (CSCef46191)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote device is missing a vendor-supplied security patch.",
+      "description": "The remote router contains a version of IOS which has a flaw in the\ntelnet service that could allow an attacker to disable the \nadministation of the remote router by SSH, HTTP and telnet.\n\nCISCO identifies this vulnerability as bug id CSCef46191.\n\nAn attacker may use this flaw to render this router unmanageable.",
+      "solution": "http://www.nessus.org/u?5bb6a85b",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2004-1464"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [
+        "snmp_sysDesc.nasl",
+        "snmp_cisco_type.nasl"
+      ],
+      "filename": "CSCef46191.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 15782,
+      "source": "nasl_header",
+      "name": "Cisco IOS Malformed DHCP Packet DoS (CSCee50294)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote device is missing a vendor-supplied security patch.",
+      "description": "The remote router contains a version of IOS which has flaw in the DHCP\nservice/relay service that may let an attacker to disable DHCP serving\nand or relaying on the remote router.\n\nCISCO identifies this vulnerability as bug id CSCee50294.",
+      "solution": "http://www.nessus.org/u?7f0d4f1a",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2004-1111"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "CSCee50294.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 16201,
+      "source": "nasl_header",
+      "name": "Cisco ONS Multiple Remote Vulnerabilities (20040721-ons)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote network device is affected by multiple vulnerabilities.",
+      "description": "The remote Cisco ONS platform contains various vulnerabilities that\nmay allow a remote attacker to cause a denial of service in the remote\ncontrol cards or to bypass authentication on the remote device.",
+      "solution": "Apply the appropriate update as referenced in the vendor advisory\nabove.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2004-1432",
+        "CVE-2004-1433",
+        "CVE-2004-1434",
+        "CVE-2004-1435",
+        "CVE-2004-1436"
+      ],
+      "require_keys": [
+        "SNMP/sysDesc"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "cisco_ons_multiple_vulnerabilities.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 16202,
+      "source": "nasl_header",
+      "name": "Cisco ONS Multiple Remote Vulnerabilities (20040219-ONS)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote Cisco device has multiple vulnerabilites.",
+      "description": "According to its version number, the remote Cisco ONS platform has\nthe following vulnerabilities :\n\n  - The TFTP server allows unauthenticated access to TFTP\n    GET and PUT commands. An attacker may exploit this flaw\n    to upload or retrieve the system files of the remote\n    ONS platform.\n\n  - A denial of service attack may occur through the network\n    management port of the remote device (1080/tcp).\n\n  - Superuser accounts cannot be disabled over telnet.",
+      "solution": "Apply the fixes referenced in Cisco's advisory.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2002-0952",
+        "CVE-2002-1553",
+        "CVE-2002-1554",
+        "CVE-2002-1555",
+        "CVE-2002-1556",
+        "CVE-2002-1557",
+        "CVE-2002-1558",
+        "CVE-2004-0306",
+        "CVE-2004-0307",
+        "CVE-2004-0308"
+      ],
+      "require_keys": [
+        "SNMP/sysDesc"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "cisco_ons_platform_vulnerabilities.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 16217,
+      "source": "nasl_header",
+      "name": "Cisco IOS SCCP Control Protocol Malformed Message DoS (CSCee08584)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote device is missing a vendor-supplied security patch",
+      "description": "The remote router contains a version of IOS which has flaw in its telephony\nservice.\n\nIf the remote router is configured for ITS, CME or SRST, then an attacker\nmay send malformed TCP queries to the remote host resulting in a reboot\nof the router.\n\nCISCO identifies this vulnerability as bug id CSCee08584",
+      "solution": "http://www.cisco.com/en/US/products/products_security_advisory09186a00803b3fff.shtml",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2005-0186"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "CSCee08584.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 17629,
+      "source": "nasl_header",
+      "name": "Cisco IOS IPv6 Packet Processing Remote DoS (CSCed40933)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote device is missing a vendor-supplied security patch.",
+      "description": "The remote version of IOS is vulnerable to a denial of service attack\nwhen processing malformed IPv6 packets.\n\nIf IPv6 is enabled, an attacker may exploit this flaw to prevent the\nrouter from working properly.",
+      "solution": "http://www.nessus.org/u?068dfdf7",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2005-0195"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "CSCed40933.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 17630,
+      "source": "nasl_header",
+      "name": "Cisco IOS Multi Protocol Label Switching (MPLS) Packet Remote DoS (CSCeb56909)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote device is missing a vendor-supplied security patch.",
+      "description": "The remote version of IOS is vulnerable to a denial of service attack\nwhen processing malformed MPLS packets.\n\nIf IPv6 is enabled, an attacker may exploit this flaw to prevent the\nrouter from working properly.",
+      "solution": "http://www.nessus.org/u?795df75a",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2005-0197"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "CSCeb56909.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 17635,
+      "source": "nasl_header",
+      "name": "Cisco IOS Malformed BGP Packet Processing Remote DoS (CSCee67450)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote device is missing a vendor-supplied security patch.",
+      "description": "The remote version of IOS is vulnerable to a denial of service attack\nwhen processing malformed BGP packets. \n\nIf IPv6 is enabled, an attacker may exploit this flaw to prevent the\nrouter from working properly.",
+      "solution": "http://www.nessus.org/u?3afb30e4",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2005-0196"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "CSCee67450.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 17986,
+      "source": "nasl_header",
+      "name": "Cisco IOS IKE XAUTH ISAKMP IPSec SA Establish Authentication Bypass (CSCeg00277)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote device is missing a vendor-supplied security patch.",
+      "description": "The remote version of IOS contains a feature called 'Easy VPN Server' that\nallows the administrator of the remote router to create a lightweight VPN\nserver.\n\nThere is an implementation flaw in the remote version of this software\nthat could allow an authorized user to complete authentication and access\nthe VPN remotely.",
+      "solution": "http://www.nessus.org/u?d6d9f923",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2005-1058"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "CSCeg00277.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 17988,
+      "source": "nasl_header",
+      "name": "Cisco IOS Secure Shell Server TACACS+ Multiple DoS (CSCed65778, CSCed65285)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote device is missing a vendor-supplied security patch.",
+      "description": "The remote version of IOS has the ability to enable an SSH server to let\nthe administrators connect to the remote device.\n\nThere is an implementation flaw in the remote version of this software\nwhich may allow an attacker to cause a resource starvation on the remote\ndevice, thus preventing it from routing properly.",
+      "solution": "http://www.nessus.org/u?6f0e5315",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2005-1020",
+        "CVE-2005-1021"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "CSCed65778.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 19763,
+      "source": "nasl_header",
+      "name": "SNMP Query Installed Software Disclosure",
+      "family": "SNMP",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The list of software installed on the remote host can be obtained via\nSNMP.",
+      "description": "It is possible to obtain the list of installed software on the remote\nhost by sending SNMP requests with the OID 1.3.6.1.2.1.25.6.3.1.2\n\nAn attacker may use this information to gain more knowledge about the\ntarget host.",
+      "solution": "Disable the SNMP service on the remote host if you do not use it, or\nfilter incoming UDP packets going to this port.",
+      "risk_factor": "None",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [],
+      "require_keys": [
+        "SNMP/community"
+      ],
+      "require_ports": [],
+      "dependencies": [
+        "snmp_settings.nasl",
+        "find_service2.nasl"
+      ],
+      "filename": "snmp_software.nasl",
+      "clusters": [
+        "service_inventory"
+      ],
+      "primary_cluster": "service_inventory"
+    },
+    {
+      "plugin_id": 19771,
+      "source": "nasl_header",
+      "name": "Cisco IOS IPv6 Packet Processing Arbitrary Code Execution (CSCef68324)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote router contains a vulnerability which may allow an attacker to\nexecute arbitrary code on it.",
+      "description": "The remote version of IOS is vulnerable to a code execution attack\nwhen processing malformed IPv6 packets. \n\nTo exploit this flaw, an attacker would need to ability to send a malformed\npacket from a local segment and may exploit this issue to cause the remote\ndevice to reload repeatedly or to execute arbitrary code in the remote IOS.",
+      "solution": "Cisco has made a set of patches available which are listed at the address above.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2005-2451"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "CSCef68324.nasl",
+      "clusters": [
+        "patch_cve",
+        "service_inventory"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 20134,
+      "source": "nasl_header",
+      "name": "Cisco IOS System Timers Remote Overflow (CSCei61732)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote router can be compromised remotely.",
+      "description": "The remote host is a CISCO router containing a version of IOS that is\nvulnerable to a heap overflow attack. \n\nAn attacker may exploit this flaw to crash the remote device or to \nexecute arbitrary code remotely.",
+      "solution": "http://www.nessus.org/u?c22defc9",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2005-3481"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "CSCei61732.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 20744,
+      "source": "nasl_header",
+      "name": "Cisco IOS MMP Stack Group Bidding Protocol (SGBP) Crafted UDP Packet Remote DoS (CSCsb11124)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote router can be crashed remotely.",
+      "description": "The remote host is a CISCO router containing a version of IOS which is\nprone to a denial of service vulnerability. \n\nAn attacker may exploit this flaw to crash the remote device.",
+      "solution": "http://www.nessus.org/u?1142946b",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2006-0340"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "CSCsb11124.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 20807,
+      "source": "nasl_header",
+      "name": "Cisco IOS IPSec IKE Traffic Remote DoS (CSCed94829)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote router can be crashed remotely.",
+      "description": "The remote host is a CISCO router containing a version of IOS which\nis vulnerable to a denial of service attack.\n\nAn attacker may exploit this flaw to crash the remote device by\nsending a malformed IKE packet to the remote device.",
+      "solution": "http://www.nessus.org/u?49cf7a82",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2005-3669"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "CSCed94829.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 20808,
+      "source": "nasl_header",
+      "name": "Cisco IOS TCLSH AAA Command Authorization Bypass (CSCeh73049)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote router contains a flaw that could allow users with shell \naccess to elevate their privileges.",
+      "description": "The remote host is a CISCO router containing a version of IOS that \nis vulnerable to a remote AAA command authorization bypass attack. \n\nThe remote version of IOS does not enforce AAA command authorization \nchecks for commands etnered in the TCL shell. An attacker with a shell \naccess on the remote route could gain elevated privileges on the \nremote device.",
+      "solution": "http://www.nessus.org/u?9ab2b986",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2006-0485",
+        "CVE-2006-0486"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "CSCeh73049.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 20933,
+      "source": "nasl_header",
+      "name": "Cisco IOS AAA RADIUS Long Username Authentication Bypass (CSCee45312)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote Cisco IOS RADIUS server is prone to a remote authentication\nbypass attack.",
+      "description": "The remote host is a CISCO router containing a version of IOS that\ncontains a faulty RADIUS implementation which may lead to an \nauthentication bypass vulnerability.\n\nAn attacker may exploit this problem to gain unauthorized access\nto the service.",
+      "solution": "http://www.nessus.org/u?b981b4d9",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2005-2105"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "CSCee45312.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 22415,
+      "source": "nasl_header",
+      "name": "Netopia Router Crafted SNMP Request Remote Admin Password Disclosure",
+      "family": "Misc.",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote router allows anonymous users to retrieve the administrative password",
+      "description": "The remote host appears to be running a Netopia router with SNMP enabled.\nFurther, the Netopia router is using the default SNMP community strings.\nThis version of the Netopia firmware is vulnerable to a flaw wherein\na remote attacker can, by sending a specially formed SNMP query, retrieve\nthe Administrative password.\n\nAn attacker, exploiting this flaw, would only need to be able to send SNMP\nqueries to the router using the default community string of 'public'.\nSuccessful exploitation would result in the attacker gaining administrative\ncredentials to the router.",
+      "solution": "Contact the vendor for a patch.  Change the default SNMP community string to\none that is not easily guessed.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [],
+      "require_keys": [
+        "SNMP/community"
+      ],
+      "require_ports": [],
+      "dependencies": [
+        "snmp_settings.nasl",
+        "find_service2.nasl"
+      ],
+      "filename": "snmp_netopia.nasl",
+      "clusters": [
+        "authentication_weakness",
+        "misconfiguration"
+      ],
+      "primary_cluster": "authentication_weakness"
+    },
+    {
+      "plugin_id": 24019,
+      "source": "nasl_header",
+      "name": "Cisco IOS Data-link Switching (DLSw) Capabilities Exchange Remote DoS (CSCsf28840)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote router can be crashed remotely.",
+      "description": "The remote host is a CISCO router containing a version of IOS that is\naffected by a denial of service vulnerability. \n\nAn attacker may exploit this flaw to crash the remote device.",
+      "solution": "http://www.cisco.com/en/US/products/products_security_advisory09186a00807bd128.shtml",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2007-0199"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "CSCsf28840.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 24736,
+      "source": "nasl_header",
+      "name": "Cisco Catalyst Hybrid Mode Malformed MPLS Packet Remote DoS (CSCsd37415, CSCef90002)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote switch can be crashed remotely.",
+      "description": "The remote host is a CISCO Catalyst 6500 switch containing a version\nof IOS that is affected by a denial of service vulnerability when\nprocessing malformed MPLS packets. \n\nAn attacker may exploit this flaw to crash the remote device.",
+      "solution": "http://www.nessus.org/u?0e6ad627",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2007-1258"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "CSCef90002.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 24737,
+      "source": "nasl_header",
+      "name": "Cisco Multiple Products Network Analysis Module (NAM) SNMP Spoofing Remote Code Execution",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote device can be crashed remotely.",
+      "description": "The remote host is a CISCO Catalyst or Cisco 7600 router that\ncontains a version of IOS or CatOS that is affected by an SNMP\ncommunication spoofing vulnerability. \n\nAn attacker may exploit this flaw to gain complete control of the remote\ndevice.",
+      "solution": "http://www.nessus.org/u?519fd09c",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2007-1257"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "CSCse52951.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 24739,
+      "source": "nasl_header",
+      "name": "Cisco IOS Intrusion Prevention System (IPS) Multiple Vulnerabilities (CSCsa53334, CSCsg15598)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote CISCO device can be crashed remotely.",
+      "description": "The remote version of IOS contains an intrusion prevention system\nthat is affected by a fragmented packet evasion vulnerability and a\ndenial of service vulnerability. \n\nAn attacker might use these flaws to disable this device remotely or to \nsneak past the IPS.",
+      "solution": "http://www.nessus.org/u?16b1f263",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2007-0917",
+        "CVE-2007-0918"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "CSCsg15598.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 24740,
+      "source": "nasl_header",
+      "name": "Cisco IOS SIP Packet Handling Remote DoS (CSCsh58082)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote CISCO device can be crashed remotely.",
+      "description": "The remote version of IOS contains a flaw that could cause the remote\nrouter to crash when it receives a malicious SIP (Session Initiation\nProtocol) packet. \n\nAn attacker might use these flaws to disable this device remotely.",
+      "solution": "http://www.nessus.org/u?15ec02fb",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-2007-0648"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "CSCsh58082.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 24741,
+      "source": "nasl_header",
+      "name": "Cisco Multiple Devices Crafted IP Option Remote Code Execution (CSCeh52410)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "Arbitrary code can be executed on the remote CISCO device.",
+      "description": "The remote version of IOS contains a flaw that could cause the remote\nrouter to crash when processing specially malformed IP packets.\n\nAn attacker might use these flaws to execute arbitrary code on the remote\nrouters.",
+      "solution": "http://www.nessus.org/u?f4359412",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2007-0480"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "CSCeh52410.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 24744,
+      "source": "nasl_header",
+      "name": "Cisco IOS TCP Listener Crafted Packets Remote DoS (CSCek37177)",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "It is possible to crash the remote device remotely.",
+      "description": "The remote CISCO switch runs a version of IOS contains a flaw which\nmay cause the remote router to crash when processing specially\nmalformed TCP packets. \n\nAn attacker might use these flaws to crash this router remotely.",
+      "solution": "http://www.nessus.org/u?1885e120",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2007-0479"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc",
+        "CISCO/model"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "CSCek37177.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 25246,
+      "source": "nasl_header",
+      "name": "OS Identification : SNMP",
+      "family": "General",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "It was possible to identify the remote operating system based on the\nSNMP data returned.",
+      "description": "Nessus was able to identify the operating system type and version by\nexamining the SNMP data returned by the remote server.",
+      "solution": "n/a",
+      "risk_factor": "None",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [],
+      "require_keys": [
+        "SNMP/sysDesc"
+      ],
+      "require_ports": [],
+      "dependencies": [
+        "snmp_sysDesc.nasl"
+      ],
+      "filename": "os_fingerprint_snmp.nasl",
+      "clusters": [
+        "other"
+      ],
+      "primary_cluster": "other"
+    },
+    {
+      "plugin_id": 25422,
+      "source": "nasl_header",
+      "name": "SNMPc Management Server Detection",
+      "family": "SNMP",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "A network management service is listening on the remote host.",
+      "description": "The remote service appears to be an SNMPc Management Server instance,\nwhich is used by the SNMPc application for remote network management.",
+      "solution": "Limit incoming traffic to this port if desired.",
+      "risk_factor": "None",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [],
+      "require_keys": [],
+      "require_ports": [
+        "Services/unknown",
+        "165"
+      ],
+      "dependencies": [
+        "find_service1.nasl"
+      ],
+      "filename": "snmpc_crserv_detect.nasl",
+      "clusters": [
+        "service_inventory"
+      ],
+      "primary_cluster": "service_inventory"
+    },
+    {
+      "plugin_id": 27841,
+      "source": "nasl_header",
+      "name": "SNMP GETBULK Large max-repetitions Remote DoS",
+      "family": "SNMP",
+      "category": "ACT_DENIAL",
+      "synopsis": "The remote SNMP daemon is susceptible to a denial of service attack.",
+      "description": "It is possible to disable the remote SNMP daemon by sending a GETBULK\nrequest with a large value for 'max-repetitions'.  A remote attacker\nmay be able to leverage this issue to cause the daemon to consume\nexcessive memory and CPU on the affected system while it tries\nunsuccessfully to process the request, thereby denying service to\nlegitimate users.",
+      "solution": "Disable the SNMP service on the remote host if you do not use it. \nOtherwise, upgrade to version 5.4.1 or later if using Net-SNMP.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-2007-5846"
+      ],
+      "require_keys": [
+        "SNMP/community"
+      ],
+      "require_ports": [],
+      "dependencies": [
+        "snmp_settings.nasl",
+        "find_service2.nasl"
+      ],
+      "filename": "snmp_getbulk_max_repetitions_dos.nasl",
+      "clusters": [
+        "patch_cve",
+        "service_inventory"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 34022,
+      "source": "nasl_header",
+      "name": "SNMP Query Routing Information Disclosure",
+      "family": "SNMP",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The list of IP routes on the remote host can be obtained via SNMP.",
+      "description": "It is possible to obtain the routing information on the remote host\nby sending SNMP requests with the OID 1.3.6.1.2.1.4.21\n\nAn attacker may use this information to gain more knowledge about the\nnetwork topology.",
+      "solution": "Disable the SNMP service on the remote host if you do not use it, or\nfilter incoming UDP packets going to this port.",
+      "risk_factor": "None",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [],
+      "require_keys": [
+        "SNMP/community"
+      ],
+      "require_ports": [],
+      "dependencies": [
+        "snmp_settings.nasl",
+        "find_service2.nasl"
+      ],
+      "filename": "snmp_routes.nasl",
+      "clusters": [
+        "information_disclosure"
+      ],
+      "primary_cluster": "information_disclosure"
+    },
+    {
+      "plugin_id": 34396,
+      "source": "nasl_header",
+      "name": "ASG-Sentry SNMP Agent Detection",
+      "family": "SNMP",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "An SNMP agent is listening on the remote host.",
+      "description": "The remote SNMP agent is part of ASG-Sentry, a web-based SNMP network\nmanagement system.",
+      "solution": "Filter incoming traffic to this port if desired.",
+      "risk_factor": "None",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [],
+      "require_keys": [],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "asg_sentry_snmp_agent_detect.nasl",
+      "clusters": [
+        "service_inventory"
+      ],
+      "primary_cluster": "service_inventory"
+    },
+    {
+      "plugin_id": 35296,
+      "source": "nasl_header",
+      "name": "SNMP Protocol Version Detection",
+      "family": "SNMP",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "",
+      "description": "",
+      "solution": "Disable the SNMP service on the remote host if you do not use it, or\nfilter incoming UDP packets going to this port.",
+      "risk_factor": "None",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/version"
+      ],
+      "require_ports": [],
+      "dependencies": [
+        "snmp_settings.nasl"
+      ],
+      "filename": "snmp_version.nasl",
+      "clusters": [
+        "service_inventory"
+      ],
+      "primary_cluster": "service_inventory"
+    },
+    {
+      "plugin_id": 41028,
+      "source": "nasl_header",
+      "name": "SNMP Agent Default Community Name (public)",
+      "family": "SNMP",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The community name of the remote SNMP server can be guessed.",
+      "description": "It is possible to obtain the default community name of the remote\nSNMP server.\n\nAn attacker may use this information to gain more knowledge about the\nremote host, or to change the configuration of the remote system (if\nthe default community allows such modifications).",
+      "solution": "Disable the SNMP service on the remote host if you do not use it.\nEither filter incoming UDP packets going to this port, or change the \ndefault community string.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-1999-0517"
+      ],
+      "require_keys": [],
+      "require_ports": [],
+      "dependencies": [
+        "snmp_default_communities.nasl"
+      ],
+      "filename": "snmp_default_public_community.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 43100,
+      "source": "nasl_header",
+      "name": "SNMP Query WLAN SSID (Cisco)",
+      "family": "SNMP",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The SSID of the remote wireless LAN can be obtained via SNMP.",
+      "description": "It is possible to obtain the system information about the remote WLAN\nby sending SNMP requests with the OID 1.3.6.1.4.1.9.9.512.1.1.1.1.4.1\nto the remote Access Point controller. \n\nAn attacker may use this information to gain more knowledge about the\ntarget network.",
+      "solution": "Disable the SNMP service on the remote host if you do not use it, or\nfilter incoming UDP packets going to this port.",
+      "risk_factor": "None",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [],
+      "require_keys": [
+        "SNMP/community"
+      ],
+      "require_ports": [],
+      "dependencies": [
+        "snmp_settings.nasl",
+        "find_service2.nasl"
+      ],
+      "filename": "snmp_cisco_ssid.nasl",
+      "clusters": [
+        "other"
+      ],
+      "primary_cluster": "other"
+    },
+    {
+      "plugin_id": 44064,
+      "source": "nasl_header",
+      "name": "Novell NetWare 6.5 Support Pack 1.1 Admin/Install Local Information Disclosure",
+      "family": "Netware",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote host has an information disclosure vulnerability.",
+      "description": "According to the list of enumerated software packages, the version of\nNovel NetWare installed on the remote host may have an information\ndisclosure vulnerability.  Admin/install passwords are stored in the\nNIOUTPUT.TXT and NI.LOG installation log files.  A local attacker\ncould exploit this to gain access to sensitive information.\n\nSystems are vulnerable if an installation/upgrade was performed using\nthe NetWare 6.5 Support Pack 1.1 Overlay CDs, and when the OpenSSH\ncomponent is selected during Custom Installation.",
+      "solution": "Use NetWare 6.5 Support Pack 1.1(b) for all future installations and\nupgrades.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-2004-2414"
+      ],
+      "require_keys": [
+        "SNMP/hrSWInstalledName",
+        "Settings/ParanoidReport"
+      ],
+      "require_ports": [],
+      "dependencies": [
+        "snmp_software.nasl"
+      ],
+      "filename": "netware_openssh_info_leak.nasl",
+      "clusters": [
+        "patch_cve",
+        "information_disclosure"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 44344,
+      "source": "nasl_header",
+      "name": "OS Identification : SNMP sysObjectID",
+      "family": "General",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "It is possible to identify the remote operating system based on an\nSNMP query of its sysObjectID object.",
+      "description": "The remote operating system can be identified by querying its\nsysObjectID object using SNMP.",
+      "solution": "n/a",
+      "risk_factor": "None",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [],
+      "require_keys": [
+        "SNMP/OID"
+      ],
+      "require_ports": [],
+      "dependencies": [
+        "snmp_sysDesc.nasl"
+      ],
+      "filename": "os_fingerprint_snmp_sysobjectid.nasl",
+      "clusters": [
+        "other"
+      ],
+      "primary_cluster": "other"
+    },
+    {
+      "plugin_id": 45022,
+      "source": "nasl_header",
+      "name": "SNMP Query Airport Version",
+      "family": "SNMP",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The version of the remote Airport device can be obtained via SNMP.",
+      "description": "It is possible to obtain the version and model type of the remote\nAirport device by sending SNMP requests to the remote host. \n\nAn attacker may use this information to gain more knowledge about the\ntarget network.",
+      "solution": "Disable the SNMP service on the remote host if you do not use it, or\nfilter incoming UDP packets going to this port.",
+      "risk_factor": "None",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [],
+      "require_keys": [
+        "SNMP/community"
+      ],
+      "require_ports": [],
+      "dependencies": [
+        "snmp_settings.nasl",
+        "find_service2.nasl"
+      ],
+      "filename": "snmp_airport_version.nasl",
+      "clusters": [
+        "service_inventory"
+      ],
+      "primary_cluster": "service_inventory"
+    },
+    {
+      "plugin_id": 51160,
+      "source": "nasl_header",
+      "name": "BMC SNMP Agent Default Community Name (public)",
+      "family": "SNMP",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The community name of the remote SNMP server is set to 'public'.",
+      "description": "The remote SNMP server, listening on port 8161 (probably part of BMC\nPatrol) has a community name set to 'public'. \n\nAn attacker may use this information to gain more knowledge about the\nremote host or to change the configuration of the remote system (if\nthe default community allow such modifications).",
+      "solution": "Configure BMC patrol to disable SNMP or change the community to\nsomething hard to guess.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [],
+      "require_keys": [],
+      "require_ports": [],
+      "dependencies": [
+        "find_service2.nasl"
+      ],
+      "filename": "bmc_snmp_public.nasl",
+      "clusters": [
+        "other"
+      ],
+      "primary_cluster": "other"
+    },
+    {
+      "plugin_id": 51859,
+      "source": "nasl_header",
+      "name": "OS Identification : SNMP hrSWInstalledName",
+      "family": "General",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "It is possible to identify the remote operating system based an SNMP\nquery of its hrSWInstalledName object.",
+      "description": "The remote operating system can be identified by querying its\nhrSWInstalledName object using SNMP.",
+      "solution": "n/a",
+      "risk_factor": "None",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [],
+      "require_keys": [
+        "SNMP/hrSWInstalledName"
+      ],
+      "require_ports": [],
+      "dependencies": [
+        "snmp_software.nasl"
+      ],
+      "filename": "os_fingerprint_snmp_software.nasl",
+      "clusters": [
+        "other"
+      ],
+      "primary_cluster": "other"
+    },
+    {
+      "plugin_id": 56855,
+      "source": "nasl_header",
+      "name": "Apple Time Capsule and AirPort Base Station (802.11n) Firmware < 7.6 (APPLE-SA-2011-11-10-2)",
+      "family": "Misc.",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote network device is affected by an arbitrary code execution\nvulnerability.",
+      "description": "According to the firmware version collected via SNMP, the copy of\ndhclient-script included with the remote Apple Time Capsule / AirPort\nExpress Base Station / AirPort Extreme Base Station reportedly fails\nto strip shell meta-characters in a hostname obtained from a DHCP\nresponse.  A remote attacker might be able to leverage this\nvulnerability to execute arbitrary code on the affected device.",
+      "solution": "Upgrade the firmware to version 7.6 or later.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2011-0997"
+      ],
+      "require_keys": [
+        "Host/Airport/Firmware",
+        "SNMP/community"
+      ],
+      "require_ports": [],
+      "dependencies": [
+        "snmp_airport_version.nasl"
+      ],
+      "filename": "airport_firmware_7_6.nasl",
+      "clusters": [
+        "patch_cve",
+        "service_inventory"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 62759,
+      "source": "nasl_header",
+      "name": "HP/H3C and Huawei SNMP User Data Information Disclosure",
+      "family": "SNMP",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote networking device has an information disclosure\nvulnerability.",
+      "description": "The remote host allows SNMP read-only access to either h3c-user.mib or\nhh3c-user.mib.  These MIBs contain information such as usernames,\npasswords, and user privileges.  A remote attacker with a valid\nread-only community string could exploit this to enumerate usernames and\npasswords, which could lead to administrative access to the device.",
+      "solution": "For HP devices, install the appropriate software update to fix this\nissue.  If an update is not available, use one of the workarounds listed\nin the referenced advisories.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-2012-3268"
+      ],
+      "require_keys": [
+        "SNMP/community",
+        "SNMP/sysDesc"
+      ],
+      "require_ports": [],
+      "dependencies": [
+        "snmp_settings.nasl",
+        "snmp_sysDesc.nasl"
+      ],
+      "filename": "snmp_h3c_info_leak.nasl",
+      "clusters": [
+        "patch_cve",
+        "information_disclosure",
+        "service_inventory"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 63136,
+      "source": "nasl_header",
+      "name": "Samsung / Dell Printer SNMP Backdoor",
+      "family": "SNMP",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote printer has a backdoor administrator account.",
+      "description": "The remote host appears to be a Samsung printer, or a Dell printer\nmanufactured by Samsung. It has a hard-coded SNMP read-write community\nstring that allows access even when SNMP has been disabled in the\nprinter management utility. A remote, unauthenticated attacker can\nexploit this to take control of the printer.",
+      "solution": "To secure the printer, do one or more of the following :\n\n  - Limit access to the affected SNMP service using a secure\n    firewall / router. \n\n  - Disable SNMPv1/v2 on the printer and instead use the\n    secure SNMPv3 mode.\n\n  - Apply an optional firmware update. Contact the device's\n    vendor for more information.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-2012-4964"
+      ],
+      "require_keys": [],
+      "require_ports": [],
+      "dependencies": [
+        "dont_print_on_printers.nasl",
+        "dont_scan_printers.nasl",
+        "dont_scan_printers2.nasl"
+      ],
+      "filename": "snmp_samsung_printer_backdoor.nasl",
+      "clusters": [
+        "patch_cve",
+        "malware_detection",
+        "service_inventory"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 69817,
+      "source": "nasl_header",
+      "name": "Apple AirPort Base Station (802.11n) Firmware < 7.6.4 Remote DoS (APPLE-SA-2013-09-06-1)",
+      "family": "Misc.",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote network device is affected by a denial of service\nvulnerability.",
+      "description": "According to the firmware version collected via SNMP, the remote\nAirPort Extreme Base Station / AirPort Express Base Station / Apple\nTime Capsule reportedly does not properly parse small frames with\nincorrect lengths.  An associated client might be able to leverage\nthis vulnerability to cause a termination of the base station system.",
+      "solution": "Upgrade the firmware to version 7.6.4 or later.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "local",
+      "cve_ids": [
+        "CVE-2013-5132"
+      ],
+      "require_keys": [
+        "Host/Airport/Firmware",
+        "SNMP/community"
+      ],
+      "require_ports": [],
+      "dependencies": [
+        "snmp_airport_version.nasl"
+      ],
+      "filename": "airport_firmware_7_6_4.nasl",
+      "clusters": [
+        "patch_cve",
+        "service_inventory"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 69948,
+      "source": "nasl_header",
+      "name": "Cisco Digital Media Manager < 5.3 Privilege Escalation",
+      "family": "SNMP",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote device is affected by a privilege escalation\nvulnerability.",
+      "description": "The remote device is running a version of Cisco Digital Media Manager\nprior to 5.3.  As such, it is affected by a privilege escalation\nvulnerability.  A remote, authenticated attacker could leverage this to\nexecute arbitrary code on the device.",
+      "solution": "Update to Cisco Digital Media Manager version 5.3 or higher.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-2012-0329"
+      ],
+      "require_keys": [
+        "SNMP/community"
+      ],
+      "require_ports": [],
+      "dependencies": [
+        "snmp_sysDesc.nasl"
+      ],
+      "filename": "cisco_digital_media_manager_5_3.nasl",
+      "clusters": [
+        "patch_cve",
+        "privilege_and_acl",
+        "service_inventory"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 74091,
+      "source": "nasl_header",
+      "name": "Multiple Vendor SNMP public Community String Information Disclosure",
+      "family": "SNMP",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote hosts leaks sensitive information when sending SNMP\nrequests using the 'public' SNMP community string.",
+      "description": "Nessus was able to enumerate sensitive information on the remote\ndevice by sending SNMP requests using 'public' as the SNMP community\nstring.",
+      "solution": "Reconfigure or restrict access to the SNMP server.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [],
+      "require_keys": [
+        "SNMP/sysDesc"
+      ],
+      "require_ports": [],
+      "dependencies": [],
+      "filename": "snmp_info_disclosure.nasl",
+      "clusters": [
+        "information_disclosure"
+      ],
+      "primary_cluster": "information_disclosure"
+    },
+    {
+      "plugin_id": 76474,
+      "source": "nasl_header",
+      "name": "SNMP 'GETBULK' Reflection DDoS",
+      "family": "SNMP",
+      "category": "ACT_ATTACK",
+      "synopsis": "The remote SNMP daemon is affected by a vulnerability that allows a\nreflected distributed denial of service attack.",
+      "description": "The remote SNMP daemon is responding with a large amount of data to a\n'GETBULK' request with a larger than normal value for\n'max-repetitions'. A remote attacker can use this SNMP server to\nconduct a reflected distributed denial of service attack on an\narbitrary remote host.",
+      "solution": "Disable the SNMP service on the remote host if you do not use it.\nOtherwise, restrict and monitor access to this service, and consider\nchanging the default 'public' community string.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-2008-4309"
+      ],
+      "require_keys": [
+        "SNMP/community"
+      ],
+      "require_ports": [],
+      "dependencies": [
+        "snmp_settings.nasl",
+        "find_service2.nasl"
+      ],
+      "filename": "snmp_getbulk_reflection_ddos.nasl",
+      "clusters": [
+        "patch_cve",
+        "misconfiguration"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 78921,
+      "source": "nasl_header",
+      "name": "ARRIS Touchstone DG950A SNMP Information Disclosure (CVE-2014-4863)",
+      "family": "SNMP",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote device is affected by an information disclosure\nvulnerability.",
+      "description": "It is possible to read the plaintext password, SSID, and other\nsensitive information from the remote ARRIS Touchstone cable modems\nusing an SNMP request.",
+      "solution": "Disable the SNMP service on the device.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-2014-4863"
+      ],
+      "require_keys": [
+        "Host/Arris/Touchstone/model"
+      ],
+      "require_ports": [
+        "SNMP/community",
+        "SNMP/default/community"
+      ],
+      "dependencies": [
+        "arris_touchstone_cable_modem_detect.nbin",
+        "snmp_default_communities.nasl"
+      ],
+      "filename": "arris_touchstone_CVE-2014-4863.nasl",
+      "clusters": [
+        "patch_cve",
+        "information_disclosure"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 122115,
+      "source": "nasl_header",
+      "name": "Cisco Small Business Router SNMP Detection",
+      "family": "CISCO",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "Nessus detected a remote router",
+      "description": "Using SNMP, Nessus has determined that the remote host is a Cisco Small Business Router",
+      "solution": "n/a",
+      "risk_factor": "None",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [],
+      "require_keys": [
+        "Host/OS/SNMP"
+      ],
+      "require_ports": [
+        "Services/udp",
+        "161"
+      ],
+      "dependencies": [
+        "os_fingerprint_snmp.nasl"
+      ],
+      "filename": "cisco_small_business_detect.nasl",
+      "clusters": [
+        "service_inventory"
+      ],
+      "primary_cluster": "service_inventory"
+    },
+    {
+      "plugin_id": 185519,
+      "source": "nasl_header",
+      "name": "SNMP Server Detection",
+      "family": "SNMP",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "An SNMP server is listening on the remote host.",
+      "description": "The remote service is an SNMP agent which provides management data about the device.",
+      "solution": "Disable this service if it is not needed or restrict access to\ninternal hosts only if the service is available externally.",
+      "risk_factor": "None",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [],
+      "require_keys": [],
+      "require_ports": [],
+      "dependencies": [
+        "snmp_settings.nasl"
+      ],
+      "filename": "snmp_server.nasl",
+      "clusters": [
+        "service_inventory"
+      ],
+      "primary_cluster": "service_inventory"
+    },
+    {
+      "plugin_id": 214214,
+      "source": "nasl_header",
+      "name": "DrayTek Vigor 1.5.1.1 (CVE-2020-19664)",
+      "family": "Misc.",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote host is missing a security update.",
+      "description": "The version of DrakTek Vigor installed on the remote host is prior to 1.5.1.1. It is, therefore, affected by a\nvulnerability as referenced in the CVE-2020-19664 advisory.\n\n  - DrayTek Vigor2960 1.5.1 allows remote command execution via shell metacharacters in a toLogin2FA action to\n    mainfunction.cgi. (CVE-2020-19664)\n\nNote that Nessus has not tested for this issue but has instead relied only on the application's self-reported version\nnumber.",
+      "solution": "Upgrade to DrakTek Vigor version 1.5.1.1 or later.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-2020-19664"
+      ],
+      "require_keys": [
+        "installed_sw/DrayTek Vigor",
+        "SNMP/port"
+      ],
+      "require_ports": [],
+      "dependencies": [
+        "draytek_vigor_detect.nbin"
+      ],
+      "filename": "draytek_vigor_CVE-2020-19664.nasl",
+      "clusters": [
+        "patch_cve",
+        "service_inventory"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 242052,
+      "source": "nasl_header",
+      "name": "DrayTek Vigor 1.5.1.4 < 1.5.1.5 Command Injection",
+      "family": "Misc.",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote host is missing a security update.",
+      "description": "The version of DrakTek Vigor installed on the remote host is 1.5.1.4. It is, therefore, affected by a vulnerability,\nwhich was classified as critical. Affected is an unknown function of the file /cgi-bin/mainfunction.cgi/apmcfgupload \nof the component Web Management Interface. The manipulation of the argument session leads to os command injection. It \nis possible to launch the attack remotely. The exploit has been disclosed to the public and may be used. Upgrading to \nversion 1.5.1.5 is able to address this issue. It is recommended to upgrade the affected component.\n\nNote that Nessus has not tested for this issue but has instead relied only on the application's self-reported version\nnumber.",
+      "solution": "Upgrade to DrakTek Vigor version 1.5.1.5 or later.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-2024-12987"
+      ],
+      "require_keys": [
+        "installed_sw/DrayTek Vigor",
+        "SNMP/port"
+      ],
+      "require_ports": [],
+      "dependencies": [
+        "draytek_vigor_detect.nbin"
+      ],
+      "filename": "draytek_vigor_cve-2024-12987.nasl",
+      "clusters": [
+        "patch_cve",
+        "service_inventory"
+      ],
+      "primary_cluster": "patch_cve"
+    }
+  ]
+}

@@ -1,0 +1,68 @@
+{
+  "id": "openai_admin_projects",
+  "name": "OpenAI Admin — Projects",
+  "description": "List projects in the OpenAI organization (governance audit input). Requires an admin API key (sk-admin-...).",
+  "category": "AI Governance",
+  "logo": "/logos/vendors/openai.svg",
+  "direction": "pull",
+  "entity": "audit_only",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://api.openai.com/v1",
+    "method": "GET",
+    "path": "/organization/projects",
+    "headers": {
+      "Authorization": "Bearer {{credentials.admin_api_key}}"
+    },
+    "query_params": {},
+    "pagination": {
+      "strategy": "cursor",
+      "cursor_field": "last_id",
+      "cursor_param": "after",
+      "page_size": 100,
+      "page_size_param": "limit"
+    }
+  },
+  "records_path": "data",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "steps": [
+      {
+        "instruction": "Sign in at platform.openai.com with an account that has the Owner role on the organization you want to audit."
+      },
+      {
+        "instruction": "Confirm you understand that an admin API key has org-wide visibility (all projects, members, audit logs).",
+        "capture": {
+          "field": "_acknowledge_admin_scope",
+          "label": "I understand this key grants org-wide visibility and will be stored encrypted in Hakuna's vault.",
+          "type": "checkbox",
+          "required": true
+        }
+      },
+      {
+        "instruction": "Open Settings → Admin Keys → Create admin key. Scope: read-only is sufficient.",
+        "deeplink_path": "https://platform.openai.com/settings/organization/admin-keys"
+      },
+      {
+        "instruction": "Copy the admin key (starts with sk-admin-).",
+        "capture": {
+          "field": "admin_api_key",
+          "label": "Paste OpenAI admin API key",
+          "type": "password",
+          "auto_validate": true
+        }
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/organization/projects",
+      "query_params": {"limit": "1"},
+      "auth_header": "Authorization: Bearer {{admin_api_key}}",
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with OpenAI Admin API. Verify the key starts with sk-admin- and the calling user has Owner role."
+    }
+  },
+  "default_field_map": [],
+  "dedup_key": ["source_system", "source_id"],
+  "params_schema": {}
+}

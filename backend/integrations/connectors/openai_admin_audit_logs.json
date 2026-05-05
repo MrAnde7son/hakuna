@@ -1,0 +1,40 @@
+{
+  "id": "openai_admin_audit_logs",
+  "name": "OpenAI Admin — Audit Logs",
+  "description": "Pull org audit log events (user invites/role changes, project changes, key rotations). Used by identity mission to detect privileged actions outside change windows.",
+  "category": "AI Governance",
+  "logo": "/logos/vendors/openai.svg",
+  "direction": "pull",
+  "entity": "audit_only",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://api.openai.com/v1",
+    "method": "GET",
+    "path": "/organization/audit_logs",
+    "headers": {
+      "Authorization": "Bearer {{credentials.admin_api_key}}"
+    },
+    "query_params": {},
+    "pagination": {
+      "strategy": "cursor",
+      "cursor_field": "last_id",
+      "cursor_param": "after",
+      "page_size": 100,
+      "page_size_param": "limit"
+    }
+  },
+  "records_path": "data",
+  "credential_acquisition": {
+    "pattern": "shared_credential",
+    "shared_with": "openai_admin_projects"
+  },
+  "default_field_map": [],
+  "dedup_key": ["source_system", "source_id"],
+  "params_schema": {
+    "effective_at[gte]": {
+      "type": "integer",
+      "required": false,
+      "description": "Unix timestamp (seconds). Filter to events at or after this time. Useful for incremental audit replay."
+    }
+  }
+}

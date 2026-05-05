@@ -1,6 +1,6 @@
 # Hakuna Exposure Management Platform
 
-An open-source vulnerability management platform that imports scan results from multiple scanners, prioritizes vulnerabilities with AI-powered analysis, and helps security teams plan, track, and automate remediation — all from a single dashboard.
+A vulnerability management platform that supports multi domain scans and integration, prioritizes vulnerabilities with AI-powered analysis, and helps security teams plan, track, and automate remediation — all from a single dashboard.
 
 ![Python](https://img.shields.io/badge/python-3.8+-blue)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.115-green)
@@ -13,8 +13,13 @@ An open-source vulnerability management platform that imports scan results from 
 - **Multi-format import** — Upload `.nessus` (XML), `.html`, or `.csv` exports from Tenable Nessus, plus Qualys, Rapid7, and OpenVAS formats. Auto-detected on upload.
 - **Active VM scanning** — Built-in Nuclei-based scanner (`hakuna-vm-scanner`) runs signature, DAST, and LLM-driven vulnerability agents against live targets. Templates routed by CPE, tech stack, and open ports with dedicated coverage for OT (Siemens PLCs), IoT (Hikvision), and AI surfaces (Ollama, LangChain, vector DBs).
 - **Schemathesis API fuzzing** — Property-based fuzzing for OpenAPI and GraphQL endpoints discovered during EASM. Catches 5xx crashes, schema violations, and content-type drift.
-- **Specialist LLM agents** — Five opt-in vulnerability specialists (injection, XSS, SSRF, authentication, authorization) run per-asset with bounded iteration budgets and tool registries.
+- **Specialist LLM agents** — Opt-in vulnerability specialists (injection, XSS, SSRF, authentication, authorization) plus protocol-specific LDAP, SMB, SNMP, SSH, and Linux host audits run per-asset with bounded iteration budgets and typed tool palettes.
+- **Agent scheduler & typed capabilities** — A frontier scheduler re-runs applicable specialists after each one commits facts. Structured capabilities (credentials, JWTs, SSRF primitives, internal hosts, WAF presence) flow between agents with confidence, scope, and provenance — powering multi-step exploit composition.
+- **CIDR target expansion** — Paste `192.168.1.0/24` into scan targets and Hakuna fans out a job per host. URLs and hostnames pass through untouched; a 1,024-host cap prevents runaway expansion.
+- **Atomic rescan swap** — Rescans run in an isolated `scan_run_id` so the last known-good results stay visible until the new run succeeds. Failed rescans auto-revert; successful ones swap findings in a single commit and auto-resolve linked tickets.
 - **Authenticated scanning** — `AuthProfile` model supports static credentials and Playwright-driven `form_login` flows with TOTP, session caching (AES-256-GCM), and automatic reuse across Nuclei, Schemathesis, and agent workers.
+- **HTTP security header audit** — Every HTTPS response captured during EASM is graded against OWASP Secure Headers guidance (HSTS, CSP, X-Frame-Options, Referrer-Policy, Permissions-Policy) with per-cookie `Secure`/`HttpOnly`/`SameSite` checks.
+- **TLS deep audit** — Enumerates every accepted TLS version and cipher suite, validates the full certificate chain, checks OCSP revocation, and cross-checks DNS CAA records against the cert's actual issuer. Flags deprecated protocols, weak ciphers, untrusted chains, and CAA mismatches.
 - **Cross-source normalization** — Canonical vulnerability identity across scanners via CVE references for consistent deduplication.
 - **Scan comparison** — Side-by-side delta timelines, regression reports, temporal summaries, and remediation velocity metrics.
 - **Scan progress tracking** — Live per-job status with Celery-backed refresh/rescan endpoints and edit-and-rerun.
@@ -101,53 +106,174 @@ An open-source vulnerability management platform that imports scan results from 
 - **Production-ready infra** — Cloud Run + Cloud SQL deployment via Terraform, Sentry error tracking, migration runner resilient to concurrent replicas, and 500 MB scan upload ceiling.
 - **Docker support** — Run the full stack with `docker compose up`.
 
-## Quick Start
+## Setup
 
 ### Prerequisites
 
-- Python 3.8+ and Node.js 18+, **or**
-- Docker and Docker Compose
+- Docker and Docker Compose (recommended for the full stack), **or**
+- Python 3.11+ and Node.js 18+ for host-running backend/frontend
+- (Optional) `gcloud auth application-default login` if you want Vertex AI / Claude-on-GCP / Gemini providers
 
-### One command
+### Core stack (backend, frontend, Postgres, MinIO)
+
+The default `docker compose up` brings up everything you need to log in, upload scans, and use the UI.
 
 ```bash
-./start.sh
+cp .env.example .env   # if present; otherwise create one (see env vars below)
+docker compose up -d
 ```
 
-This will:
-1. Create a Python virtualenv and install backend dependencies
-2. Install frontend npm packages
-3. Start the backend on `http://localhost:8000`
-4. Start the frontend on `http://localhost:3000`
-5. Open the app in your browser
+| Service | Port | Notes |
+|---|---|---|
+| Frontend (Vite) | `http://localhost:3000` | Proxies `/api` to backend |
+| Backend (FastAPI) | `http://localhost:8000` | Swagger UI at `/docs` |
+| Postgres | `localhost:5433` | user/pw `hakuna/hakuna`, db `hakuna`. Schema auto-created on first boot. The init script also creates `hakuna_easm` for the EASM scanner. |
+| Redis | `localhost:6380` | DB 0/1 = VM scanner, DB 2 = audits, DB 3 = EASM |
+| MinIO | `9000` (S3) / `9001` (console) | SIEM event lake, bucket `hakuna-events-dev` auto-created |
 
-### Docker
+First user to register becomes superadmin.
 
-```bash
-docker compose up --build
-```
+### Host-running backend + frontend
 
-Backend on port 8000, frontend on port 3000. SQLite data is persisted in a Docker volume.
-
-### Manual setup
-
-**Backend:**
+Useful when iterating on backend code without a rebuild loop.
 
 ```bash
+# Postgres still comes from compose
+docker compose up -d postgres
+
+# Backend
 cd backend
-python3 -m venv .venv
-source .venv/bin/activate
+python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-uvicorn app:app --port 8000 --reload
+DATABASE_URL=postgresql://hakuna:hakuna@localhost:5433/hakuna \
+  uvicorn app:app --host 0.0.0.0 --port 8000 --reload --env-file .env
+
+# Frontend (separate terminal)
+cd frontend && npm install && npm run dev
 ```
 
-**Frontend:**
+`./start.sh` automates the above for both services.
+
+> **Hybrid setups work out of the box.** The `audit-worker`, `cloud-scanner`, and on-prem `relay` containers default `HAKUNA_BACKEND_URL` to `http://host.docker.internal:8000` and alias `host-gateway` so they reach the backend whether it runs as a sibling Compose service (port 8000 published to the host) or as a host process via `./start.sh`. Override `HAKUNA_BACKEND_URL` in `.env` only if your backend lives elsewhere.
+
+### Audit worker (Protocol Audit + agent runs)
+
+The Protocol Audit scratch-agent loop runs out-of-process so the API doesn't serialize behind minute-long agent runs. Activated by Compose profile.
 
 ```bash
-cd frontend
-npm install
-npm run dev
+# Generate a shared secret for the internal relay dispatch endpoint
+echo "INTERNAL_SHARED_SECRET=$(openssl rand -hex 32)" >> .env
+
+docker compose --profile audits up -d
 ```
+
+This adds a `redis` (already up if you started Postgres with audits) and an `audit-worker` celery process consuming the `audits` queue. The worker shares the credential vault key (`INTEGRATION_SECRET_KEY`) with the backend, so set that in `.env` before first boot.
+
+**Works with either backend mode.** The worker reaches the backend's `/internal/relay/dispatch` endpoint via `host.docker.internal:8000` by default, which resolves whether the backend runs in Compose (the `backend` service publishes :8000 to the host) or directly on the host via `./start.sh`. To force a different target — e.g. service-to-service inside Compose — set in `.env`:
+
+```bash
+HAKUNA_BACKEND_URL=http://backend:8000
+```
+
+### EASM scanner (`hakuna-scanner/`)
+
+External attack surface discovery — subfinder, dnsx, naabu, httpx, tlsx, asnmap. Joins the main stack's Postgres (`hakuna_easm` DB) and Redis (DB 3).
+
+```bash
+cd hakuna-scanner
+cp .env.example .env   # add API keys (Shodan, Censys, etc.) as needed
+docker compose up -d
+```
+
+Exposed on `http://localhost:8001`. The main backend reaches it as `easm-api` over the shared `hakuna_default` network.
+
+If your `postgres-data` volume predates the EASM init script, create the database manually:
+
+```bash
+docker compose exec postgres createdb -U hakuna hakuna_easm
+```
+
+### VM scanner (`hakuna-vm-scanner/`)
+
+Active vulnerability scanner — Nuclei templates, Schemathesis API fuzzing, and specialist LLM agents (injection, XSS, SSRF, AuthN, AuthZ, plus protocol audits for LDAP/SMB/SNMP/SSH/Linux). Shares Postgres with the main backend.
+
+```bash
+cd hakuna-vm-scanner
+cp .env.example .env
+docker compose up -d
+```
+
+Exposed on `http://localhost:8002`. Backend reaches it as `vm-api`. The worker mounts your host `~/.config/gcloud` so Vertex-based LLM specialists pick up your ADC.
+
+### Lab — intentionally vulnerable scan targets
+
+Spin up DVWA, SMB, LDAP, SSH, SNMP, and LocalStack on a shared `hakuna-lab` network so the VM scanner and audit worker can reach them by hostname.
+
+```bash
+docker compose -f docker-compose.lab.yml up -d
+```
+
+Seeded credentials (add to the credential vault for audit runs):
+
+| Service | Credentials |
+|---|---|
+| SMB | `lab` / `labpass` (guest on `public`) |
+| LDAP | `cn=admin,dc=lab,dc=local` / `adminpass` (anon bind enabled) |
+| SSH | `lab` / `labpass` on port 2222 |
+| SNMP | community `public` (v1/v2c read-only) |
+| AWS (LocalStack) | `test` / `test`, `endpoint_url=http://localstack:4566` |
+
+> **Security:** these targets are deliberately weak. Bind only to localhost — never expose this compose to a shared network.
+
+Tear down with `docker compose -f docker-compose.lab.yml down -v`.
+
+### Relay agent (on-prem bridge)
+
+Lightweight Docker agent that bridges cloud Hakuna to on-prem products (Jira DC, ServiceNow on-prem, CrowdStrike GovCloud) over a single outbound WebSocket.
+
+**Production / customer install** — issue a token in *Settings → Relay Agents*, then run:
+
+```bash
+cd hakuna-relay-agent
+HAKUNA_AGENT_TOKEN=<token-from-ui> \
+HAKUNA_CLOUD_URL=wss://app.hakuna.io/ws/relay \
+docker compose up -d
+```
+
+Add per-product creds (`JIRA_*`, `SERVICENOW_*`, `CROWDSTRIKE_*`) to `docker-compose.yml` or pass them via env.
+
+**Local dev** — bring the relay up attached to both `hakuna_default` (so it reaches `backend:8000` over Compose DNS) and the lab network (so it resolves `smb`, `ldap`, etc.):
+
+```bash
+HAKUNA_AGENT_TOKEN=<token> \
+HAKUNA_CLOUD_URL=ws://backend:8000/ws/relay \
+docker compose -f docker-compose.lab.yml --profile relay up -d
+```
+
+### Environment variables
+
+Required for full functionality (set in root `.env`):
+
+| Variable | When | Notes |
+|---|---|---|
+| `JWT_SECRET` | non-dev | Mandatory outside `ENVIRONMENT=development` |
+| `INTEGRATION_SECRET_KEY` | always | AES key for the credential vault — must be stable across backend + audit-worker |
+| `INTERNAL_SHARED_SECRET` | with audits profile | Auth for `/internal/relay/dispatch` between worker and backend |
+| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GOOGLE_API_KEY` / `GROQ_API_KEY` | optional | Pick whichever LLM providers you want available |
+| `GOOGLE_CLOUD_PROJECT` | optional | Enables Vertex AI / Claude-on-GCP via mounted ADC |
+| `GOOGLE_CLIENT_ID` | optional | Google SSO |
+| `SHODAN_API_KEY` | optional | Threat intel + EASM enrichment |
+
+### Logs
+
+```bash
+docker compose logs -f backend frontend          # core stack
+docker compose logs -f audit-worker              # Protocol Audit
+docker compose -f hakuna-vm-scanner/docker-compose.yml logs -f vm-worker
+docker compose -f hakuna-scanner/docker-compose.yml logs -f worker
+```
+
+Host-running backend/frontend write to `/tmp/nessus-backend.log` and `/tmp/nessus-frontend.log`.
 
 ## Usage
 
@@ -165,7 +291,7 @@ npm run dev
 │   ├── core/
 │   │   ├── auth.py                  # JWT auth, RBAC, multi-tenancy
 │   │   ├── audit.py                 # Audit logging
-│   │   ├── database.py              # SQLite/SQLAlchemy setup
+│   │   ├── database.py              # Postgres/SQLAlchemy setup
 │   │   ├── i18n.py                  # Internationalization (12 languages)
 │   │   └── risk_config.py           # Risk scoring configuration
 │   ├── models/
@@ -281,7 +407,7 @@ npm run dev
 └── start.sh                         # One-command launcher
 ```
 
-**Stack:** FastAPI + SQLAlchemy + SQLite (backend) · React 18 + Vite + Recharts + React Flow (frontend)
+**Stack:** FastAPI + SQLAlchemy + PostgreSQL (backend) · React 18 + Vite + Recharts + React Flow (frontend)
 
 ## API
 

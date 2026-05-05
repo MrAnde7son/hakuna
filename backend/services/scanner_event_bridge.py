@@ -30,6 +30,7 @@ from sqlalchemy.orm import Session
 from core.database import SessionLocal
 from models.models import Organization, ScannerEventCursor
 from services import workflow_engine
+from services.audit_auto_trigger import maybe_auto_trigger_anon_audits
 from services.easm import get_easm_events
 
 logger = logging.getLogger(__name__)
@@ -117,11 +118,23 @@ async def _poll_org_once(db: Session, org: Organization) -> dict:
                     "org=%d failed to fire trigger %s: %s", org.id, trigger_type, e,
                 )
 
+            # Out-of-the-box auto-audit on port_change for anon-capable
+            # protocols (SMB null session, SNMP default community). Gated
+            # per-org by Organization.settings["auto_audit_anon"]; failure
+            # here is non-fatal and must not interrupt cursor advancement.
+            if scanner_event_type == "port_change":
+                try:
+                    maybe_auto_trigger_anon_audits(db, org, event)
+                except Exception as e:
+                    logger.warning(
+                        "org=%d auto-audit trigger failed: %s", org.id, e,
+                    )
+
         # Advance cursor
         if event_created_at:
             try:
                 event_dt = datetime.fromisoformat(event_created_at.replace("Z", "+00:00"))
-                # Ensure both sides are tz-aware for comparison (cursor may be naive from SQLite)
+                # Ensure both sides are tz-aware for comparison (legacy rows may be naive)
                 if max_event_at is not None and max_event_at.tzinfo is None:
                     max_event_at = max_event_at.replace(tzinfo=timezone.utc)
                 if max_event_at is None or event_dt > max_event_at:

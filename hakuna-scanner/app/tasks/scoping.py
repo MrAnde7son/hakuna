@@ -143,3 +143,35 @@ async def load_scan_run_scope(
     if not r:
         return None
     return r.target_domain
+
+
+async def count_assets_in_scan_scope(
+    db: "AsyncSession",
+    scan_run_id: str,
+) -> int | None:
+    """Count assets visible to a scan_run's (org_id, target_domain) scope.
+
+    Used by `_mark_failed` so a scan that times out mid-pipeline still
+    reports partial-progress `assets_found` instead of 0 — the upstream
+    discovery stages may have already populated the assets table before
+    the timeout fired.
+
+    Returns None when the scan_run row doesn't exist.
+    """
+    from sqlalchemy import text
+    row = await db.execute(
+        text("SELECT org_id, target_domain FROM scan_runs WHERE id = :id"),
+        {"id": scan_run_id},
+    )
+    r = row.fetchone()
+    if not r:
+        return None
+    scope_sql, scope_params = build_target_scope(r.target_domain)
+    extra = compose_where(scope_sql)
+    params = {"org_id": str(r.org_id), **scope_params}
+    result = await db.execute(
+        text(f"SELECT COUNT(*) AS n FROM assets WHERE org_id = :org_id{extra}"),
+        params,
+    )
+    n_row = result.fetchone()
+    return int(n_row.n) if n_row else 0

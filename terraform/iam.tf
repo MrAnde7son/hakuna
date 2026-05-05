@@ -6,12 +6,13 @@ resource "google_service_account" "api" {
   description  = "Service account for the FastAPI Cloud Run service"
 }
 
-# Phase 2: uncomment when worker VM is added
-# resource "google_service_account" "worker" {
-#   account_id   = "hakuna-worker"
-#   display_name = "Hakuna Workers (Compute Engine)"
-#   description  = "Service account for Celery worker VM"
-# }
+# Audit-worker VM service account. Drives Protocol Audit LLM loops out of
+# Cloud Run so the API doesn't serialize behind multi-minute agent runs.
+resource "google_service_account" "audit_worker" {
+  account_id   = "hakuna-audit-worker"
+  display_name = "Hakuna Audit Worker (Compute Engine)"
+  description  = "Service account for the Celery audit-worker VM (Protocol Audit agent runs)"
+}
 
 # ── API service account roles ─────────────────────────────────────────────────
 
@@ -39,19 +40,18 @@ resource "google_service_account_iam_member" "api_token_creator" {
   member             = "serviceAccount:${google_service_account.api.email}"
 }
 
-# ── Phase 2: Worker service account roles ─────────────────────────────────────
-# Uncomment when adding compute_workers.tf in Phase 2.
-#
-# resource "google_project_iam_member" "worker_roles" {
-#   for_each = toset([
-#     "roles/cloudsql.client",
-#     "roles/secretmanager.secretAccessor",
-#     "roles/storage.objectViewer",   # workers read scan files, don't generate signed URLs
-#     "roles/cloudtrace.agent",
-#     "roles/logging.logWriter",
-#     "roles/monitoring.metricWriter",
-#   ])
-#   project = var.project_id
-#   role    = each.value
-#   member  = "serviceAccount:${google_service_account.worker.email}"
-# }
+# ── Audit-worker service account roles ───────────────────────────────────────
+resource "google_project_iam_member" "audit_worker_roles" {
+  for_each = toset([
+    "roles/cloudsql.client",              # connect via Cloud SQL Auth Proxy
+    "roles/secretmanager.secretAccessor", # pull DB password + JWT + INTEGRATION_SECRET_KEY + INTERNAL_SHARED_SECRET at startup
+    "roles/artifactregistry.reader",      # pull the api Docker image (worker reuses it)
+    "roles/logging.logWriter",
+    "roles/monitoring.metricWriter",
+    "roles/aiplatform.user", # Vertex AI (Gemini / Claude-on-Vertex) via ADC — agents pick a vertex provider
+  ])
+
+  project = var.project_id
+  role    = each.value
+  member  = "serviceAccount:${google_service_account.audit_worker.email}"
+}

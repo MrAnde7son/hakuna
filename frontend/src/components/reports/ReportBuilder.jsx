@@ -55,8 +55,10 @@ import {
   getSiemNoisySources,
   getSiemAlertSeverity,
   getSiemRecentAlerts,
+  getOtPostureOverview,
 } from '../../api.js'
 import { Card, SeverityBadge, ScoreBar, Spinner, EffortBadge, OwnerBadge, Button, Pill, ExportImportButtons, ErrorBanner, SkeletonCard, useToast, useConfirm } from '../shared/ui.jsx'
+import { capture } from '../../utils/analytics.js'
 
 // ─── Storage helpers ─────────────────────────────────────────────────────────
 
@@ -103,7 +105,10 @@ function templateToReport(t) {
     name: t.name,
     description: t.description,
     widgets: t.config?.widgets || [],
-    createdAt: t.config?.createdAt || t.created_at,
+    // Prefer the DB's created_at; fall back to legacy config.createdAt only if
+    // the row predates the column being populated (older OOTB seeds wrote a
+    // 1970 sentinel into config.createdAt).
+    createdAt: t.created_at || t.config?.createdAt,
     updatedAt: t.updated_at,
     is_default: t.is_default,
   }
@@ -160,6 +165,7 @@ const DATA_SOURCES = {
   siem_noisy_sources:      (scanId, f) => getSiemNoisySources(),
   siem_alert_severity:     (scanId, f) => getSiemAlertSeverity(),
   siem_recent_alerts:      (scanId, f) => getSiemRecentAlerts(f?.limit || 15),
+  ot_posture:              (scanId, f) => getOtPostureOverview(),
 }
 
 // Sources whose backend endpoints honor the `tags` query param. Widgets
@@ -697,6 +703,84 @@ const DATA_PRESETS = {
     ],
     extract: d => Array.isArray(d) ? d : [],
     rowDrillDown: row => row?.id ? `/siem/alerts?alert_id=${row.id}` : '/siem/alerts',
+  },
+
+  // ── OT Posture metrics ──
+  ot_asset_count: {
+    label: 'OT-Eligible Assets', group: 'OT Posture', source: 'ot_posture', type: 'metric',
+    extract: d => d?.ot_asset_count ?? 0, color: '#7c3aed',
+  },
+  ot_consents_fresh: {
+    label: 'Active OT Consents', group: 'OT Posture', source: 'ot_posture', type: 'metric',
+    extract: d => (d?.protocols || []).reduce((acc, p) => acc + (p.consent_summary?.fresh || 0), 0),
+    color: '#16a34a',
+  },
+  ot_consents_expiring: {
+    label: 'Consents Expiring Soon', group: 'OT Posture', source: 'ot_posture', type: 'metric',
+    extract: d => (d?.protocols || []).reduce((acc, p) => acc + (p.consent_summary?.expiring_soon || 0), 0),
+    color: '#ea580c',
+  },
+  ot_consents_expired: {
+    label: 'Expired Consents', group: 'OT Posture', source: 'ot_posture', type: 'metric',
+    extract: d => (d?.protocols || []).reduce((acc, p) => acc + (p.consent_summary?.expired || 0), 0),
+    color: '#dc2626',
+  },
+  ot_iec_62443_pct: {
+    label: 'IEC 62443 3-3 Coverage', group: 'OT Posture', source: 'ot_posture', type: 'metric',
+    extract: d => d?.iec_62443_coverage?.percent ?? 0, format: 'pct', color: '#0ea5e9',
+  },
+  ot_meti_v3_pct: {
+    label: 'METI v3 Coverage', group: 'OT Posture', source: 'ot_posture', type: 'metric',
+    extract: d => d?.meti_v3_coverage?.percent ?? 0, format: 'pct', color: '#d946ef',
+  },
+
+  // ── OT Posture categories ──
+  ot_consent_breakdown: {
+    label: 'Consent Status Distribution', group: 'OT Posture', source: 'ot_posture', type: 'categories',
+    extract: d => {
+      const totals = { fresh: 0, expiring_soon: 0, expired: 0, missing: 0 }
+      for (const p of d?.protocols || []) {
+        const s = p.consent_summary || {}
+        totals.fresh += s.fresh || 0
+        totals.expiring_soon += s.expiring_soon || 0
+        totals.expired += s.expired || 0
+        totals.missing += s.missing || 0
+      }
+      return [
+        { name: 'Fresh',         value: totals.fresh,         color: '#16a34a' },
+        { name: 'Expiring soon', value: totals.expiring_soon, color: '#ea580c' },
+        { name: 'Expired',       value: totals.expired,       color: '#dc2626' },
+        { name: 'No consent',    value: totals.missing,       color: '#94a3b8' },
+      ].filter(r => r.value > 0)
+    },
+  },
+  ot_consents_by_protocol: {
+    label: 'Fresh Consents by Protocol', group: 'OT Posture', source: 'ot_posture', type: 'categories',
+    extract: d => (d?.protocols || []).map((p, i) => ({
+      name: p.protocol,
+      value: p.consent_summary?.fresh || 0,
+      color: PALETTE[i % PALETTE.length],
+    })).filter(r => r.value > 0),
+  },
+
+  // ── OT Posture tables ──
+  ot_assets_table: {
+    label: 'OT Assets & Consent', group: 'OT Posture', source: 'ot_posture', type: 'table',
+    columns: [
+      { key: 'label', label: 'Asset' },
+      { key: 'ip', label: 'IP' },
+      { key: 'device_type', label: 'Device' },
+      { key: 'ot_tcp_ports_observed', label: 'OT TCP', render: v => (v || []).join(', ') },
+      { key: 'ot_udp_ports_observed', label: 'OT UDP', render: v => (v || []).join(', ') },
+      { key: 'ot_protocol_status', label: 'Active audit', render: v => v || 'no consent' },
+      { key: 'ot_passive_status', label: 'Passive audit', render: v => v || 'no consent' },
+    ],
+    extract: d => (d?.rows || []).map(r => ({
+      ...r,
+      ot_protocol_status: r.consent?.ot_protocol?.status || 'missing',
+      ot_passive_status: r.consent?.ot_passive?.status || 'missing',
+    })).slice(0, 50),
+    rowDrillDown: row => row?.asset_id ? `/assets/${row.asset_id}` : '/inventory',
   },
 
   // ── Categories (pie/donut/bar) ──
@@ -1759,6 +1843,87 @@ const DATA_PRESETS = {
   },
 }
 
+// Build a drill-down URL for a heatmap cell. Each row × col combination is
+// translated to either FindingExplorer URL params (preferred — shows simple
+// filter chips) or rule-engine conditions on the `q=` advanced query (used when
+// any dimension lacks a direct URL param, e.g. owner/asset/os/environment).
+const _HM_SEV_TO_NUM = { Critical: 4, High: 3, Medium: 2, Low: 1, Info: 0 }
+const _HM_EFFORT_TO_SLUG = { 'Quick Win': 'quick_win', Medium: 'medium', Complex: 'complex' }
+const _HM_SLA_TO_SLUG = { Breached: 'breached', 'At Risk': 'at_risk', 'On Track': 'on_track', Resolved: 'resolved' }
+
+function _heatmapDrillUrl(rowDim, rowKey, colDim, colKey) {
+  const params = {}
+  const conds = []
+
+  if (rowKey && rowKey !== 'Unknown' && rowKey !== 'Unassigned') {
+    switch (rowDim) {
+      case 'family': params.family = rowKey; break
+      case 'effort': {
+        const slug = _HM_EFFORT_TO_SLUG[rowKey] || rowKey.toLowerCase().replace(/\s+/g, '_')
+        if (slug) params.effort_level = slug
+        break
+      }
+      case 'owner':       conds.push({ field: 'finding.owner',     op: 'eq',       value: rowKey }); break
+      case 'asset':       conds.push({ field: 'hostname',          op: 'eq',       value: rowKey }); break
+      case 'os':          conds.push({ field: 'os',                op: 'contains', value: rowKey }); break
+      case 'environment': conds.push({ field: 'environment_tag',   op: 'eq',       value: rowKey }); break
+      // criticality: label→number mapping is ambiguous (multiple numbers map to
+      // the same label) — skip the row filter rather than emit a wrong condition.
+    }
+  }
+
+  if (colKey) {
+    switch (colDim) {
+      case 'severity': {
+        const n = _HM_SEV_TO_NUM[colKey]
+        if (n != null) params.severity = String(n)
+        break
+      }
+      case 'effort': {
+        const slug = _HM_EFFORT_TO_SLUG[colKey]
+        if (slug) params.effort_level = slug
+        break
+      }
+      case 'exploit':
+        if (colKey === 'Exploit Available') params.exploit = 'true'
+        else if (colKey === 'No Exploit')   conds.push({ field: 'finding.exploit', op: 'is_false', value: null })
+        break
+      case 'kev':
+        if (colKey === 'In KEV')      params.is_kev = 'true'
+        else if (colKey === 'Not in KEV') conds.push({ field: 'finding.is_kev', op: 'is_false', value: null })
+        break
+      case 'sla_status': {
+        const slug = _HM_SLA_TO_SLUG[colKey]
+        if (slug) params.sla_status = slug
+        break
+      }
+      // age_bucket and priority_bucket: no direct rule-engine field — col filter dropped
+    }
+  }
+
+  // FindingExplorer runs in advanced mode if `q` is present (and ignores the
+  // simple URL params). So when any condition exists we must convert all the
+  // simple params to conditions too, otherwise they'd be silently dropped.
+  if (conds.length > 0) {
+    if (params.family)       conds.push({ field: 'finding.plugin_family', op: 'eq',      value: params.family })
+    if (params.effort_level) conds.push({ field: 'finding.effort',        op: 'eq',      value: params.effort_level })
+    if (params.severity)     conds.push({ field: 'finding.severity',      op: 'eq',      value: Number(params.severity) })
+    if (params.exploit === 'true') conds.push({ field: 'finding.exploit', op: 'is_true', value: null })
+    if (params.is_kev === 'true')  conds.push({ field: 'finding.is_kev',  op: 'is_true', value: null })
+    if (params.sla_status)   conds.push({ field: 'finding.sla_status',    op: 'eq',      value: params.sla_status })
+
+    const sp = new URLSearchParams()
+    sp.set('q', JSON.stringify(conds))
+    sp.set('q_logic', 'AND')
+    return `/findings?${sp.toString()}`
+  }
+
+  const sp = new URLSearchParams()
+  Object.entries(params).forEach(([k, v]) => sp.set(k, v))
+  const qs = sp.toString()
+  return qs ? `/findings?${qs}` : '/findings'
+}
+
 // Normalises the /api/reports/heatmap response into the shape the renderer consumes.
 function _heatmapFromPayload(d) {
   if (!d) return { cols: [], rows: [], rowLabel: '', colLabel: '' }
@@ -1923,25 +2088,33 @@ const WIDTH_COL = { quarter: 1, third: 1, half: 2, 'two-thirds': 3, full: 4 }
 const DEFAULT_DASHBOARD = {
   id: DEFAULT_REPORT_ID,
   name: 'Security Overview',
-  createdAt: new Date(0).toISOString(),
   widgets: [
-    // ── Row 1: At-a-glance KPIs ──
+    { id: 'dw4', type: 'card', title: 'Assets', width: 'quarter', config: { preset: 'total_assets' } },
     { id: 'dw1', type: 'card',      title: 'Critical',              width: 'quarter', config: { preset: 'critical_count' } },
     { id: 'dw2', type: 'card',      title: 'High',                  width: 'quarter', config: { preset: 'high_count' } },
     { id: 'dw3', type: 'card',      title: 'With Exploit',          width: 'quarter', config: { preset: 'exploit_count' } },
-    { id: 'dw4', type: 'card',      title: 'Assets',                width: 'quarter', config: { preset: 'total_assets' } },
-    // ── Row 2: Risk grade with actionable tips + solutions ──
     { id: 'dw17',type: 'risk_grade', title: 'How to Improve Risk Score', width: 'full', config: { preset: 'risk_grade', show_tips: true } },
-    // ── Row 3: Quick win actions (low-effort, high-impact) ──
+    {
+      id: 'dw21', type: 'funnel', title: 'Prioritization Funnel', width: 'full', config: {
+        base_entity: 'findings', steps: [
+          { label: 'All findings', filters: {} },
+          { label: 'CVSS ≥ 7.0', filters: { min_cvss3: 7.0 } },
+          { label: 'In CISA KEV', filters: { is_kev: true } },
+          { label: 'On critical assets', filters: { on_critical_assets: true } },
+          { label: 'Validated reachable', filters: { is_reachable: true } },
+        ]
+      }
+    },
+    // ── Row 4: Quick win actions (low-effort, high-impact) ──
     { id: 'dw19',type: 'table',      title: 'Quick Win Actions',         width: 'full', config: { preset: 'quick_wins_actions', limit: 5 } },
-    // ── Row 4: Full remediation actions + owner breakdown ──
+    // ── Row 5: Full remediation actions + owner breakdown ──
     { id: 'dw18',type: 'table',      title: 'Top Remediation Actions',   width: 'full', config: { preset: 'aggregated_solutions_table', limit: 10 } },
     { id: 'dw20',type: 'table',      title: 'Actions by Owner',          width: 'half', config: { preset: 'solutions_by_owner', limit: 5 } },
-    { id: 'dw10',type: 'pie_chart', title: 'SLA Status',            width: 'half',    config: { preset: 'sla_status', donut: true } },
-    // ── Row 5: Trends & context ──
+    { id: 'dw22',type: 'heatmap',   title: 'Owner × SLA Status',         width: 'half', config: { preset: 'heatmap_owner_sla' } },
+    // ── Row 6: Trends & context ──
     { id: 'dw6', type: 'line_chart',title: 'Vulnerability Trend',   width: 'half',    config: { preset: 'severity_trend', trending_mode: 'cumulative' } },
     { id: 'dw5', type: 'pie_chart', title: 'Severity Breakdown',    width: 'half',    config: { preset: 'severity_breakdown', donut: true } },
-    // ── Row 6: Assets & age ──
+    // ── Row 7: Assets & age ──
     { id: 'dw11',type: 'table',     title: 'Top Risky Assets',      width: 'full',    config: { preset: 'top_assets', limit: 5 } },
     { id: 'dw14',type: 'card',      title: 'Zombie Vulns',          width: 'quarter', config: { preset: 'zombie_count' } },
     { id: 'dw15',type: 'card',      title: 'Regressions',           width: 'quarter', config: { preset: 'regression_count' } },
@@ -1952,7 +2125,6 @@ const DEFAULT_DASHBOARD = {
 const EXECUTIVE_DASHBOARD = {
   id: 'default-executive-overview',
   name: 'Executive Overview',
-  createdAt: new Date(0).toISOString(),
   widgets: [
     { id: 'ex0', type: 'risk_grade', title: 'Organization Risk Grade', width: 'half', config: { preset: 'risk_grade', show_benchmark: true } },
     { id: 'ex5', type: 'pie_chart', title: 'Severity Distribution', width: 'half',    config: { preset: 'severity_breakdown', donut: true } },
@@ -1979,7 +2151,6 @@ const EXECUTIVE_DASHBOARD = {
 const IDENTITY_ACCESS_DASHBOARD = {
   id: 'default-identity-access',
   name: 'Identity & Access Risk',
-  createdAt: new Date(0).toISOString(),
   widgets: [
     { id: 'ia1', type: 'card',      title: 'Domain Admins',          width: 'quarter', config: { preset: 'inv_domain_admins' } },
     { id: 'ia2', type: 'card',      title: 'Local Admins',           width: 'quarter', config: { preset: 'inv_local_admins' } },
@@ -2001,7 +2172,6 @@ const IDENTITY_ACCESS_DASHBOARD = {
 const ATTACK_SURFACE_DASHBOARD = {
   id: 'default-attack-surface',
   name: 'Attack Surface & Hygiene',
-  createdAt: new Date(0).toISOString(),
   widgets: [
     { id: 'as1', type: 'card',      title: 'Expired Certificates',    width: 'quarter', config: { preset: 'inv_expired_certs' } },
     { id: 'as2', type: 'card',      title: 'Expiring Soon',           width: 'quarter', config: { preset: 'inv_expiring_certs' } },
@@ -2024,7 +2194,6 @@ const ATTACK_SURFACE_DASHBOARD = {
 const REMEDIATION_DASHBOARD = {
   id: 'default-remediation-progress',
   name: 'Remediation Progress',
-  createdAt: new Date(0).toISOString(),
   widgets: [
     { id: 'rp1', type: 'risk_grade', title: 'Organization Risk Grade', width: 'half', config: { preset: 'risk_grade' } },
     { id: 'rp2', type: 'pie_chart', title: 'SLA Status',              width: 'half',    config: { preset: 'sla_status', donut: true } },
@@ -2045,7 +2214,6 @@ const REMEDIATION_DASHBOARD = {
 const AI_ML_ATTACK_SURFACE_DASHBOARD = {
   id: 'default-ai-ml-attack-surface',
   name: 'AI/ML Attack Surface',
-  createdAt: new Date(0).toISOString(),
   widgets: [
     // Header
     { id: 'ai1', type: 'header', title: 'AI/ML Attack Surface Report', width: 'full', config: { title: 'AI/ML Attack Surface Report', subtitle: 'Shadow AI, LLM endpoints, and emerging ML risks across your environment' } },
@@ -2067,7 +2235,6 @@ const AI_ML_ATTACK_SURFACE_DASHBOARD = {
 const OS_DISTRIBUTION_DASHBOARD = {
   id: 'default-os-distribution',
   name: 'OS Distribution',
-  createdAt: new Date(0).toISOString(),
   widgets: [
     { id: 'os1', type: 'header', title: 'Operating System Distribution', width: 'full', config: { title: 'Operating System Distribution', subtitle: 'Asset inventory breakdown by OS family, version, and device type' } },
     { id: 'os2', type: 'card',      title: 'Total Assets',     width: 'quarter', config: { preset: 'total_assets' } },
@@ -2090,7 +2257,6 @@ const OS_DISTRIBUTION_DASHBOARD = {
 const SOFTWARE_INVENTORY_DASHBOARD = {
   id: 'default-software-inventory',
   name: 'Software Inventory',
-  createdAt: new Date(0).toISOString(),
   widgets: [
     { id: 'sw1', type: 'header', title: 'Software Inventory Report', width: 'full', config: { title: 'Software Inventory Report', subtitle: 'Installed software across the environment — products, vendors, and categories' } },
     { id: 'sw2', type: 'card',      title: 'Total Software',     width: 'quarter', config: { preset: 'inv_total_software' } },
@@ -2114,7 +2280,6 @@ const SOFTWARE_INVENTORY_DASHBOARD = {
 const EASM_DASHBOARD = {
   id: 'default-easm',
   name: 'External Attack Surface',
-  createdAt: new Date(0).toISOString(),
   widgets: [
     // Header
     { id: 'ea1', type: 'header', title: 'External Attack Surface', width: 'full', config: { title: 'External Attack Surface', subtitle: 'Discovered assets, services, certificates, and change events from EASM scanning' } },
@@ -2163,7 +2328,6 @@ const EASM_DASHBOARD = {
 const OWNER_ACCOUNTABILITY_DASHBOARD = {
   id: 'default-owner-accountability',
   name: 'Owner Accountability',
-  createdAt: new Date(0).toISOString(),
   widgets: [
     { id: 'oa0',  type: 'header',    title: 'Owner Accountability',            width: 'full',    config: { title: 'Owner Accountability Report', subtitle: 'Risk posture and remediation workload broken down by responsible owner — red means action required now' } },
     { id: 'oa1',  type: 'card',      title: 'Total Findings',                  width: 'quarter', config: { preset: 'total_findings' } },
@@ -2182,7 +2346,6 @@ const OWNER_ACCOUNTABILITY_DASHBOARD = {
 const SIEM_OPERATIONS_DASHBOARD = {
   id: 'default-siem-operations',
   name: 'SIEM Operations',
-  createdAt: new Date(0).toISOString(),
   widgets: [
     { id: 'so0',  type: 'header',    title: 'SIEM Operations',                  width: 'full',    config: { title: 'SIEM Operations Dashboard', subtitle: 'Event ingestion, detection rules, alert triage, and mean time to respond' } },
     { id: 'so1',  type: 'card',      title: 'Events (24h)',                     width: 'quarter', config: { preset: 'siem_events_24h' } },
@@ -2194,6 +2357,23 @@ const SIEM_OPERATIONS_DASHBOARD = {
     { id: 'so7',  type: 'bar_chart', title: 'Noisy Rules (FP Rate)',           width: 'half',    config: { preset: 'siem_noisy_rules' } },
     { id: 'so8',  type: 'table',     title: 'Top Assets by Alert Count',      width: 'half',    config: { preset: 'siem_top_assets' } },
     { id: 'so9',  type: 'table',     title: 'Recent Open Alerts',             width: 'full',    config: { preset: 'siem_recent_alerts', limit: 15 } },
+  ],
+}
+
+const OT_POSTURE_DASHBOARD = {
+  id: 'default-ot-posture',
+  name: 'OT Posture',
+  widgets: [
+    { id: 'ot0', type: 'header',    title: 'OT Posture',                       width: 'full',    config: { title: 'OT Posture', subtitle: 'OT/ICS audit consent coverage and IEC 62443 / METI v3 evidence — every PLC/DCS/RTU needs explicit, time-bounded approval' } },
+    { id: 'ot1', type: 'card',      title: 'OT-Eligible Assets',               width: 'quarter', config: { preset: 'ot_asset_count' } },
+    { id: 'ot2', type: 'card',      title: 'Active Consents',                  width: 'quarter', config: { preset: 'ot_consents_fresh' } },
+    { id: 'ot3', type: 'card',      title: 'Expiring Soon',                    width: 'quarter', config: { preset: 'ot_consents_expiring' } },
+    { id: 'ot4', type: 'card',      title: 'Expired',                          width: 'quarter', config: { preset: 'ot_consents_expired' } },
+    { id: 'ot5', type: 'card',      title: 'IEC 62443 3-3 Coverage',           width: 'half',    config: { preset: 'ot_iec_62443_pct' } },
+    { id: 'ot6', type: 'card',      title: 'METI v3 Coverage',                 width: 'half',    config: { preset: 'ot_meti_v3_pct' } },
+    { id: 'ot7', type: 'pie_chart', title: 'Consent Status Distribution',      width: 'half',    config: { preset: 'ot_consent_breakdown', donut: true } },
+    { id: 'ot8', type: 'bar_chart', title: 'Fresh Consents by Protocol',       width: 'half',    config: { preset: 'ot_consents_by_protocol' } },
+    { id: 'ot9', type: 'table',     title: 'OT Assets & Consent State',        width: 'full',    config: { preset: 'ot_assets_table' } },
   ],
 }
 
@@ -3064,15 +3244,27 @@ function WidgetRenderer({ widget, scanId, preview, globalTags, globalTagLogic })
                     const v = r.cells?.[c.key] || 0
                     const intensity = v > 0 ? 0.15 + 0.7 * (v / maxPerCol[ci]) : 0
                     const bgAlpha = Math.round(intensity * 255).toString(16).padStart(2, '0')
+                    const clickable = v > 0 && heatmapRows && heatmapCols
+                    const onCellClick = clickable
+                      ? () => navigate(_heatmapDrillUrl(heatmapRows, r.key, heatmapCols, c.key))
+                      : undefined
                     return (
                       <td key={c.key} style={{ padding: 3, textAlign: 'center' }}>
-                        <div style={{
-                          display: 'flex', alignItems: 'center', justifyContent: 'center',
-                          height: 30, borderRadius: 4,
-                          background: v > 0 ? `${colColor[ci]}${bgAlpha}` : 'transparent',
-                          color: v > 0 ? (intensity > 0.5 ? '#fff' : colColor[ci]) : 'var(--text-muted)',
-                          fontWeight: 600, fontSize: 11,
-                        }}>{v || ''}</div>
+                        <div
+                          onClick={onCellClick}
+                          title={clickable ? `View ${v} finding${v === 1 ? '' : 's'}: ${r.label} × ${c.label}` : undefined}
+                          style={{
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            height: 30, borderRadius: 4,
+                            background: v > 0 ? `${colColor[ci]}${bgAlpha}` : 'transparent',
+                            color: v > 0 ? (intensity > 0.5 ? '#fff' : colColor[ci]) : 'var(--text-muted)',
+                            fontWeight: 600, fontSize: 11,
+                            cursor: clickable ? 'pointer' : 'default',
+                            transition: 'transform 0.1s ease, box-shadow 0.1s ease',
+                          }}
+                          onMouseEnter={clickable ? (e) => { e.currentTarget.style.boxShadow = '0 0 0 2px var(--accent)' } : undefined}
+                          onMouseLeave={clickable ? (e) => { e.currentTarget.style.boxShadow = 'none' } : undefined}
+                        >{v || ''}</div>
                       </td>
                     )
                   })}
@@ -3196,8 +3388,121 @@ function WidgetRenderer({ widget, scanId, preview, globalTags, globalTagLogic })
 
 const FUNNEL_COLORS = ['#6366f1', '#818cf8', '#a5b4fc', '#c7d2fe', '#e0e7ff', '#93c5fd', '#60a5fa', '#3b82f6']
 
+// Translate one funnel finding filter into either a FindingExplorer URL param
+// (preferred — keeps the simple filter UI) or a rule-engine condition (used
+// when the filter has no direct URL counterpart, e.g. min_cvss3, owner_suggestion).
+// Returns { param: [k, v] } or { cond: { field, op, value } } or null.
+const _isTrue = (v) => v === true || v === 'true'
+
+function _translateFunnelFindingFilter(key, val) {
+  if (val == null || val === '') return null
+  switch (key) {
+    // Direct URL params
+    case 'severity':       return { param: ['severity', String(val)] }
+    case 'sla_status':     return { param: ['sla_status', val] }
+    case 'effort_level':   return { param: ['effort_level', val] }
+    case 'workflow_status':return { param: ['workflow_status', val] }
+    case 'cve':            return { param: ['cve', val] }
+    case 'tactic':         return { param: ['tactic', val] }
+    case 'technique_id':   return { param: ['technique_id', val] }
+    case 'search':         return { param: ['search', val] }
+    case 'is_kev':            return _isTrue(val) ? { param: ['is_kev', 'true'] } : null
+    case 'has_exploit':       return _isTrue(val) ? { param: ['exploit', 'true'] } : null
+    case 'ransomware_linked': return _isTrue(val) ? { param: ['ransomware', 'true'] } : null
+    case 'trending_in_news':  return _isTrue(val) ? { param: ['trending', 'true'] } : null
+    case 'has_ttps':          return _isTrue(val) ? { param: ['has_ttps', 'true'] } : null
+    case 'has_exception':     return _isTrue(val) ? { param: ['has_exception', 'true'] } : null
+    // Rule-engine conditions
+    case 'min_severity':   return { cond: { field: 'finding.severity',         op: 'gte', value: Number(val) } }
+    case 'min_cvss3':      return { cond: { field: 'finding.cvss3',            op: 'gte', value: Number(val) } }
+    case 'min_cvss4':      return { cond: { field: 'finding.cvss4',            op: 'gte', value: Number(val) } }
+    case 'min_vpr':        return { cond: { field: 'finding.vpr',              op: 'gte', value: Number(val) } }
+    case 'min_epss':       return { cond: { field: 'finding.epss_score',       op: 'gte', value: Number(val) } }
+    case 'zero_day':            return _isTrue(val) ? { cond: { field: 'finding.zero_day',         op: 'is_true', value: null } } : null
+    case 'is_regression':       return _isTrue(val) ? { cond: { field: 'finding.is_regression',    op: 'is_true', value: null } } : null
+    case 'exploit_maturity':    return { cond: { field: 'finding.exploit_maturity',     op: 'eq',       value: val } }
+    case 'vulnerability_state': return { cond: { field: 'finding.vulnerability_state',  op: 'eq',       value: val } }
+    case 'risk_factor':         return { cond: { field: 'finding.risk_factor',          op: 'eq',       value: val } }
+    case 'owner_suggestion':    return { cond: { field: 'finding.owner',                op: 'eq',       value: val } }
+    case 'plugin_family':       return { cond: { field: 'finding.plugin_family',        op: 'contains', value: val } }
+    case 'plugin_name':         return { cond: { field: 'finding.plugin_name',          op: 'contains', value: val } }
+    case 'port':                return { cond: { field: 'finding.port',                 op: 'eq',       value: Number(val) } }
+    case 'protocol':            return { cond: { field: 'finding.protocol',             op: 'eq',       value: val } }
+    case 'on_critical_assets':  return _isTrue(val) ? { cond: { field: 'criticality',  op: 'gte',     value: 8 } } : null
+    case 'asset_min_risk':      return { cond: { field: 'risk_score',                  op: 'gte',     value: Number(val) } }
+    // Filters without a clean translation (on_internet_facing, is_reachable) are skipped.
+    default: return null
+  }
+}
+
+// Promote a URL-param mapping into an equivalent rule-engine condition. Used
+// when at least one filter requires advanced query — FindingExplorer's
+// advanced mode ignores simple URL params, so everything must be in conds.
+function _paramToCond(key, val) {
+  switch (key) {
+    case 'severity':        return { field: 'finding.severity',         op: 'eq',       value: Number(val) }
+    case 'sla_status':      return { field: 'finding.sla_status',       op: 'eq',       value: val }
+    case 'effort_level':    return { field: 'finding.effort',           op: 'eq',       value: val }
+    case 'workflow_status': return { field: 'finding.workflow_status',  op: 'eq',       value: val }
+    case 'cve':             return { field: 'finding.cve',              op: 'contains', value: val }
+    case 'tactic':          return { field: 'finding.tactic',           op: 'eq',       value: val }
+    case 'is_kev':          return { field: 'finding.is_kev',           op: 'is_true',  value: null }
+    case 'exploit':         return { field: 'finding.exploit',          op: 'is_true',  value: null }
+    case 'ransomware':      return { field: 'finding.ransomware_linked',op: 'is_true',  value: null }
+    case 'trending':        return { field: 'finding.trending_in_news', op: 'is_true',  value: null }
+    case 'has_ttps':        return { field: 'finding.has_ttps',         op: 'is_true',  value: null }
+    case 'search':          return { field: 'finding.plugin_name',      op: 'contains', value: val }
+    default: return null
+  }
+}
+
+// Combine cumulative filters from steps[0..idx] into a drill-down URL.
+function _funnelDrillUrl(baseEntity, steps, idx) {
+  if (baseEntity === 'assets') {
+    // Asset funnel: pass all filters straight through as URL params; the assets
+    // page can ignore unknown ones. Asset filters mostly have no rule-engine
+    // analogue available to FindingExplorer, so simple URL is the best we can do.
+    const sp = new URLSearchParams()
+    for (let i = 0; i <= idx && i < (steps?.length || 0); i++) {
+      for (const [k, v] of Object.entries(steps[i]?.filters || {})) {
+        if (v != null && v !== '') sp.set(k, String(v))
+      }
+    }
+    const qs = sp.toString()
+    return qs ? `/assets?${qs}` : '/assets'
+  }
+
+  const params = {}
+  const conds = []
+  for (let i = 0; i <= idx && i < (steps?.length || 0); i++) {
+    for (const [k, v] of Object.entries(steps[i]?.filters || {})) {
+      const t = _translateFunnelFindingFilter(k, v)
+      if (!t) continue
+      if (t.param) params[t.param[0]] = t.param[1]
+      else if (t.cond) conds.push(t.cond)
+    }
+  }
+
+  if (conds.length > 0) {
+    for (const [k, v] of Object.entries(params)) {
+      const c = _paramToCond(k, v)
+      if (c) conds.push(c)
+    }
+    const sp = new URLSearchParams()
+    sp.set('q', JSON.stringify(conds))
+    sp.set('q_logic', 'AND')
+    return `/findings?${sp.toString()}`
+  }
+
+  const sp = new URLSearchParams()
+  Object.entries(params).forEach(([k, v]) => sp.set(k, v))
+  const qs = sp.toString()
+  return qs ? `/findings?${qs}` : '/findings'
+}
+
 function FunnelWidget({ widget, scanId }) {
   const { t } = useTranslation()
+  const navigate = useNavigate()
   const cfg = widget.config || {}
   const [funnelData, setFunnelData] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -3216,6 +3521,7 @@ function FunnelWidget({ widget, scanId }) {
 
   const steps = funnelData.steps
   const maxCount = steps[0]?.count || 1
+  const baseEntity = cfg.base_entity || 'findings'
 
   return (
     <div style={{ padding: '4px 0' }}>
@@ -3224,24 +3530,34 @@ function FunnelWidget({ widget, scanId }) {
         const color = FUNNEL_COLORS[i % FUNNEL_COLORS.length]
         const prevCount = i > 0 ? steps[i - 1].count : null
         const dropPct = prevCount ? Math.round((1 - step.count / prevCount) * 100) : null
+        const clickable = step.count > 0
+        const onStepClick = clickable
+          ? () => navigate(_funnelDrillUrl(baseEntity, cfg.steps || [], i))
+          : undefined
         return (
           <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
             <div style={{ width: 130, flexShrink: 0, textAlign: 'right', fontSize: 12, color: 'var(--text-secondary)', fontWeight: 500 }}>
               {step.label}
             </div>
             <div style={{ flex: 1, position: 'relative' }}>
-              <div style={{
-                width: `${widthPct}%`,
-                margin: '0 auto',
-                background: `linear-gradient(135deg, ${color}, ${color}cc)`,
-                borderRadius: 6,
-                padding: '8px 12px',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                minHeight: 32,
-                transition: 'width 0.4s ease',
-              }}>
+              <div
+                onClick={onStepClick}
+                title={clickable ? `View ${step.count.toLocaleString()} ${baseEntity} matching: ${step.label}` : undefined}
+                onMouseEnter={clickable ? (e) => { e.currentTarget.style.transform = 'translateY(-1px)'; e.currentTarget.style.boxShadow = '0 4px 12px rgba(99, 102, 241, 0.35)' } : undefined}
+                onMouseLeave={clickable ? (e) => { e.currentTarget.style.transform = 'none'; e.currentTarget.style.boxShadow = 'none' } : undefined}
+                style={{
+                  width: `${widthPct}%`,
+                  margin: '0 auto',
+                  background: `linear-gradient(135deg, ${color}, ${color}cc)`,
+                  borderRadius: 6,
+                  padding: '8px 12px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  minHeight: 32,
+                  cursor: clickable ? 'pointer' : 'default',
+                  transition: 'width 0.4s ease, transform 0.1s ease, box-shadow 0.1s ease',
+                }}>
                 <span style={{ color: '#fff', fontWeight: 700, fontSize: 14 }}>
                   {step.count.toLocaleString()}
                 </span>
@@ -3288,6 +3604,7 @@ const FUNNEL_FINDING_FILTERS = [
   { key: 'sla_status', label: 'SLA Status', type: 'select', options: [{ value: '', label: '—' }, { value: 'breached', label: 'Breached' }, { value: 'at_risk', label: 'At Risk' }, { value: 'on_track', label: 'On Track' }] },
   { key: 'is_regression', label: 'Is Regression', type: 'toggle' },
   { key: 'has_exception', label: 'Has Exception', type: 'toggle' },
+  { key: 'is_reachable', label: 'Validated Reachable', type: 'toggle' },
   // Effort & ownership
   { key: 'effort_level', label: 'Effort', type: 'select', options: [{ value: '', label: '—' }, { value: 'quick_win', label: 'Quick Win' }, { value: 'medium', label: 'Medium' }, { value: 'complex', label: 'Complex' }] },
   { key: 'owner_suggestion', label: 'Owner', type: 'select', options: [{ value: '', label: '—' }, { value: 'IT', label: 'IT' }, { value: 'DevOps', label: 'DevOps' }, { value: 'SecOps', label: 'SecOps' }, { value: 'AppSec', label: 'AppSec' }] },
@@ -4135,6 +4452,7 @@ function ExportDropdown({ canvasRef, reportName, disabled }) {
   const run = async (format) => {
     setOpen(false)
     setExporting(format)
+    capture('report_exported', { format, report_name: reportName })
     try {
       if (format === 'png') await exportAsPNG(canvasRef.current, reportName)
       else if (format === 'pdf') await exportAsPDF(canvasRef.current, reportName)
@@ -4282,7 +4600,7 @@ function GlobalTagFilterBar({ globalTags, setGlobalTags, globalTagLogic, setGlob
 
 function Builder({ report, onSave, onBack, isLanding, onSetLanding }) {
   const { t } = useTranslation()
-  const { activeScanId, scans, scansLoaded } = useScan()
+  const { activeScanId } = useScan()
   const navigate = useNavigate()
   const [widgets, setWidgets] = useState(report.widgets || [])
   const [name, setName] = useState(report.name || t('reports.untitledReport'))
@@ -4459,38 +4777,6 @@ function Builder({ report, onSave, onBack, isLanding, onSetLanding }) {
             </div>
           )}
 
-          {preview && scansLoaded && (!scans || scans.length === 0) && (
-            <div style={{
-              maxWidth: 560, margin: '0 auto 28px', padding: '32px 28px',
-              background: 'linear-gradient(135deg, rgba(99,102,241,0.08), rgba(139,92,246,0.06))',
-              border: '1px solid rgba(99,102,241,0.25)', borderRadius: 14,
-              display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 14, textAlign: 'center',
-            }}>
-              <div style={{
-                width: 52, height: 52, borderRadius: 14,
-                background: 'rgba(99,102,241,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center',
-              }}>
-                <Upload size={26} color="#818cf8" />
-              </div>
-              <div>
-                <div style={{ fontSize: 17, fontWeight: 700, color: 'var(--text-primary)' }}>{t('reports.uploadFirstScan')}</div>
-                <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 6, lineHeight: 1.5 }}>
-                  {t('reports.uploadFirstScanDesc')}
-                </div>
-              </div>
-              <button
-                onClick={() => navigate('/settings?tab=upload')}
-                style={{
-                  marginTop: 4, padding: '10px 24px', background: 'var(--accent)', border: 'none',
-                  color: '#fff', borderRadius: 8, cursor: 'pointer', fontWeight: 600, fontSize: 14,
-                  display: 'flex', alignItems: 'center', gap: 8,
-                }}
-              >
-                <Upload size={16} /> {t('reports.uploadScan')}
-              </button>
-            </div>
-          )}
-
           {widgets.length === 0 ? (
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: 300, color: 'var(--text-muted)', gap: 12 }}>
               <LayoutGrid size={48} color="var(--text-muted)" style={{ opacity: 0.4 }} />
@@ -4546,43 +4832,12 @@ function Builder({ report, onSave, onBack, isLanding, onSetLanding }) {
 
 function ReportList({ reports, onCreate, onOpen, onDelete, onDuplicate, landingId, onSetLanding, onRefresh }) {
   const { t } = useTranslation()
-  const navigate = useNavigate()
-  const { scans, scansLoaded } = useScan()
   const [search, setSearch] = useState('')
   const filtered = search.trim()
     ? reports.filter(r => r.name.toLowerCase().includes(search.trim().toLowerCase()))
     : reports
   return (
     <div>
-      {scansLoaded && scans.length === 0 && (
-        <div style={{
-          maxWidth: '100%', marginBottom: 24, padding: '20px 28px',
-          background: 'linear-gradient(135deg, rgba(99,102,241,0.08), rgba(139,92,246,0.06))',
-          border: '1px solid rgba(99,102,241,0.25)', borderRadius: 14,
-          display: 'flex', alignItems: 'center', gap: 20,
-        }}>
-          <div style={{
-            width: 48, height: 48, borderRadius: 12, flexShrink: 0,
-            background: 'rgba(99,102,241,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center',
-          }}>
-            <Upload size={22} color="#818cf8" />
-          </div>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 3 }}>{t('reports.uploadFirstScan')}</div>
-            <div style={{ fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.5 }}>{t('reports.uploadFirstScanDesc')}</div>
-          </div>
-          <button
-            onClick={() => navigate('/settings?tab=upload')}
-            style={{
-              flexShrink: 0, padding: '9px 20px', background: 'var(--accent)', border: 'none',
-              color: '#fff', borderRadius: 8, cursor: 'pointer', fontWeight: 600, fontSize: 14,
-              display: 'flex', alignItems: 'center', gap: 8,
-            }}
-          >
-            <Upload size={15} /> {t('reports.uploadScan')}
-          </button>
-        </div>
-      )}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
         <div>
           <h2 style={{ fontSize: 18, fontWeight: 700 }}>{t('reports.title')}</h2>
@@ -4762,6 +5017,10 @@ export default function ReportBuilder() {
   const { reportId: urlReportId } = useParams()
   const navigate = useNavigate()
   const initialLoadRef = useRef(true)
+  // Reentry guard: React 18 StrictMode mounts effects twice in dev. Without
+  // this, two parallel runs would each find no existing OOTB templates and
+  // both POST them, producing duplicates.
+  const loadInFlightRef = useRef(false)
 
   // Sync activeReport → URL
   useEffect(() => {
@@ -4776,6 +5035,8 @@ export default function ReportBuilder() {
   }, [activeReport])
 
   const loadFromApi = useCallback(async () => {
+    if (loadInFlightRef.current) return
+    loadInFlightRef.current = true
     setFetchError(null)
     try {
       await migrateLocalStorageReports()
@@ -4783,22 +5044,28 @@ export default function ReportBuilder() {
       let needsReload = false
 
       // Ensure default dashboards exist and stay up-to-date
-      const ootb = [DEFAULT_DASHBOARD, EXECUTIVE_DASHBOARD, IDENTITY_ACCESS_DASHBOARD, ATTACK_SURFACE_DASHBOARD, REMEDIATION_DASHBOARD, AI_ML_ATTACK_SURFACE_DASHBOARD, OS_DISTRIBUTION_DASHBOARD, SOFTWARE_INVENTORY_DASHBOARD, EASM_DASHBOARD, OWNER_ACCOUNTABILITY_DASHBOARD, SIEM_OPERATIONS_DASHBOARD]
+      const ootb = [DEFAULT_DASHBOARD, EXECUTIVE_DASHBOARD, IDENTITY_ACCESS_DASHBOARD, ATTACK_SURFACE_DASHBOARD, REMEDIATION_DASHBOARD, AI_ML_ATTACK_SURFACE_DASHBOARD, OS_DISTRIBUTION_DASHBOARD, SOFTWARE_INVENTORY_DASHBOARD, EASM_DASHBOARD, OWNER_ACCOUNTABILITY_DASHBOARD, SIEM_OPERATIONS_DASHBOARD, OT_POSTURE_DASHBOARD]
       for (const dash of ootb) {
         const fingerprint = dash.widgets.map(w => `${w.id}:${w.type}:${w.config?.preset || ''}:${w.config?.show_benchmark ? 'bm' : ''}`).join('|')
         const existing = templates.find(t => t.name === dash.name)
         if (!existing) {
-          await createReportTemplate({
-            name: dash.name,
-            config: { widgets: dash.widgets, createdAt: dash.createdAt, _fp: fingerprint },
-            is_default: true,
-          })
-          needsReload = true
+          try {
+            await createReportTemplate({
+              name: dash.name,
+              config: { widgets: dash.widgets, _fp: fingerprint },
+              is_default: true,
+            })
+            needsReload = true
+          } catch (e) {
+            // 409 = another tab/request already seeded this template. Safe to ignore.
+            if (e?.status !== 409) throw e
+            needsReload = true
+          }
         } else if (existing.config?._fp !== fingerprint) {
           // Widget definitions changed — update the template
           await updateReportTemplate(existing.id, {
             name: dash.name,
-            config: { widgets: dash.widgets, createdAt: dash.createdAt, _fp: fingerprint },
+            config: { widgets: dash.widgets, _fp: fingerprint },
           })
           needsReload = true
         }
@@ -4828,6 +5095,7 @@ export default function ReportBuilder() {
       setFetchError('Failed to load report data.')
     } finally {
       setLoading(false)
+      loadInFlightRef.current = false
     }
   }, [urlReportId])
 
@@ -4866,6 +5134,7 @@ export default function ReportBuilder() {
         || window.alert(t('reports.nameRequired', 'Please rename the report before saving.'))
       return
     }
+    const isNew = !updated.id
     try {
       if (updated.id) {
         await updateReportTemplate(updated.id, {
@@ -4879,6 +5148,11 @@ export default function ReportBuilder() {
         })
         updated = { ...updated, id: result.id, name: proposedName }
       }
+      capture('report_saved', {
+        report_id: updated.id,
+        is_new: isNew,
+        widget_count: (updated.widgets || []).length,
+      })
       setActiveReport(updated)
       loadFromApi()
     } catch (e) {

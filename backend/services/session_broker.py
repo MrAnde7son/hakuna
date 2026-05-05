@@ -168,6 +168,13 @@ async def test_login(db: Session, org_id: int, auth_profile_id: str) -> dict:
         bundle = await get_or_create_session(db, org_id, auth_profile_id)
     except SessionBrokerError as e:
         return {"success": False, "error": str(e)}
+    except credential_vault.CredentialDecryptError:
+        logger.exception("test_login failed: credential decrypt error")
+        return {
+            "success": False,
+            "error": "credential cannot be decrypted — the INTEGRATION_SECRET_KEY has changed since this credential was saved. Re-enter the credential to fix.",
+            "code": "credential_decrypt_failed",
+        }
     except Exception as e:
         logger.exception("test_login failed")
         return {"success": False, "error": f"unexpected: {type(e).__name__}"}
@@ -256,8 +263,16 @@ async def _run_login_flow(
             if not steps or steps[0].get("action") != "goto":
                 steps = [{"action": "goto", "url": login_url}] + steps
 
-            for step in steps:
-                await _execute_step(page, step, creds)
+            for idx, step in enumerate(steps):
+                try:
+                    await _execute_step(page, step, creds)
+                except SessionBrokerError:
+                    raise
+                except Exception as e:
+                    target = step.get("selector") or step.get("url") or step.get("pattern") or ""
+                    raise SessionBrokerError(
+                        f"step {idx} ({step.get('action')} {target}) failed: {type(e).__name__}: {e}"
+                    )
 
             await _assert_success(page, success_condition)
 

@@ -3,6 +3,7 @@ Relay agent routes — REST API for agent management + WebSocket endpoint.
 Prefix: /api/relay-agents
 """
 import logging
+import os
 import secrets
 from datetime import datetime
 from typing import Optional, List
@@ -14,7 +15,9 @@ from sqlalchemy.orm import Session
 
 from core.database import get_db
 from core.auth import get_current_user, require_auth
-from models.models import RelayAgent, Integration
+from core.time_utils import iso_utc
+from models.models import Organization, RelayAgent, Integration
+from routes.internal_relay_routes import ensure_cloud_relay_for_org
 from services.relay_broker import get_relay_broker
 
 logger = logging.getLogger(__name__)
@@ -24,6 +27,11 @@ ws_router = APIRouter()
 _pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 TOKEN_PREFIX = "hka_"
+
+# Image published by `./deploy.sh --relay-agent` to the public Artifact Registry
+# repo (see terraform/artifact_registry.tf). Override with HAKUNA_RELAY_IMAGE
+# when testing against a staging tag.
+DEFAULT_RELAY_IMAGE = "me-west1-docker.pkg.dev/hakuna-prod-2026/hakuna-public/relay-agent:latest"
 
 
 # ─────────────────────────────────────────────────────────
@@ -61,17 +69,28 @@ def _agent_to_dict(agent: RelayAgent, integration_count: int = 0) -> dict:
     return {
         "id": agent.id,
         "name": agent.name,
+        "relay_type": agent.relay_type or "agent",
         "status": agent.status or "disconnected",
-        "last_seen_at": agent.last_seen_at.isoformat() if agent.last_seen_at else None,
+        "last_seen_at": iso_utc(agent.last_seen_at),
         "agent_version": agent.agent_version,
         "ip_address": agent.ip_address,
         "allowed_hosts": agent.allowed_hosts or [],
         "credentials_mode": agent.credentials_mode or "agent_local",
         "labels": agent.labels or {},
         "token_prefix": agent.token_prefix,
-        "created_at": agent.created_at.isoformat() if agent.created_at else None,
+        "created_at": iso_utc(agent.created_at),
         "integration_count": integration_count,
     }
+
+
+def _reject_if_managed(agent: RelayAgent, action: str) -> None:
+    """Cloud-managed relays are auto-provisioned and operated by Hakuna;
+    customers can't rename them, rotate their token, or delete them."""
+    if agent.relay_type == "cloud_scanner":
+        raise HTTPException(
+            400,
+            f"Cannot {action} the Hakuna Cloud Scanner — it's a managed relay.",
+        )
 
 
 # ─────────────────────────────────────────────────────────
@@ -85,6 +104,16 @@ async def list_agents(
 ):
     """List all relay agents for the current org."""
     org_id = current_user.org_id
+
+    # Auto-provision the managed cloud_scanner row so it's always visible —
+    # in environments where the GCP cloud-relay container isn't polling
+    # /internal/cloud-relay/registrations, the row would otherwise never
+    # exist and the user would have no way to know external scans are
+    # supposed to be possible.
+    org = db.query(Organization).filter(Organization.id == org_id).first()
+    if org is not None:
+        ensure_cloud_relay_for_org(db, org)
+
     agents = db.query(RelayAgent).filter(RelayAgent.org_id == org_id).order_by(RelayAgent.created_at.desc()).all()
 
     broker = get_relay_broker()
@@ -171,6 +200,7 @@ async def update_agent(
     ).first()
     if not agent:
         raise HTTPException(404, "Relay agent not found")
+    _reject_if_managed(agent, "modify")
 
     if body.name is not None:
         agent.name = body.name
@@ -199,6 +229,7 @@ async def delete_agent(
     ).first()
     if not agent:
         raise HTTPException(404, "Relay agent not found")
+    _reject_if_managed(agent, "delete")
 
     # Check for linked integrations
     linked = db.query(Integration).filter(Integration.relay_agent_id == agent_id).count()
@@ -228,6 +259,7 @@ async def rotate_token(
     ).first()
     if not agent:
         raise HTTPException(404, "Relay agent not found")
+    _reject_if_managed(agent, "rotate the token for")
 
     raw_token = TOKEN_PREFIX + secrets.token_urlsafe(48)
     agent.token_hash = _pwd_ctx.hash(raw_token)
@@ -259,6 +291,9 @@ async def get_setup_instructions(
     ).first()
     if not agent:
         raise HTTPException(404, "Relay agent not found")
+    _reject_if_managed(agent, "fetch setup instructions for")
+
+    relay_image = os.environ.get("HAKUNA_RELAY_IMAGE", DEFAULT_RELAY_IMAGE)
 
     # Build the docker run command
     docker_cmd = (
@@ -266,7 +301,7 @@ async def get_setup_instructions(
         "  --name hakuna-relay-agent \\\n"
         "  -e HAKUNA_AGENT_TOKEN=<your-agent-token> \\\n"
         "  -e HAKUNA_CLOUD_URL=wss://<your-hakuna-host>/ws/relay \\\n"
-        "  hakuna/relay-agent:latest"
+        f"  {relay_image}"
     )
 
     # Build docker-compose example
@@ -274,7 +309,7 @@ async def get_setup_instructions(
         "version: '3.8'\n"
         "services:\n"
         "  hakuna-relay:\n"
-        "    image: hakuna/relay-agent:latest\n"
+        f"    image: {relay_image}\n"
         "    restart: unless-stopped\n"
         "    environment:\n"
         "      HAKUNA_AGENT_TOKEN: <your-agent-token>\n"
@@ -311,6 +346,29 @@ async def get_setup_instructions(
 # ─────────────────────────────────────────────────────────
 # WebSocket Endpoint
 # ─────────────────────────────────────────────────────────
+
+def _apply_register_message(agent: RelayAgent, msg: dict) -> None:
+    """Apply a relay-side ``{"type": "register", ...}`` payload to the agent row.
+
+    Extracted so the receive loop's logic is unit-testable. Currently
+    captures:
+      * ``agent_version`` (already captured on pong, but registration arrives
+        first so update here too).
+      * ``local_interfaces`` — list of CIDR strings consumed by
+        ``_lan_local_predicate`` for NetBIOS/LLMNR/mDNS audit gating.
+
+    Other fields are accepted but ignored for forward compatibility.
+    """
+    version = msg.get("agent_version")
+    if isinstance(version, str) and version:
+        agent.agent_version = version
+    cidrs = msg.get("local_interfaces")
+    if isinstance(cidrs, list):
+        cleaned = [c for c in cidrs if isinstance(c, str) and c]
+        labels = dict(agent.labels or {})
+        labels["local_interfaces"] = cleaned
+        agent.labels = labels
+
 
 def _authenticate_agent(db: Session, token: str) -> Optional[RelayAgent]:
     """Verify an agent token against stored hashes."""
@@ -375,15 +433,23 @@ async def relay_websocket(ws: WebSocket, db: Session = Depends(get_db)):
 
             # Update last_seen
             agent.last_seen_at = datetime.utcnow()
-            if msg.get("type") == "pong":
+            msg_type = msg.get("type")
+            if msg_type == "pong":
                 agent.agent_version = msg.get("agent_version")
+            elif msg_type == "register":
+                _apply_register_message(agent, msg)
             db.commit()
     except WebSocketDisconnect:
         logger.info("Relay agent %s (%s) disconnected", agent.name, agent.id)
     except Exception as e:
         logger.exception("Relay WebSocket error for agent %s", agent.id)
     finally:
-        await broker.unregister(agent.id)
-        agent.status = "disconnected"
-        agent.last_seen_at = datetime.utcnow()
-        db.commit()
+        await broker.unregister(agent.id, ws=ws)
+        # Only flip the agent row to disconnected if this socket is actually
+        # the one being torn down. A reconnect that hands us a newer socket
+        # already set status="connected"; clobbering it back to disconnected
+        # would lie about the agent's real state until the next ping.
+        if not broker.is_connected(agent.id):
+            agent.status = "disconnected"
+            agent.last_seen_at = datetime.utcnow()
+            db.commit()

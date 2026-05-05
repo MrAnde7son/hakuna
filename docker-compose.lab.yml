@@ -1,0 +1,313 @@
+# Intentionally vulnerable test targets for protocol-audit + VM-scanner E2E.
+#
+#   docker compose -f docker-compose.lab.yml up -d
+#   docker compose -f docker-compose.lab.yml down -v
+#
+# Every service joins the `hakuna-lab` Docker network. Scanner workers join
+# the same network as an external network (see hakuna-vm-scanner/docker-compose.yml)
+# so they resolve targets by hostname: dvwa, smb, ldap, ssh, snmp, tomcat,
+# webapp, mongo, mysql, redis, nginx.
+#
+# Host-exposed ports are for manual poking only; the audits reach services
+# by hostname over the shared network and do not need the host mappings.
+#
+# SECURITY: these services are deliberately weak. Do not expose host ports
+# beyond localhost and never run this compose on a shared/public network.
+#
+# Seeded credentials (store in the credential vault for audit runs):
+#   SMB    — lab / labpass                      (guest access on `public`)
+#   LDAP   — cn=admin,dc=lab,dc=local / adminpass   (anon bind enabled)
+#            alice / Password1, bob / bob, svc_backup / Summer2024!
+#   SSH    — lab / labpass                      (port 2222)
+#   SNMP   — community `public` (v1/v2c, read-only)
+#   AWS    — access_key_id=test / secret_access_key=test / region=us-east-1
+#            endpoint_url=http://localstack:4566  (LocalStack accepts any creds)
+#   MySQL  — root / Summer2024!                 (matches LDAP svc_backup)
+#            app / app123 (least-priv app user)
+#   Mongo  — no auth                            (anonymous reads)
+#   Redis  — no auth                            (protected-mode off)
+#   Tomcat — tomcat / tomcat , admin / admin    (manager-gui exposed)
+#   JWT    — HS256 secret = Summer2024!         (lab-webapp; matches mongo)
+#
+# Attack chains the audit agents should detect end-to-end:
+#
+#   Chain A — LDAP → MySQL → SSH
+#     1. anon LDAP bind enumerates users; svc_backup = Summer2024!
+#     2. same password works as MySQL root (cross-protocol cred reuse)
+#     3. mysql.appdb.secrets table contains lab/labpass for ssh:2222
+#     4. SSH login → sudo enabled → host compromise
+#
+#   Chain B — SMB → AWS → S3 → SSH
+#     1. anon read on `public` SMB share grabs aws-creds.txt
+#     2. those creds list s3://corp-backups (publicly listable)
+#     3. corp-backups/ssh/lab_id_rsa is an SSH private key for lab@ssh
+#     4. backup-config.ini in same bucket reveals mysql root password
+#
+#   Chain C — Webapp SSRF → cloud metadata / LocalStack IAM
+#     1. webapp /fetch?url= has no allowlist; reaches internal services
+#     2. SSRF to http://localstack:4566/_aws/... or 169.254.169.254/...
+#     3. IAM user backup-bot has inline {"Action":"*","Resource":"*"} policy
+#     4. Lambda corp-backup-runner exposes creds + DB_PASSWORD in env vars
+#
+#   Chain D — Redis → SSH authorized_keys
+#     1. unauth Redis on default port (CONFIG SET / REPLICAOF allowed)
+#     2. attacker writes RDB to /root/.ssh/authorized_keys-style path,
+#        OR uses REPLICAOF to make a rogue master push a malicious module
+#     3. result: SSH access to whatever shares Redis's filesystem
+#     (lab demonstrates the misconfig — shared volume not auto-wired)
+#
+#   Chain E — Webapp cmd-injection → SNMP → internal inventory
+#     1. webapp /ping?host= passes input to shell=True
+#     2. RCE pivots to snmpwalk against snmp:161 (community public)
+#     3. enumerates internal hostnames + interfaces for further targeting
+#
+#   Chain F — Mongo → Tomcat manager → WAR RCE → internal pivot
+#     1. anonymous Mongo read pulls corp.deploy_notes (manager URL + creds)
+#     2. /manager/html on tomcat:8080 accepts a malicious WAR upload
+#        (RemoteAddrValve stripped; tomcat:tomcat / admin:admin)
+#     3. WAR runs in the tomcat container → reaches mysql/redis/snmp on
+#        the lab network
+#
+#   Chain G — Webapp SQLi → cred reuse → SSH
+#     1. /items?id= on lab-webapp concatenates input into "SELECT … WHERE id="
+#     2. UNION extracts mysql.appdb.users + mysql.appdb.secrets
+#     3. ssh-jumpbox row gives lab/labpass for ssh:2222
+#     (DVWA's /vulnerabilities/sqli/ is the same chain through a different
+#      surface for training scenarios)
+#
+#   Chain H — DVWA file upload → webshell → SNMP recon
+#     1. DVWA /vulnerabilities/upload/ accepts PHP at security=low
+#     2. webshell on the dvwa container snmpwalks snmp:161 (public)
+#     3. enumerates internal inventory for further pivots
+#
+# Advanced surfaces (genuinely hard to find with traditional scanners):
+#
+#   1. Log4Shell-style JNDI       — webapp /log expands ${jndi:ldap://ldap/x}
+#                                    out-of-band callback against lab-ldap
+#   2. Tomcat Ghostcat (CVE-2020-1938) — AJP on :8009, secretRequired=false,
+#                                    allowedRequestAttributesPattern=".*"
+#   3. NoSQL injection            — POST /login_v2 with {"$gt":""} bypass
+#   4. JWT weak secret + alg=none — /auth/token + /admin (signature off)
+#   5. Jinja2 SSTI                — /preview?msg={{7*7}} → render_template_string
+#   6. Mass-assignment escalation — POST /signup with is_admin:true
+#   7. DNS-rebinding SSRF         — /fetch_v2 resolves twice (TOCTOU)
+#   8. Java deserialization       — tomcat /vuln/index.jsp readObject sink
+#   9. HTTP cache poisoning       — POST /reset trusts X-Forwarded-Host;
+#                                    nginx front caches across clients
+#  10. Smuggling-prone proxy      — nginx HTTP/1.0 upstream + keepalive,
+#                                    cached POST responses
+
+name: hakuna-lab
+
+networks:
+  default:
+    name: hakuna-lab
+  hakuna_default:
+    # Main app's network (backend + audit-worker + postgres). Joined by the
+    # optional `relay` service below so it can reach backend:8000 by
+    # hostname — same as production, where the relay talks to a public URL.
+    external: true
+
+services:
+  dvwa:
+    # Damn Vulnerable Web App. Built-in surfaces for Chains G (SQLi) and H
+    # (file upload → webshell → SNMP). Default creds admin / password.
+    image: vulnerables/web-dvwa:latest
+    container_name: lab-dvwa
+    hostname: dvwa
+    ports:
+      - "127.0.0.1:8081:80"
+    restart: unless-stopped
+
+  smb:
+    image: dperson/samba:latest
+    container_name: lab-smb
+    hostname: smb
+    command: >
+      -u "lab;labpass"
+      -s "public;/share;yes;no;yes;all;none;all"
+      -s "private;/private;yes;no;no;lab;lab;lab"
+      -p
+    volumes:
+      # Seeds the public share with aws-creds.txt + README.txt — the
+      # entrypoints for Chain B (SMB → AWS → S3 → SSH).
+      - ./lab-seed/smb/public:/share
+    ports:
+      - "127.0.0.1:1139:139"
+      - "127.0.0.1:1445:445"
+    restart: unless-stopped
+
+  ldap:
+    image: bitnamilegacy/openldap:2.6
+    container_name: lab-ldap
+    hostname: ldap
+    environment:
+      LDAP_ROOT: "dc=lab,dc=local"
+      LDAP_ADMIN_USERNAME: "admin"
+      LDAP_ADMIN_PASSWORD: "adminpass"
+      LDAP_USERS: "alice,bob,svc_backup"
+      LDAP_PASSWORDS: "Password1,bob,Summer2024!"
+      LDAP_ALLOW_ANON_BINDING: "yes"
+      LDAP_PORT_NUMBER: "389"
+      LDAP_LDAPS_PORT_NUMBER: "636"
+    ports:
+      - "127.0.0.1:1389:389"
+      - "127.0.0.1:1636:636"
+    restart: unless-stopped
+
+  ssh:
+    image: linuxserver/openssh-server:latest
+    container_name: lab-ssh
+    hostname: ssh
+    environment:
+      PUID: "1000"
+      PGID: "1000"
+      TZ: "UTC"
+      USER_NAME: "lab"
+      USER_PASSWORD: "labpass"
+      PASSWORD_ACCESS: "true"
+      SUDO_ACCESS: "true"
+    ports:
+      - "127.0.0.1:2222:2222"
+    restart: unless-stopped
+
+  snmp:
+    image: polinux/snmpd:alpine
+    container_name: lab-snmp
+    hostname: snmp
+    ports:
+      - "127.0.0.1:1161:161/udp"
+    restart: unless-stopped
+
+  localstack:
+    image: localstack/localstack:3.8
+    container_name: lab-localstack
+    hostname: localstack
+    environment:
+      SERVICES: "iam,s3,ec2,lambda,sts"
+      DEBUG: "0"
+      PERSISTENCE: "0"
+    volumes:
+      - ./lab-seed/localstack/seed.sh:/etc/localstack/init/ready.d/seed.sh:ro
+    ports:
+      - "127.0.0.1:4566:4566"
+    networks:
+      - default
+      - hakuna_default
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  webapp:
+    # Flask app with a deliberately wide attack surface. See lab-webapp/app.py
+    # for endpoint docs. Anchors Chains C, E, G plus advanced surfaces 1, 3-7,
+    # 9. Talks to mongo:27017, ldap:389, mysql:3306 over the lab network.
+    build: ./lab-webapp
+    image: hakuna/lab-webapp:latest
+    container_name: lab-webapp
+    hostname: webapp
+    depends_on:
+      - mongo
+      - mysql
+      - ldap
+    ports:
+      - "127.0.0.1:5005:5000"
+    restart: unless-stopped
+
+  nginx:
+    # Front-proxy for lab-webapp. Configured to be smuggling-prone (HTTP/1.0
+    # upstream with keepalive) and to forward the Host header as
+    # X-Forwarded-Host without sanitisation — primes the cache-poisoning
+    # chain against /reset on the origin (advanced surfaces 9 + 10).
+    build: ./lab-nginx
+    image: hakuna/lab-nginx:latest
+    container_name: lab-nginx
+    hostname: nginx
+    depends_on:
+      - webapp
+    ports:
+      - "127.0.0.1:8085:80"
+    restart: unless-stopped
+
+  redis:
+    # Unauthenticated Redis with protected-mode disabled. Demonstrates
+    # CONFIG SET → write authorized_keys (Chain D) and the REPLICAOF rogue-
+    # master vector. Shared-volume exploitation isn't auto-wired; the audit
+    # detects the misconfig itself.
+    image: redis:7-alpine
+    container_name: lab-redis
+    hostname: redis
+    command: ["redis-server", "--protected-mode", "no", "--bind", "0.0.0.0"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    restart: unless-stopped
+
+  mysql:
+    # Root password = AD svc_backup password. Init script seeds a `secrets`
+    # table containing SSH/AWS/SNMP creds (Chain A pivot rung) and an `app`
+    # user used by lab-webapp's SQLi sink (Chain G).
+    image: mysql:8.0
+    container_name: lab-mysql
+    hostname: mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: "Summer2024!"
+      MYSQL_ROOT_HOST: "%"
+    volumes:
+      - ./lab-seed/mysql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "127.0.0.1:3306:3306"
+    restart: unless-stopped
+
+  mongo:
+    # No auth — anonymous reads from the network. corp.secrets has cleartext
+    # creds for tomcat, gitea, redis, aws, mysql; corp.deploy_notes points at
+    # the tomcat manager URL (Chain F entrypoint).
+    image: mongo:6
+    container_name: lab-mongo
+    hostname: mongo
+    command: ["mongod", "--bind_ip_all"]
+    volumes:
+      - ./lab-seed/mongo/init.js:/docker-entrypoint-initdb.d/init.js:ro
+    ports:
+      - "127.0.0.1:27017:27017"
+    restart: unless-stopped
+
+  tomcat:
+    # Tomcat 9 with manager-gui exposed (RemoteAddrValve stripped),
+    # tomcat:tomcat / admin:admin, AJP on :8009 with secretRequired=false
+    # and allowedRequestAttributesPattern=".*" (CVE-2020-1938 Ghostcat),
+    # and a /vuln/ webapp with a Java deserialization sink. Anchors Chain F
+    # plus advanced surfaces 2 + 8.
+    build: ./lab-tomcat
+    image: hakuna/lab-tomcat:latest
+    container_name: lab-tomcat
+    hostname: tomcat
+    ports:
+      - "127.0.0.1:8088:8080"
+      - "127.0.0.1:8009:8009"
+    restart: unless-stopped
+
+  relay:
+    # Dev-only: bring the relay up attached to BOTH the lab network (so it
+    # resolves `smb`, `dvwa`, `ldap`, `ssh`, `snmp` by hostname) and the
+    # main app network (so it reaches `backend:8000` over the Compose DNS
+    # instead of host.docker.internal). On-prem customers use
+    # hakuna-relay-agent/docker-compose.yml, which doesn't need either.
+    #
+    # Opt in with:
+    #   docker compose -f docker-compose.lab.yml --profile relay up -d
+    profiles: [relay]
+    image: hakuna/relay-agent:latest
+    build: ./hakuna-relay-agent
+    container_name: hakuna-relay-agent
+    environment:
+      HAKUNA_AGENT_TOKEN: ${HAKUNA_AGENT_TOKEN:?set HAKUNA_AGENT_TOKEN in .env to the token issued in Settings > Relay Agents}
+      HAKUNA_CLOUD_URL: ${HAKUNA_CLOUD_URL:-ws://backend:8000/ws/relay}
+      HAKUNA_LOG_LEVEL: ${HAKUNA_LOG_LEVEL:-INFO}
+    networks:
+      - default
+      - hakuna_default
+    restart: unless-stopped

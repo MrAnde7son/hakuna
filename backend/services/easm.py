@@ -21,10 +21,17 @@ from sqlalchemy.orm import Session
 from models.models import (
     Organization, Scan, Asset, Finding,
     AutomateClick, FindingOwnership, CampaignFinding, SBOMVulnerability,
+    InventorySoftware,
 )
 
 from apscheduler.triggers.cron import CronTrigger
 from services.asset_observations import record_observation
+from services.easm_taxonomy import (
+    cwe_ids_for_subissues,
+    metadata_for as easm_metadata_for,
+    references_dict as easm_references_dict,
+    seed_easm_context,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -496,70 +503,70 @@ def _clear_scan_data(db: Session, scan_id: int):
     """
     from models.models import AssetObservation
 
-    is_sqlite = db.bind.dialect.name == "sqlite"
-    if is_sqlite:
-        db.execute(sa_text("PRAGMA foreign_keys=OFF"))
-    try:
-        # Delete finding dependents + findings
-        finding_ids = [r[0] for r in db.query(Finding.id).filter(Finding.scan_id == scan_id).all()]
-        if finding_ids:
-            for model in (AutomateClick, FindingOwnership, CampaignFinding, SBOMVulnerability):
-                db.query(model).filter(model.finding_id.in_(finding_ids)).delete(synchronize_session=False)
-        db.query(Finding).filter(Finding.scan_id == scan_id).delete(synchronize_session=False)
+    # Delete finding dependents + findings
+    finding_ids = [r[0] for r in db.query(Finding.id).filter(Finding.scan_id == scan_id).all()]
+    if finding_ids:
+        for model in (AutomateClick, FindingOwnership, CampaignFinding, SBOMVulnerability):
+            db.query(model).filter(model.finding_id.in_(finding_ids)).delete(synchronize_session=False)
+    db.query(Finding).filter(Finding.scan_id == scan_id).delete(synchronize_session=False)
 
-        # Collect asset IDs to preserve (any non-EASM provenance)
-        scan_asset_ids = {r[0] for r in db.query(Asset.id).filter(Asset.scan_id == scan_id).all()}
-        if not scan_asset_ids:
-            db.flush()
-            return
+    # Drop inventory rows the previous EASM run produced. SBOMComponent rows
+    # are rebuilt by build_sbom_from_inventory, but their source InventorySoftware
+    # would otherwise accumulate one stale set per re-run.
+    db.query(InventorySoftware).filter(InventorySoftware.scan_id == scan_id).delete(
+        synchronize_session=False,
+    )
 
-        preserve_ids = set()
-
-        # 1. Referenced by findings from another scan
-        preserve_ids.update(
-            r[0] for r in db.query(Finding.asset_id).filter(
-                Finding.asset_id.in_(scan_asset_ids),
-                Finding.scan_id != scan_id,
-            ).all()
-        )
-
-        # 2. Carries source_systems from a source other than "easm"
-        for asset in db.query(Asset).filter(Asset.id.in_(scan_asset_ids)).all():
-            sources = asset.source_systems or []
-            if any(s and s != "easm" for s in sources):
-                preserve_ids.add(asset.id)
-
-        # 3. Has an observation row from a non-EASM source
-        preserve_ids.update(
-            r[0] for r in db.query(AssetObservation.asset_id).filter(
-                AssetObservation.asset_id.in_(scan_asset_ids),
-                AssetObservation.source_system != "easm",
-            ).all()
-        )
-
-        q_del = db.query(Asset).filter(Asset.scan_id == scan_id)
-        if preserve_ids:
-            q_del = q_del.filter(~Asset.id.in_(preserve_ids))
-        q_del.delete(synchronize_session=False)
-
-        # For preserved assets, drop their EASM observation row so the
-        # re-import records a fresh one. Other sources' observations
-        # stay put. source_systems stays intact.
-        if preserve_ids:
-            db.query(AssetObservation).filter(
-                AssetObservation.asset_id.in_(preserve_ids),
-                AssetObservation.source_system == "easm",
-            ).delete(synchronize_session=False)
-            # Reset enrichment timestamps so the next scan re-enriches these assets.
-            db.query(Asset).filter(Asset.id.in_(preserve_ids)).update(
-                {"last_enriched": None, "last_js_fingerprinted": None},
-                synchronize_session=False,
-            )
-
+    # Collect asset IDs to preserve (any non-EASM provenance)
+    scan_asset_ids = {r[0] for r in db.query(Asset.id).filter(Asset.scan_id == scan_id).all()}
+    if not scan_asset_ids:
         db.flush()
-    finally:
-        if is_sqlite:
-            db.execute(sa_text("PRAGMA foreign_keys=ON"))
+        return
+
+    preserve_ids = set()
+
+    # 1. Referenced by findings from another scan
+    preserve_ids.update(
+        r[0] for r in db.query(Finding.asset_id).filter(
+            Finding.asset_id.in_(scan_asset_ids),
+            Finding.scan_id != scan_id,
+        ).all()
+    )
+
+    # 2. Carries source_systems from a source other than "easm"
+    for asset in db.query(Asset).filter(Asset.id.in_(scan_asset_ids)).all():
+        sources = asset.source_systems or []
+        if any(s and s != "easm" for s in sources):
+            preserve_ids.add(asset.id)
+
+    # 3. Has an observation row from a non-EASM source
+    preserve_ids.update(
+        r[0] for r in db.query(AssetObservation.asset_id).filter(
+            AssetObservation.asset_id.in_(scan_asset_ids),
+            AssetObservation.source_system != "easm",
+        ).all()
+    )
+
+    q_del = db.query(Asset).filter(Asset.scan_id == scan_id)
+    if preserve_ids:
+        q_del = q_del.filter(~Asset.id.in_(preserve_ids))
+    q_del.delete(synchronize_session=False)
+
+    # For preserved assets, drop their EASM observation row so the
+    # re-import records a fresh one. Other sources' observations
+    # stay put. source_systems stays intact.
+    if preserve_ids:
+        db.query(AssetObservation).filter(
+            AssetObservation.asset_id.in_(preserve_ids),
+            AssetObservation.source_system == "easm",
+        ).delete(synchronize_session=False)
+        # Reset enrichment timestamps so the next scan re-enriches these assets.
+        db.query(Asset).filter(Asset.id.in_(preserve_ids)).update(
+            {"last_enriched": None, "last_js_fingerprinted": None},
+            synchronize_session=False,
+        )
+
+    db.flush()
 
 
 _SEVERITY_KEY = {4: "critical_count", 3: "high_count", 2: "medium_count", 1: "low_count", 0: "info_count"}
@@ -764,6 +771,22 @@ async def get_easm_scan_status(hakuna_org_id: str, scan_id: str) -> Optional[dic
     return await _hakuna_request("GET", f"/orgs/{hakuna_org_id}/scans/{scan_id}")
 
 
+async def cancel_easm_scan(hakuna_org_id: str, scan_id: str) -> tuple[bool, Optional[str]]:
+    """Ask hakuna-scanner to cancel a queued/running scan run.
+
+    Returns ``(ok, error_message)``. ``ok=True`` means the scanner flipped
+    the run to cancelled; ``ok=False`` means it was unreachable or already
+    in a terminal state (the caller can still update local metadata so the
+    UI stops polling).
+    """
+    data, status, err = await _hakuna_request_detailed(
+        "POST", f"/orgs/{hakuna_org_id}/scans/{scan_id}/cancel"
+    )
+    if data is not None:
+        return True, None
+    return False, err or (f"HTTP {status}" if status else "Scanner unreachable")
+
+
 async def get_easm_assets(
     hakuna_org_id: str,
     limit: int = 1000,
@@ -904,15 +927,47 @@ async def trigger_easm_for_new_org(db: Session, org: Organization, email: str):
 
 def _build_easm_data(ea: dict) -> dict:
     """Build the easm_data blob from a hakuna-scanner asset."""
+    services = ea.get("services") or {}
+    # Banner findings live on the scanner under either a top-level
+    # ``banner_findings`` key or nested in the scanner's own ``easm_data``
+    # JSON column. Carry whichever is populated through to the backend so
+    # cve_correlator._banner_components can consume them.
+    scanner_easm = ea.get("easm_data") or {}
+    banner_findings = (
+        ea.get("banner_findings")
+        or (scanner_easm.get("banner_findings") if isinstance(scanner_easm, dict) else None)
+        or []
+    )
+    # Aggregate Shodan-reported CVEs across all ports into a single list.
+    # Per-port CVEs land in services[port].shodan_vulns when the scanner's
+    # Shodan ingest path runs (see hakuna-scanner/app/ingest/delta.py
+    # apply_shodan_observations). The flat list is what the VM auto-trigger
+    # and prioritizer read — they don't care which port surfaced the CVE.
+    shodan_vulns: set[str] = set()
+    if isinstance(services, dict):
+        for svc in services.values():
+            if not isinstance(svc, dict):
+                continue
+            for cve in svc.get("shodan_vulns") or []:
+                if isinstance(cve, str):
+                    shodan_vulns.add(cve)
     return {
         "easm_asset_id": ea.get("id"),
         "tech_stack": ea.get("tech_stack") or [],
         "open_ports": ea.get("open_ports") or [],
-        "services": ea.get("services") or {},
+        "services": services,
+        "shodan_vulns": sorted(shodan_vulns),
         "tls_cert": ea.get("tls_cert") or {},
+        "security_audit": ea.get("security_audit") or {},
+        "tls_deep_audit": ea.get("tls_deep_audit") or {},
         "cdn_provider": ea.get("cdn_provider"),
+        "cloud_provider": ea.get("cloud_provider"),
+        "attribution": ea.get("attribution") or {},
+        "liveness_score": ea.get("liveness_score", 100),
+        "liveness_state": ea.get("liveness_state"),
         "waf": ea.get("waf"),
         "dns_records": ea.get("dns_records") or {},
+        "banner_findings": banner_findings,
         "http_status": ea.get("http_status"),
         "http_title": ea.get("http_title"),
         "http_url": ea.get("http_url"),
@@ -936,12 +991,89 @@ def _build_easm_data(ea: dict) -> dict:
 SEVERITY_LABELS = {0: "Info", 1: "Low", 2: "Medium", 3: "High", 4: "Critical"}
 
 
+def _easm_metadata_kwargs(
+    plugin_id: str,
+    *,
+    extra_cwes: Optional[list[str]] = None,
+    is_kev: bool = False,
+    exploit_available: bool = False,
+) -> dict:
+    """Resolve plugin_family / cwe_ids / references / ctx_* for an EASM finding.
+
+    Pulled out so every Finding constructor in _generate_easm_findings sets
+    these consistently. extra_cwes is unioned with the registry value (used
+    by HEADER/COOKIE bundles where CWEs come from sub-issue ids).
+    """
+    meta = easm_metadata_for(plugin_id)
+    cwes = list(meta.get("cwe_ids", []))
+    for c in (extra_cwes or []):
+        if c and c not in cwes:
+            cwes.append(c)
+    ctx = seed_easm_context(is_kev=is_kev, exploit_available=exploit_available)
+    kwargs = {
+        "plugin_family": meta.get("family", "EASM: Other"),
+        "cwe_ids": cwes,
+        "references": easm_references_dict(meta.get("references", [])),
+        "ctx_reachability": ctx["ctx_reachability"],
+        "ctx_accessibility": ctx["ctx_accessibility"],
+    }
+    if ctx["ctx_exploitability"] is not None:
+        kwargs["ctx_exploitability"] = ctx["ctx_exploitability"]
+    return kwargs
+
+
+def _upsert_inventory_software_from_cpes(
+    db: Session, scan_id: int, asset_id: int, cpe_list: list[str],
+) -> None:
+    """Persist EASM-inferred software as InventorySoftware rows.
+
+    Feeds services/sbom_pipeline.build_sbom_from_inventory so externally
+    discovered software shows up in the SBOM view alongside agent-reported
+    inventory. Versionless CPEs are still recorded — the SBOM pipeline
+    tolerates null versions and lists the component without EOL/CVE matches.
+    """
+    from services.cpe_matcher import parse_cpe
+
+    seen: set[Tuple[str, str, str]] = set()
+    for cpe_str in cpe_list:
+        parsed = parse_cpe(cpe_str)
+        if parsed is None:
+            continue
+        version = parsed.version if parsed.has_version else None
+        key = (parsed.vendor, parsed.product, version or "")
+        if key in seen:
+            continue
+        seen.add(key)
+
+        db.add(InventorySoftware(
+            scan_id=scan_id,
+            asset_id=asset_id,
+            name=parsed.product,
+            version=version,
+            vendor=parsed.vendor,
+            source_plugin="easm-cpe-inference",
+        ))
+
+
+_LIVENESS_SUPPRESS_THRESHOLD = 30
+
+
 def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -> Tuple[int, list]:
     """Generate one finding per EASM observation. Idempotent: skips existing plugin_id+asset combos.
 
     Returns ``(count, new_finding_ids)`` so callers can drive finalize_batch
     over the exact rows that were inserted this call.
     """
+    # Suppress finding generation for stale assets (liveness_score below
+    # threshold). The asset record is still imported and visible in the
+    # inventory with its current state — we just stop emitting *new*
+    # exposure findings for hosts that haven't been confirmed alive in
+    # several scan cycles. Existing findings remain open so historical
+    # exposure isn't lost.
+    score = ea.get("liveness_score")
+    if score is not None and score < _LIVENESS_SUPPRESS_THRESHOLD:
+        return 0, []
+
     now = datetime.utcnow()
     hostname = ea.get("hostname", "")
 
@@ -955,74 +1087,7 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
         existing_plugins.add(f.plugin_id)
 
     findings_to_add = []
-
-    # ── Tech stack: one finding per technology ─────────────────────
-    for tech_name in (ea.get("tech_stack") or []):
-        pid = f"EASM-TECH-{tech_name.upper().replace(' ', '-')}"
-        if pid in existing_plugins:
-            continue
-        # Check for versioned tech — old versions get higher priority
-        tech_priority = 1.0
-        effort = "quick_win"
-        if ":" in tech_name:
-            tech_priority = 2.5  # versioned tech = worth reviewing
-            effort = "medium"
-        findings_to_add.append(Finding(
-            scan_id=scan_id, asset_id=asset.id,
-            source_type="easm", source_vuln_id=pid,
-            plugin_id=pid,
-            plugin_name=f"{tech_name} Detected",
-            plugin_family="EASM: Web Technology",
-            severity=0, severity_label="Info", risk_factor="None",
-            priority_score=tech_priority, effort_level=effort,
-            owner_suggestion="SecOps",
-            synopsis=f"The web technology '{tech_name}' was detected on {hostname}.",
-            description=f"External attack surface scanning identified that {hostname} is running {tech_name}. "
-                        f"This information was gathered via HTTP response analysis.",
-            solution="No action required. Review if this technology should be publicly exposed.",
-            plugin_output=f"Detected technology: {tech_name}\nHost: {hostname}",
-            first_seen=now, last_seen=now,
-        ))
-
-    # ── Open ports: one finding per port ──────────────────────────
     services = ea.get("services") or {}
-    for port in (ea.get("open_ports") or []):
-        pid = f"EASM-PORT-{port}"
-        if pid in existing_plugins:
-            # Update last_seen on existing port finding
-            db.query(Finding).filter(
-                Finding.scan_id == scan_id,
-                Finding.asset_id == asset.id,
-                Finding.plugin_id == pid,
-            ).update({"last_seen": now})
-            continue
-        svc = services.get(str(port), {})
-        svc_name = svc.get("name", "unknown") if svc else "unknown"
-        svc_detail = f"{svc.get('product', '')} {svc.get('version', '')}".strip() if svc else ""
-        output_lines = [f"Port: {port}/tcp", f"State: open", f"Service: {svc_name}"]
-        if svc_detail:
-            output_lines.append(f"Product: {svc_detail}")
-        # Non-standard ports get higher priority
-        standard_ports = {80, 443, 22, 25, 53}
-        port_int = int(port) if isinstance(port, str) else port
-        port_priority = 2.0 if port_int not in standard_ports else 1.0
-        findings_to_add.append(Finding(
-            scan_id=scan_id, asset_id=asset.id,
-            source_type="easm", source_vuln_id=pid,
-            plugin_id=pid,
-            plugin_name=f"Open Port: {port}/tcp ({svc_name})",
-            plugin_family="EASM: Port Scan",
-            severity=0, severity_label="Info", risk_factor="None",
-            priority_score=port_priority, effort_level="quick_win",
-            owner_suggestion="IT",
-            port=str(port), protocol="tcp",
-            synopsis=f"Port {port}/tcp is open on {hostname}.",
-            description=f"External port scanning identified that {hostname} has port {port}/tcp open "
-                        f"with service '{svc_name}'. This port is reachable from the internet.",
-            solution="Review if this port needs to be publicly accessible. Close unnecessary ports.",
-            plugin_output="\n".join(output_lines),
-            first_seen=now, last_seen=now,
-        ))
 
     # ── Exposed database ports ────────────────────────────────────
     # Flag the classic "internet-facing database" anti-pattern. open_ports is
@@ -1090,11 +1155,11 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
                 source_type="easm", source_vuln_id=pid,
                 plugin_id=pid,
                 plugin_name=f"Exposed {db_name} Database ({port_int}/tcp)",
-                plugin_family="EASM: Exposed Service",
                 severity=db_sev, severity_label=db_sev_label, risk_factor=db_risk,
                 priority_score=db_priority, effort_level="medium",
                 owner_suggestion="IT",
                 port=str(port_int), protocol="tcp",
+                **_easm_metadata_kwargs(pid),
                 synopsis=f"{db_name} database port {port_int}/tcp is reachable from the internet on {hostname}.",
                 description=(
                     f"External port scanning found {db_name} port {port_int}/tcp open on {hostname}. "
@@ -1167,7 +1232,6 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
                 plugin_name="TLS Certificate" if sev == 0 else (
                     "TLS Certificate Expired" if days_left < 0 else "TLS Certificate Expiring Soon"
                 ),
-                plugin_family="EASM: TLS/SSL",
                 severity=sev, severity_label=sev_label, risk_factor=risk,
                 priority_score=tls_priority, effort_level=tls_effort,
                 owner_suggestion="IT",
@@ -1178,6 +1242,7 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
                 solution="Renew the certificate before expiry." if sev > 0 else "No action required.",
                 plugin_output=_build_tls_output(hostname, cert, days_left),
                 first_seen=now, last_seen=now,
+                **_easm_metadata_kwargs(pid),
             ))
 
     # ── Weak TLS protocols / ciphers ──────────────────────────────
@@ -1244,7 +1309,6 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
                     source_type="easm", source_vuln_id=pid,
                     plugin_id=pid,
                     plugin_name="Weak TLS Configuration",
-                    plugin_family="EASM: TLS/SSL",
                     severity=weak_sev, severity_label=weak_sev_label, risk_factor=weak_risk,
                     priority_score=weak_priority, effort_level=weak_effort,
                     owner_suggestion="IT",
@@ -1264,7 +1328,260 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
                     ),
                     plugin_output="\n".join(output_lines),
                     first_seen=now, last_seen=now,
+                    **_easm_metadata_kwargs(pid),
                 ))
+
+    # ── HTTP security headers / cookies ───────────────────────────
+    # The hakuna-scanner runs app.ingest.http_header_audit.audit_response()
+    # over every httpx hit and stores the result on assets.security_audit.
+    # Issues are bundled into two findings per asset (one headers, one
+    # cookies) with severity = worst sub-issue, mirroring EASM-TLS-WEAK.
+    security_audit = ea.get("security_audit") or {}
+    audit_issues = security_audit.get("issues") or []
+    if audit_issues:
+        header_ids = {
+            "hsts-missing", "hsts-weak",
+            "csp-missing", "clickjacking-protection-missing",
+            "content-type-sniffing", "referrer-policy-missing",
+            "permissions-policy-missing",
+        }
+        cookie_ids = {
+            "cookie-insecure", "cookie-not-httponly",
+            "cookie-samesite-missing", "cookie-samesite-none-insecure",
+        }
+
+        def _emit_audit_finding(pid, title, owner, synopsis, description, solution, matching_ids):
+            matches = [i for i in audit_issues if i.get("id") in matching_ids]
+            if not matches:
+                return
+            sev = max(int(i.get("severity", 0)) for i in matches)
+            sev_label = SEVERITY_LABELS.get(sev, "Info")
+            priority = 5.5 if sev >= 2 else (3.0 if sev == 1 else 1.0)
+            effort = "quick_win"  # header/cookie fixes are config changes
+
+            output_lines = [f"Host: {hostname}"]
+            if security_audit.get("url"):
+                output_lines.append(f"URL: {security_audit['url']}")
+            output_lines.append("Issues:")
+            output_lines.extend(f"  - {i.get('detail', i.get('id'))}" for i in matches)
+
+            # CWE union for the bundled finding — pulled from the per-issue
+            # map so adding a new sub-issue requires editing easm_taxonomy
+            # only, not this code path.
+            subissue_cwes = cwe_ids_for_subissues(i.get("id", "") for i in matches)
+
+            if pid in existing_plugins:
+                db.query(Finding).filter(
+                    Finding.scan_id == scan_id,
+                    Finding.asset_id == asset.id,
+                    Finding.plugin_id == pid,
+                ).update({
+                    "severity": sev,
+                    "severity_label": sev_label,
+                    "risk_factor": sev_label,
+                    "priority_score": priority,
+                    "last_seen": now,
+                    "plugin_output": "\n".join(output_lines),
+                    "cwe_ids": subissue_cwes,
+                })
+            else:
+                findings_to_add.append(Finding(
+                    scan_id=scan_id, asset_id=asset.id,
+                    source_type="easm", source_vuln_id=pid,
+                    plugin_id=pid,
+                    plugin_name=title,
+                    severity=sev, severity_label=sev_label, risk_factor=sev_label,
+                    priority_score=priority, effort_level=effort,
+                    owner_suggestion=owner,
+                    synopsis=synopsis,
+                    description=description,
+                    solution=solution,
+                    plugin_output="\n".join(output_lines),
+                    first_seen=now, last_seen=now,
+                    **_easm_metadata_kwargs(pid, extra_cwes=subissue_cwes),
+                ))
+
+        _emit_audit_finding(
+            pid="EASM-HTTP-HEADER-WEAK",
+            title="Weak HTTP Security Headers",
+            owner="IT",
+            synopsis=f"{hostname} is missing or weakly configuring one or more HTTP security headers.",
+            description=(
+                "The OWASP Secure Headers Project recommends setting "
+                "Strict-Transport-Security, Content-Security-Policy, "
+                "X-Frame-Options (or CSP frame-ancestors), X-Content-Type-Options, "
+                "Referrer-Policy, and Permissions-Policy on every HTTP response. "
+                "Missing headers expose the application to clickjacking, MIME "
+                "sniffing, referrer leakage, and protocol-downgrade attacks."
+            ),
+            solution=(
+                "Add the missing response headers at the web server, reverse "
+                "proxy, or CDN layer. Prefer HSTS max-age of 1 year or longer "
+                "with includeSubDomains; set X-Content-Type-Options: nosniff; "
+                "define an explicit Content-Security-Policy."
+            ),
+            matching_ids=header_ids,
+        )
+
+        _emit_audit_finding(
+            pid="EASM-COOKIE-WEAK",
+            title="Insecure Cookie Attributes",
+            owner="IT",
+            synopsis=f"{hostname} emits cookies without Secure, HttpOnly, or SameSite flags.",
+            description=(
+                "Cookies set without Secure can be exfiltrated over cleartext "
+                "HTTP; cookies without HttpOnly are readable by JavaScript and "
+                "enable session hijacking via XSS; cookies without SameSite are "
+                "sent on cross-site requests and enable CSRF. "
+                "SameSite=None without Secure is rejected by modern browsers."
+            ),
+            solution=(
+                "Set Secure, HttpOnly, and SameSite=Lax (or Strict) on all "
+                "session and CSRF-protection cookies. Use SameSite=None only "
+                "when cross-site cookie delivery is required, and always "
+                "combine it with Secure."
+            ),
+            matching_ids=cookie_ids,
+        )
+
+    # ── Deep TLS audit (sslyze cipher enum + chain + OCSP + CAA) ──
+    # Source: hakuna-scanner app.ingest.tls_deep_audit. One finding per
+    # concern, bundling all related issues and taking worst severity.
+    deep_audit = ea.get("tls_deep_audit") or {}
+    deep_issues = deep_audit.get("issues") or []
+    if deep_issues:
+        def _emit_deep_finding(pid, title, owner, synopsis, description, solution, matching_ids, effort="medium"):
+            matches = [i for i in deep_issues if i.get("id") in matching_ids]
+            if not matches:
+                return
+            sev = max(int(i.get("severity", 0)) for i in matches)
+            sev_label = SEVERITY_LABELS.get(sev, "Info")
+            priority = {4: 9.0, 3: 7.0, 2: 5.5, 1: 3.0, 0: 1.0}.get(sev, 1.0)
+
+            output_lines = [f"Host: {hostname}"]
+            port = deep_audit.get("port")
+            if port:
+                output_lines.append(f"Port: {port}")
+            output_lines.append("Issues:")
+            output_lines.extend(f"  - {i.get('detail', i.get('id'))}" for i in matches)
+
+            if pid in existing_plugins:
+                db.query(Finding).filter(
+                    Finding.scan_id == scan_id,
+                    Finding.asset_id == asset.id,
+                    Finding.plugin_id == pid,
+                ).update({
+                    "severity": sev,
+                    "severity_label": sev_label,
+                    "risk_factor": sev_label,
+                    "priority_score": priority,
+                    "last_seen": now,
+                    "plugin_output": "\n".join(output_lines),
+                })
+            else:
+                findings_to_add.append(Finding(
+                    scan_id=scan_id, asset_id=asset.id,
+                    source_type="easm", source_vuln_id=pid,
+                    plugin_id=pid,
+                    plugin_name=title,
+                    severity=sev, severity_label=sev_label, risk_factor=sev_label,
+                    priority_score=priority, effort_level=effort,
+                    owner_suggestion=owner,
+                    synopsis=synopsis,
+                    description=description,
+                    solution=solution,
+                    plugin_output="\n".join(output_lines),
+                    first_seen=now, last_seen=now,
+                    **_easm_metadata_kwargs(pid),
+                ))
+
+        _emit_deep_finding(
+            pid="EASM-TLS-CIPHER-ACCEPTED",
+            title="Server Accepts Weak TLS Ciphers or Deprecated Versions",
+            owner="IT",
+            synopsis=f"{hostname} accepts weak cipher suites or deprecated TLS versions during negotiation.",
+            description=(
+                "Distinct from the negotiated-cipher check (EASM-TLS-WEAK): even "
+                "when a modern client negotiates TLS 1.3 with a strong AEAD "
+                "cipher, the server may still accept SSLv3, TLS 1.0/1.1, or "
+                "weak ciphers (RC4, 3DES, NULL, EXPORT, anon, MD5) for clients "
+                "that offer them. Attackers use downgrade and legacy-client "
+                "paths (POODLE, BEAST, SWEET32, FREAK) against exactly this."
+            ),
+            solution=(
+                "Disable SSLv2, SSLv3, TLS 1.0, and TLS 1.1 entirely. Remove "
+                "cipher suites containing RC4, 3DES, DES, NULL, EXPORT, MD5, "
+                "or anonymous key exchange from the server configuration. "
+                "Prefer TLS 1.2 + TLS 1.3 with AEAD suites only."
+            ),
+            matching_ids={"tls-broken-version-accepted", "tls-deprecated-version-accepted", "tls-weak-cipher-accepted"},
+        )
+
+        _emit_deep_finding(
+            pid="EASM-CERT-CHAIN-UNTRUSTED",
+            title="Certificate Chain Does Not Validate to a Trusted Root",
+            owner="IT",
+            synopsis=f"{hostname} presents a certificate chain that fails trust store validation.",
+            description=(
+                "The certificate chain presented by the server did not validate "
+                "against one or more standard trust stores (Mozilla, Apple, "
+                "Microsoft, Java, Android). Clients will show certificate "
+                "warnings; automated clients may refuse to connect entirely."
+            ),
+            solution=(
+                "Rebuild the certificate chain with all required intermediate "
+                "certificates. Verify the server serves the full chain (leaf "
+                "+ intermediates) in the correct order. Confirm the root CA "
+                "is present in major trust stores."
+            ),
+            matching_ids={"cert-chain-untrusted"},
+        )
+
+        _emit_deep_finding(
+            pid="EASM-CERT-OCSP",
+            title="OCSP Reports Certificate as Revoked",
+            owner="IT",
+            synopsis=f"{hostname} is serving a revoked certificate according to OCSP.",
+            description=(
+                "The Online Certificate Status Protocol (OCSP) responder "
+                "returned a 'revoked' status for this certificate. Continuing "
+                "to serve a revoked certificate is a security incident — it "
+                "indicates either key compromise or a configuration that was "
+                "not rotated after revocation."
+            ),
+            solution=(
+                "Identify why the certificate was revoked, rotate any "
+                "potentially compromised keys, and deploy a new certificate "
+                "immediately. Check ACME / CA dashboards for the revocation "
+                "reason code."
+            ),
+            matching_ids={"cert-revoked"},
+            effort="high",
+        )
+
+        _emit_deep_finding(
+            pid="EASM-CERT-CAA-MISMATCH",
+            title="CAA Records Do Not Authorize Certificate Issuer",
+            owner="IT",
+            synopsis=f"{hostname} has CAA DNS records that do not include the issuing CA.",
+            description=(
+                "RFC 8659 Certification Authority Authorization (CAA) DNS "
+                "records constrain which CAs may issue certificates for a "
+                "domain. The CAA records for this host do not authorize the "
+                "CA that issued the current certificate. Either the CAA "
+                "record is stale, or a certificate was issued in violation "
+                "of the published policy — which in turn suggests the CAA "
+                "check is not being enforced at issuance time, or the "
+                "domain's DNS was manipulated."
+            ),
+            solution=(
+                "Reconcile the CAA records with the CA you intend to use. "
+                "Either update the CAA record (DNS) to include the current "
+                "issuer, or reissue the certificate with a CA that the CAA "
+                "record already authorizes."
+            ),
+            matching_ids={"cert-caa-mismatch"},
+        )
 
     # ── CDN detection ─────────────────────────────────────────────
     cdn = ea.get("cdn_provider")
@@ -1276,7 +1593,6 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
                 source_type="easm", source_vuln_id=pid,
                 plugin_id=pid,
                 plugin_name=f"CDN Detected: {cdn}",
-                plugin_family="EASM: Infrastructure",
                 severity=0, severity_label="Info", risk_factor="None",
                 priority_score=0.5, effort_level="quick_win", owner_suggestion="IT",
                 synopsis=f"{hostname} is behind CDN provider '{cdn}'.",
@@ -1285,6 +1601,7 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
                 solution="No action required. Ensure CDN configuration is properly secured.",
                 plugin_output=f"CDN Provider: {cdn}\nHost: {hostname}",
                 first_seen=now, last_seen=now,
+                **_easm_metadata_kwargs(pid),
             ))
 
     # ── WAF detection ─────────────────────────────────────────────
@@ -1297,7 +1614,6 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
                 source_type="easm", source_vuln_id=pid,
                 plugin_id=pid,
                 plugin_name=f"WAF Detected: {waf}",
-                plugin_family="EASM: Infrastructure",
                 severity=0, severity_label="Info", risk_factor="None",
                 priority_score=0.5, effort_level="quick_win", owner_suggestion="SecOps",
                 synopsis=f"{hostname} is protected by WAF '{waf}'.",
@@ -1305,6 +1621,7 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
                 solution="No action required. Ensure WAF rules are kept up to date.",
                 plugin_output=f"WAF: {waf}\nHost: {hostname}",
                 first_seen=now, last_seen=now,
+                **_easm_metadata_kwargs(pid),
             ))
 
     # ── HTTP service ──────────────────────────────────────────────
@@ -1319,7 +1636,6 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
                 source_type="easm", source_vuln_id=pid,
                 plugin_id=pid,
                 plugin_name=f"HTTP Service Detected ({http_status})",
-                plugin_family="EASM: Web Service",
                 severity=0, severity_label="Info", risk_factor="None",
                 priority_score=1.0, effort_level="quick_win", owner_suggestion="IT",
                 port="443" if http_url.startswith("https") else "80", protocol="tcp",
@@ -1328,6 +1644,7 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
                 solution="No action required. Verify the service should be publicly accessible.",
                 plugin_output=f"URL: {http_url}\nStatus: {http_status}\nTitle: {http_title}",
                 first_seen=now, last_seen=now,
+                **_easm_metadata_kwargs(pid),
             ))
         else:
             db.query(Finding).filter(
@@ -1339,41 +1656,154 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
                 "plugin_output": f"URL: {http_url}\nStatus: {http_status}\nTitle: {http_title}",
             })
 
-    # ── DNS records ───────────────────────────────────────────────
-    dns = ea.get("dns_records") or {}
-    if dns:
-        pid = "EASM-DNS-RECORDS"
-        if pid not in existing_plugins:
-            output_lines = [f"Host: {hostname}"]
-            for rtype, values in dns.items():
-                if isinstance(values, list):
-                    for v in values:
-                        output_lines.append(f"  {rtype}: {v}")
-                else:
-                    output_lines.append(f"  {rtype}: {values}")
-            findings_to_add.append(Finding(
-                scan_id=scan_id, asset_id=asset.id,
-                source_type="easm", source_vuln_id=pid,
-                plugin_id=pid,
-                plugin_name="DNS Records",
-                plugin_family="EASM: DNS",
-                severity=0, severity_label="Info", risk_factor="None",
-                priority_score=0.5, effort_level="quick_win", owner_suggestion="IT",
-                synopsis=f"DNS records for {hostname}.",
-                description=f"External DNS resolution for {hostname} returned the following records.",
-                solution="No action required. Review DNS records for accuracy.",
-                plugin_output="\n".join(output_lines),
-                first_seen=now, last_seen=now,
-            ))
+    # ── Pending upstream detections ───────────────────────────────
+    # These plugin_ids are registered in services.easm_taxonomy so compliance
+    # rules referencing CWE-1385 / CWE-284 / CWE-548 / CWE-798 validate at
+    # mapping load time. They emit only when hakuna-scanner populates the
+    # corresponding signal field on ea — until then the loops are no-ops.
+    for tk in (ea.get("subdomain_takeovers") or []):
+        target = (tk.get("target") or "").strip()
+        cname = (tk.get("cname") or "").strip()
+        fingerprint = (tk.get("fingerprint") or "").strip()
+        if not target:
+            continue
+        pid = "EASM-SUBDOMAIN-TAKEOVER"
+        if pid in existing_plugins:
+            continue
+        findings_to_add.append(Finding(
+            scan_id=scan_id, asset_id=asset.id,
+            source_type="easm", source_vuln_id=pid,
+            plugin_id=pid,
+            plugin_name=f"Subdomain Takeover: {target}",
+            severity=4, severity_label="Critical", risk_factor="Critical",
+            priority_score=9.0, effort_level="medium", owner_suggestion="SecOps",
+            synopsis=f"{target} resolves to a dangling CNAME ({cname}) on a takeover-prone provider.",
+            description=(
+                f"External DNS resolution shows {target} CNAME → {cname}. The target "
+                f"resource appears unclaimed on its hosting provider, allowing an "
+                f"attacker to register the resource and serve arbitrary content under "
+                f"your domain. Fingerprint: {fingerprint or 'unknown'}."
+            ),
+            solution=(
+                "Either reclaim the resource on the upstream provider or remove the "
+                "DNS record. Audit all CNAMEs pointing at third-party infrastructure "
+                "for similar dangling references."
+            ),
+            plugin_output=f"Target: {target}\nCNAME: {cname}\nFingerprint: {fingerprint}",
+            first_seen=now, last_seen=now,
+            **_easm_metadata_kwargs(pid, exploit_available=True),
+        ))
+
+    for panel in (ea.get("exposed_admin_panels") or []):
+        url = (panel.get("url") or "").strip()
+        panel_type = (panel.get("panel_type") or "Admin Panel").strip()
+        if not url:
+            continue
+        pid = "EASM-EXPOSED-ADMIN-PANEL"
+        if pid in existing_plugins:
+            continue
+        findings_to_add.append(Finding(
+            scan_id=scan_id, asset_id=asset.id,
+            source_type="easm", source_vuln_id=pid,
+            plugin_id=pid,
+            plugin_name=f"Exposed Admin Panel: {panel_type}",
+            severity=3, severity_label="High", risk_factor="High",
+            priority_score=7.5, effort_level="medium", owner_suggestion="SecOps",
+            synopsis=f"Administrative interface for {panel_type} is reachable from the internet at {url}.",
+            description=(
+                f"External probing identified a {panel_type} login at {url} reachable "
+                f"from the public internet. Admin interfaces should sit behind a VPN, "
+                f"IP allowlist, or zero-trust proxy."
+            ),
+            solution=(
+                "Restrict the admin interface to internal networks or a VPN. If public "
+                "exposure is required, enforce SSO/MFA, rate limit logins, and monitor "
+                "for credential stuffing."
+            ),
+            plugin_output=f"URL: {url}\nPanel: {panel_type}",
+            first_seen=now, last_seen=now,
+            **_easm_metadata_kwargs(pid),
+        ))
+
+    for listing in (ea.get("directory_listings") or []):
+        url = (listing.get("url") or "").strip()
+        files_count = listing.get("files_count")
+        if not url:
+            continue
+        pid = "EASM-DIRECTORY-LISTING"
+        if pid in existing_plugins:
+            continue
+        findings_to_add.append(Finding(
+            scan_id=scan_id, asset_id=asset.id,
+            source_type="easm", source_vuln_id=pid,
+            plugin_id=pid,
+            plugin_name="Directory Listing Enabled",
+            severity=2, severity_label="Medium", risk_factor="Medium",
+            priority_score=5.5, effort_level="quick_win", owner_suggestion="IT",
+            synopsis=f"Directory listing is enabled at {url}.",
+            description=(
+                f"External probing of {url} returned a directory index. Auto-generated "
+                f"directory listings expose filenames, sizes, and timestamps to anyone "
+                f"who can reach the URL — useful reconnaissance for attackers and a "
+                f"common path to leaked backups, configs, or source archives."
+            ),
+            solution=(
+                "Disable autoindex / directory listing at the web server (e.g. nginx "
+                "`autoindex off`, Apache `Options -Indexes`). Audit the directory for "
+                "files that should not be web-accessible."
+            ),
+            plugin_output=f"URL: {url}\nFiles: {files_count if files_count is not None else 'unknown'}",
+            first_seen=now, last_seen=now,
+            **_easm_metadata_kwargs(pid),
+        ))
+
+    for leak in (ea.get("leaked_credentials") or []):
+        source = (leak.get("source") or "external").strip()
+        snippet = (leak.get("snippet") or "").strip()
+        pid = "EASM-LEAKED-CREDENTIAL"
+        if pid in existing_plugins:
+            continue
+        findings_to_add.append(Finding(
+            scan_id=scan_id, asset_id=asset.id,
+            source_type="easm", source_vuln_id=pid,
+            plugin_id=pid,
+            plugin_name=f"Leaked Credential ({source})",
+            severity=4, severity_label="Critical", risk_factor="Critical",
+            priority_score=9.0, effort_level="medium", owner_suggestion="SecOps",
+            synopsis=f"A credential associated with {hostname} was found exposed in {source}.",
+            description=(
+                f"External monitoring detected a credential matching {hostname} in "
+                f"{source}. Leaked credentials enable account takeover and lateral "
+                f"movement; they require immediate rotation and an investigation into "
+                f"whether they have been used."
+            ),
+            solution=(
+                "Rotate the credential immediately. Audit recent authentication logs "
+                "for use of the leaked value. If the credential was hardcoded in "
+                "source, scrub git history and add a secret-scanning policy."
+            ),
+            plugin_output=f"Host: {hostname}\nSource: {source}\nSnippet: {snippet[:200]}",
+            first_seen=now, last_seen=now,
+            **_easm_metadata_kwargs(pid, exploit_available=True),
+        ))
 
     # ── CVEs via CPE → CVE correlation ────────────────────────────
     # Matches CPEs (populated by hakuna-scanner's CPE inference layer) against
     # the ThreatCVE table. Version-less CPEs ("cpe:2.3:a:nginx:nginx:*:...")
     # are skipped by the matcher — they produce no finding but still route
     # Nuclei templates via the VM scanner. See services/cpe_matcher.py.
-    cpe_list = ea.get("cpe_list") or []
+    cpe_list = _filter_cpe_list(ea.get("cpe_list") or [])
     if cpe_list:
-        from services.cpe_matcher import match_cves_for_cpes
+        # Persist software inventory before findings so SBOMComponent rows
+        # are rebuilt against fresh inventory at finalize time.
+        try:
+            _upsert_inventory_software_from_cpes(db, scan_id, asset.id, cpe_list)
+        except Exception:
+            logger.exception(
+                f"Inventory upsert from CPEs failed for {hostname} (non-fatal)"
+            )
+
+        from services.cpe_matcher import match_cves_for_cpes, parse_cpe
         try:
             matched_cves = match_cves_for_cpes(db, cpe_list)
         except Exception:
@@ -1422,12 +1852,23 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
                 badges.append("Public exploit")
             badge_str = f" [{', '.join(badges)}]" if badges else ""
 
+            # Embed the matched product (and version when known) in plugin_name
+            # so sbom_pipeline.build_sbom_from_inventory can link this CVE
+            # finding to its SBOMComponent via substring match.
+            parsed_cpe = parse_cpe(matched_cpe) if matched_cpe else None
+            if parsed_cpe:
+                product_label = parsed_cpe.product
+                if parsed_cpe.has_version:
+                    product_label = f"{parsed_cpe.product} {parsed_cpe.version}"
+                plugin_name = f"{cve_id}: {product_label} — Known vulnerability{badge_str}"
+            else:
+                plugin_name = f"{cve_id}: Known vulnerability{badge_str}"
+
             findings_to_add.append(Finding(
                 scan_id=scan_id, asset_id=asset.id,
                 source_type="easm", source_vuln_id=cve_id,
                 plugin_id=pid,
-                plugin_name=f"{cve_id}: Known vulnerability{badge_str}",
-                plugin_family="EASM: CVE",
+                plugin_name=plugin_name,
                 severity=sev, severity_label=sev_label, risk_factor=risk,
                 priority_score=round(priority, 1),
                 effort_level="medium",
@@ -1464,6 +1905,11 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
                     f"Exploit maturity: {cve.get('exploit_maturity_level', 'N/A')}"
                 ),
                 first_seen=now, last_seen=now,
+                **_easm_metadata_kwargs(
+                    pid,
+                    is_kev=bool(cve.get("in_kev")),
+                    exploit_available=bool(cve.get("has_public_exploit")),
+                ),
             ))
 
     for f in findings_to_add:
@@ -1671,9 +2117,10 @@ def _import_assets_for_domain(
             if not type_kwargs:
                 http_url = (ea.get("http_url") or "").strip()
                 if http_url:
+                    from services.dedup import normalize_web_app_url
                     type_kwargs = {
                         "asset_type": "web_app",
-                        "asset_identity": {"url": http_url},
+                        "asset_identity": {"url": normalize_web_app_url(http_url) or http_url},
                         "asset_attributes": {},
                     }
 
@@ -1704,6 +2151,22 @@ def _import_assets_for_domain(
                          "os": os_hint, "easm_data": easm_data},
             scan_id=scan.id, org_id=scan.org_id,
         )
+
+        # Write internet_to_asset edges into the unified graph (Phase 1
+        # of the chain coordinator). Non-fatal — edge emission must not
+        # break asset ingest.
+        try:
+            from services.asset_edges import write_easm_internet_edges
+            write_easm_internet_edges(
+                db,
+                org_id=scan.org_id,
+                asset_id=asset.id,
+                open_ports=ea.get("open_ports"),
+                confidence="high",
+            )
+        except Exception:
+            logger.exception("internet_to_asset edge write failed for asset %s", asset.id)
+            db.rollback()
 
         fcount, fids = _generate_easm_findings(db, scan.id, asset, ea)
         findings_created += fcount
@@ -1757,8 +2220,24 @@ async def import_easm_assets_for_domain(
     db.commit()
 
     # Run full post-ingest pipeline (auto-tag, ownership, SLA, dedup, etc.)
-    from services.post_ingest import finalize_scan
-    finalize_scan(db, scan_id=scan.id, org_id=org.id)
+    try:
+        from services.post_ingest import finalize_scan
+        finalize_scan(db, scan_id=scan.id, org_id=org.id)
+        db.commit()
+    except Exception:
+        logger.exception("finalize_scan failed for EASM scan %d", scan.id)
+        db.rollback()
+
+    # Build SBOM rows from the InventorySoftware records emitted by
+    # _generate_easm_findings. Runs after finalize_scan so any deduped
+    # findings are visible to the CVE-matching pass.
+    try:
+        from services.sbom_pipeline import build_sbom_from_inventory
+        build_sbom_from_inventory(db, scan.id)
+        db.commit()
+    except Exception:
+        logger.exception("SBOM pipeline failed for EASM scan %d (non-fatal)", scan.id)
+        db.rollback()
 
     logger.info(f"EASM scan for '{domain}': assets={created}, findings={findings_created} (scan_id={scan.id})")
 
@@ -1784,6 +2263,7 @@ async def _trigger_easm_scan_with_error(
 
 async def scan_domain(
     db: Session, org: Organization, domain: str, scan_type: str = "full",
+    suppress_auto_followup: bool = False,
 ) -> Optional[dict]:
     """
     Full flow: add domain to hakuna (idempotent), trigger scan,
@@ -1793,7 +2273,7 @@ async def scan_domain(
     Self-heals when ``org.easm_org_id`` references an org that no longer
     exists in the scanner DB (404 on the trigger call) — this happens when
     the scanner Postgres is wiped (``docker compose down -v``) but the
-    backend SQLite still has the stale UUID. On 404 we clear the cached
+    backend DB still has the stale UUID. On 404 we clear the cached
     UUID, re-create the org via ``create_easm_org``, and retry once.
     """
     if not org.easm_org_id:
@@ -1846,6 +2326,13 @@ async def scan_domain(
     }
     if failure_reason:
         base_meta["error"] = failure_reason
+    # Per-scan opt-out for ALL automated follow-ups: anonymous audits
+    # (SMB/SNMP, datastore, AI, anon-protocol, IPMI, NetBIOS) AND the post-
+    # ingest VM (Nuclei) scan. Read by ``audit_auto_trigger`` when port_change
+    # events land, and by ``post_ingest._auto_vm_scan_for_easm`` before the
+    # VM-trigger flag is written.
+    if suppress_auto_followup:
+        base_meta["suppress_auto_followup"] = True
 
     if scan:
         # Keep old assets/findings visible until the new scan completes
@@ -1975,6 +2462,7 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
                     logger.info(f"EASM CPE→CVE sync for '{domain}': {cpe_result}")
             except Exception:
                 logger.exception(f"CPE→CVE sync failed for '{domain}' (non-fatal)")
+                db.rollback()
 
             created, findings_created, _new_asset_ids, _new_finding_ids = _import_assets_for_domain(
                 db, scan, easm_assets, domain,
@@ -2001,8 +2489,25 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
             db.commit()
 
             # Run full post-ingest pipeline (auto-tag, ownership, SLA, dedup, etc.)
-            from services.post_ingest import finalize_scan
-            finalize_scan(db, scan_id=scan.id, org_id=org.id)
+            try:
+                from services.post_ingest import finalize_scan
+                finalize_scan(db, scan_id=scan.id, org_id=org.id)
+                db.commit()
+            except Exception:
+                logger.exception("finalize_scan failed for EASM scan %d", scan.id)
+                db.rollback()
+
+            # Build SBOM rows from InventorySoftware records emitted during
+            # finding generation, mirroring the upload path in app.py.
+            try:
+                from services.sbom_pipeline import build_sbom_from_inventory
+                build_sbom_from_inventory(db, scan.id)
+                db.commit()
+            except Exception:
+                logger.exception(
+                    "SBOM pipeline failed for EASM scan %d (non-fatal)", scan.id
+                )
+                db.rollback()
 
             # Threat intel enrichment: HIBP breach check + GLEIF corporate structure
             try:
@@ -2012,6 +2517,7 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
                 logger.info(f"EASM breach check for '{domain}': {breach_result}")
             except Exception:
                 logger.exception(f"HIBP sync failed for '{domain}' (non-fatal)")
+                db.rollback()
 
             try:
                 from threat_intel.wikidata_sync import sync_corporate_tree_to_db
@@ -2030,6 +2536,7 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
                 _associate_subsidiary_domains(db, org.id)
             except Exception:
                 logger.exception(f"Corporate structure sync failed for domain '{domain}' (non-fatal)")
+                db.rollback()
 
             # Fan out EASM scans to high-confidence subsidiary domains. Only
             # domains tagged from official registries (Wikidata/EDGAR/GLEIF) or
@@ -2050,6 +2557,7 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
                     )
             except Exception:
                 logger.exception(f"Subsidiary fan-out failed for scan_id={scan.id} (non-fatal)")
+                db.rollback()
 
             # ── Notifications ──
             # Mirror the Nessus ingest pattern in app.py:_run_scan_ingest so
@@ -2118,6 +2626,7 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
                 db.commit()
             except Exception:
                 logger.exception(f"EASM completion notification failed for '{domain}' (non-fatal)")
+                db.rollback()
 
             logger.info(f"EASM scan completed for '{domain}': assets={created}, findings={findings_created} (scan_id={scan.id})")
 
@@ -2154,6 +2663,21 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
             db, org.id, scan, domain, error_msg=error_msg, phase="scanner",
         )
         return {"scan_id": scan.id, "status": "failed", "domain": domain, "error": error_msg}
+
+    elif hakuna_status == "cancelled":
+        # User-initiated (via /api/scans/{id}/cancel) or scanner-initiated
+        # (timeout, abort). Either way it's terminal — stop polling, but
+        # don't emit a failure notification: the local cancel handler
+        # already stamped raw_metadata.status, and a "scan failed" alert
+        # for a deliberate cancel is noise.
+        scan.raw_metadata = {
+            **meta,
+            "status": "cancelled",
+            "error": meta.get("error") or "Scan cancelled",
+        }
+        scan.status = "cancelled"
+        db.commit()
+        return {"scan_id": scan.id, "status": "cancelled", "domain": domain}
 
     else:
         # Still running/queued — relay progress info AND stream any assets
@@ -2205,6 +2729,7 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
                     "finalize_scan will reconcile at completion)",
                     scan.id,
                 )
+                db.rollback()
 
         scan.raw_metadata = {
             **meta,
@@ -2235,6 +2760,7 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
                     "finalize_batch failed for EASM scan %d (non-fatal)",
                     scan.id,
                 )
+                db.rollback()
 
         return {
             "scan_id": scan.id,
@@ -2314,6 +2840,23 @@ async def enrich_assets_from_easm(db: Session, org: Organization, scan_id: int):
 
         # Store full EASM enrichment data
         asset.easm_data = _build_easm_data(ea)
+
+        # Mirror open-port reachability into the unified edge graph.
+        try:
+            from services.asset_edges import write_easm_internet_edges
+            write_easm_internet_edges(
+                db,
+                org_id=org.id,
+                asset_id=asset.id,
+                open_ports=ea.get("open_ports"),
+                confidence="high",
+            )
+        except Exception:
+            logger.exception(
+                "internet_to_asset edge write failed for asset %s during Nessus enrich",
+                asset.id,
+            )
+            db.rollback()
 
         enriched += 1
 

@@ -574,7 +574,7 @@ AGENT_TEMPLATES = {
             "and suggest remediation steps. Reference CVSS, EPSS, and known exploits when available."
         ),
         "tools": ["query_findings", "query_assets", "get_finding_detail", "get_threat_cves", "get_exploit_findings"],
-        "model": "claude-sonnet-4-6",
+        "model": "vertex/gemini-2.5-pro",
     },
     "remediation_advisor": {
         "name": "Remediation Advisor",
@@ -585,7 +585,7 @@ AGENT_TEMPLATES = {
             "and recommend testing procedures. Group related findings for efficient bulk remediation."
         ),
         "tools": ["query_findings", "query_assets", "get_finding_detail", "list_campaigns", "get_remediation_grouping"],
-        "model": "claude-sonnet-4-6",
+        "model": "vertex/gemini-2.5-pro",
     },
     "threat_intel_analyst": {
         "name": "Threat Intel Analyst",
@@ -596,7 +596,7 @@ AGENT_TEMPLATES = {
             "and provide context on exploit availability and weaponization."
         ),
         "tools": ["query_findings", "get_threat_cves", "get_threat_groups", "get_threat_campaigns"],
-        "model": "claude-sonnet-4-6",
+        "model": "vertex/gemini-2.5-pro",
     },
     "report_writer": {
         "name": "Executive Report Writer",
@@ -608,7 +608,7 @@ AGENT_TEMPLATES = {
             "Include metrics like mean time to remediate, finding age, and risk score trends."
         ),
         "tools": ["query_findings", "query_assets", "list_campaigns", "get_sla_status", "get_owner_workload"],
-        "model": "claude-sonnet-4-6",
+        "model": "vertex/gemini-2.5-pro",
     },
     "siem_analyst": {
         "name": "SIEM Alert Analyst",
@@ -621,7 +621,7 @@ AGENT_TEMPLATES = {
             "Always check exposure context: is the asset internet-facing? What critical vulns exist?"
         ),
         "tools": ["query_events", "list_alerts", "get_alert_with_events", "triage_alert", "get_exposure_context", "query_findings", "query_assets"],
-        "model": "claude-sonnet-4-6",
+        "model": "vertex/gemini-2.5-pro",
     },
     "detection_engineer": {
         "name": "Detection Engineer",
@@ -634,7 +634,7 @@ AGENT_TEMPLATES = {
             "When creating rules, consider threshold, window, group_by fields, and MITRE technique mapping."
         ),
         "tools": ["query_events", "list_alerts", "run_detection_rule_now", "query_assets", "get_exposure_context"],
-        "model": "claude-sonnet-4-6",
+        "model": "vertex/gemini-2.5-pro",
     },
 }
 
@@ -1293,7 +1293,7 @@ def apply_packages(
                 description=agent_def.get("description", ""),
                 system_prompt=system_prompt,
                 tools=agent_def["tools"],
-                model=agent_def.get("model", "claude-sonnet-4-6"),
+                model=agent_def.get("model", "vertex/gemini-2.5-pro"),
             ))
             created["agents"] += 1
 

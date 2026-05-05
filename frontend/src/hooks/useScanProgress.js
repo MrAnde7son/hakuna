@@ -48,6 +48,7 @@ export default function useScanProgress(scanId) {
         a: data?.asset_count,
         f: data?.finding_count,
         cj: data?.progress?.completed_jobs,
+        ct: data?.progress?.completed_targets,
         si: data?.progress?.stage_index,
         ia: data?.progress?.incremental_asset_count,
         ifx: data?.progress?.incremental_finding_count,

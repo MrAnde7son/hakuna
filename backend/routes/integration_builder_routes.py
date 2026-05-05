@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from core.database import get_db
 from core.auth import get_current_user, require_auth
+from core.time_utils import iso_utc
 from models.models import (
     User, Integration, IntegrationCredential, IntegrationRun, DiscoveredSpec,
     IngestEndpoint,
@@ -232,6 +233,84 @@ def list_credentials(db: Session = Depends(get_db), user: User = Depends(require
         }
         for c in creds
     ]
+
+
+class CredentialUpdate(BaseModel):
+    name: Optional[str] = None
+    values: Optional[dict] = None
+    instance_url: Optional[str] = None
+    connected_user: Optional[str] = None
+
+
+# Fields safe to echo back on GET. Everything else is treated as a secret
+# and only exposed via `value_keys` so the UI knows the field is set.
+_SAFE_VALUE_KEYS = {"username", "user", "domain", "host", "url", "client_id", "tenant_id", "account_id"}
+
+
+@router.get("/credentials/{credential_id}")
+def get_credential(credential_id: str, db: Session = Depends(get_db),
+                    user: User = Depends(require_auth)):
+    """Return metadata + non-secret values. Secret fields (password, community,
+    token, api_key, etc.) are never echoed — the UI shows a placeholder and
+    treats blank as "keep existing" on PATCH."""
+    cred = db.query(IntegrationCredential).filter(
+        IntegrationCredential.id == credential_id,
+        IntegrationCredential.org_id == user.org_id,
+    ).first()
+    if not cred:
+        raise HTTPException(404, "Credential not found")
+    value_keys: list[str] = []
+    safe_values: dict = {}
+    if cred.encrypted_values:
+        try:
+            decrypted = credential_vault.decrypt(cred.encrypted_values)
+            value_keys = list(decrypted.keys())
+            safe_values = {k: v for k, v in decrypted.items() if k in _SAFE_VALUE_KEYS}
+        except Exception:
+            pass
+    return {
+        "id": cred.id, "name": cred.name, "connector_id": cred.connector_id,
+        "auth_type": cred.auth_type, "instance_url": cred.instance_url,
+        "connected_user": cred.connected_user,
+        "value_keys": value_keys, "values": safe_values,
+    }
+
+
+@router.patch("/credentials/{credential_id}")
+def update_credential(credential_id: str, body: CredentialUpdate,
+                       db: Session = Depends(get_db),
+                       user: User = Depends(require_auth)):
+    cred = db.query(IntegrationCredential).filter(
+        IntegrationCredential.id == credential_id,
+        IntegrationCredential.org_id == user.org_id,
+    ).first()
+    if not cred:
+        raise HTTPException(404, "Credential not found")
+    if body.name is not None:
+        cred.name = body.name
+    if body.instance_url is not None:
+        cred.instance_url = body.instance_url
+    if body.connected_user is not None:
+        cred.connected_user = body.connected_user
+    if body.values is not None:
+        # Merge: only overwrite keys the client sent. Empty-string values are
+        # treated as "clear this key" so the user can remove a field.
+        try:
+            current = credential_vault.decrypt(cred.encrypted_values) if cred.encrypted_values else {}
+        except Exception:
+            current = {}
+        for k, v in body.values.items():
+            if v == "":
+                current.pop(k, None)
+            else:
+                current[k] = v
+        try:
+            cred.encrypted_values = credential_vault.encrypt(current)
+        except Exception as e:
+            raise HTTPException(500, f"Failed to encrypt credentials: {e}")
+    db.commit()
+    db.refresh(cred)
+    return {"id": cred.id, "name": cred.name, "connected_user": cred.connected_user}
 
 
 @router.delete("/credentials/{credential_id}")
@@ -639,6 +718,35 @@ def create_integration(body: IntegrationCreate, db: Session = Depends(get_db),
     db.commit()
     db.refresh(integration)
 
+    from core.audit import log_audit
+    log_audit(
+        db, "create", "integration", entity_id=None,
+        entity_name=integration.name,
+        changes={
+            "integration_id": integration.id,
+            "direction": integration.direction,
+            "entity": integration.entity,
+            "transport_type": integration.transport_type,
+            "template_id": integration.template_id,
+            "enabled": integration.enabled,
+        },
+        actor=user,
+    )
+    db.commit()
+
+    try:
+        from services import posthog_client as analytics
+        analytics.capture(user.id, "integration_connected", {
+            "integration_id": integration.id,
+            "template_id": integration.template_id,
+            "transport_type": integration.transport_type,
+            "direction": integration.direction,
+            "entity": integration.entity,
+            "enabled": integration.enabled,
+        }, org_id=user.org_id)
+    except Exception:
+        pass
+
     # For webhook transport, auto-create an ingest endpoint
     ingest_creds = None
     if body.transport_type == "webhook":
@@ -746,9 +854,9 @@ def get_webhook_info(integration_id: str, db: Session = Depends(get_db),
         "parser_type": ep.parser_type,
         "token_prefix": ep.token_prefix,
         "is_active": ep.is_active,
-        "last_used_at": ep.last_used_at.isoformat() if ep.last_used_at else None,
+        "last_used_at": iso_utc(ep.last_used_at),
         "request_count": ep.request_count or 0,
-        "created_at": ep.created_at.isoformat() if ep.created_at else None,
+        "created_at": iso_utc(ep.created_at),
     }
 
 
@@ -840,6 +948,15 @@ async def run_integration(integration_id: str, background_tasks: BackgroundTasks
     db.commit()
     db.refresh(run)
     run_id = run.id
+
+    from core.audit import log_audit
+    log_audit(
+        db, "run", "integration", entity_id=None,
+        entity_name=i.name,
+        changes={"integration_id": i.id, "run_id": run_id, "triggered_by": "manual"},
+        actor=user,
+    )
+    db.commit()
 
     # Execute in background with its own DB session.
     # Wrapped in create_task (preferred over ensure_future) with error logging.

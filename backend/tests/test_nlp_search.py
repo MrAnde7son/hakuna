@@ -385,3 +385,277 @@ def test_gibberish_becomes_text_search():
 def test_min_critical_count():
     r = parse_nlp_query("assets with more than 5 critical findings")
     assert r["asset_filters"]["min_critical"] == 5
+
+
+# ── Widget intents ───────────────────────────────────────────────────────────
+
+def test_funnel_intent():
+    r = parse_nlp_query("funnel of critical vulnerabilities")
+    assert "funnel" in r["widget_hints"]
+    # "funnel" must NOT leak into text search
+    assert r["finding_filters"].get("search") in (None, "")
+    assert r["finding_filters"].get("severity") == 4
+
+def test_heatmap_intent():
+    r = parse_nlp_query("heatmap of severities")
+    assert "heatmap" in r["widget_hints"]
+    assert "heatmap" not in (r["finding_filters"].get("search") or "")
+
+def test_treemap_intent():
+    r = parse_nlp_query("treemap of vulnerabilities")
+    assert "treemap" in r["widget_hints"]
+
+def test_radar_intent():
+    r = parse_nlp_query("radar chart of risk dimensions")
+    assert "radar" in r["widget_hints"]
+
+def test_gauge_intent():
+    r = parse_nlp_query("gauge for SLA compliance")
+    assert "gauge" in r["widget_hints"]
+
+def test_risk_grade_intent():
+    r = parse_nlp_query("show me my organization risk grade")
+    assert "risk_grade" in r["widget_hints"]
+
+def test_trend_intent():
+    r = parse_nlp_query("severity trend over time")
+    assert "trend" in r["widget_hints"]
+
+
+# ── Metric intents ───────────────────────────────────────────────────────────
+
+def test_mttr_intent():
+    r = parse_nlp_query("MTTR by severity")
+    assert "mttr" in r["metric_intents"]
+    assert "search" not in r["finding_filters"]
+
+def test_mttr_phrase():
+    r = parse_nlp_query("mean time to remediate trend")
+    assert "mttr" in r["metric_intents"]
+
+def test_velocity_intent():
+    r = parse_nlp_query("remediation velocity over the past quarter")
+    assert "velocity" in r["metric_intents"]
+
+def test_coverage_intent():
+    r = parse_nlp_query("assessment coverage")
+    assert "coverage" in r["metric_intents"]
+
+def test_credentialed_intent():
+    r = parse_nlp_query("credentialed assets")
+    assert "credentialed" in r["metric_intents"]
+
+def test_zombie_intent():
+    r = parse_nlp_query("zombie vulnerabilities")
+    assert "zombie" in r["metric_intents"]
+
+def test_age_intent():
+    r = parse_nlp_query("finding age distribution")
+    assert "age" in r["metric_intents"]
+
+def test_by_owner_intent():
+    r = parse_nlp_query("remediation actions by owner")
+    assert "by_owner" in r["metric_intents"]
+
+def test_by_business_unit_intent():
+    r = parse_nlp_query("risk by business unit")
+    assert "by_business_unit" in r["metric_intents"]
+
+def test_top_assets_intent():
+    r = parse_nlp_query("top risky assets")
+    assert "top_assets" in r["metric_intents"]
+
+def test_remediation_actions_intent():
+    r = parse_nlp_query("top remediation actions")
+    assert "remediation_actions" in r["metric_intents"]
+
+
+# ── Inventory intents ────────────────────────────────────────────────────────
+
+def test_domain_admins_intent():
+    r = parse_nlp_query("show domain admins")
+    assert "domain_admins" in r["inventory_intents"]
+    assert "search" not in r["asset_filters"]
+
+def test_kerberoastable_intent():
+    r = parse_nlp_query("kerberoastable accounts")
+    assert "kerberoastable" in r["inventory_intents"]
+
+def test_expired_certs_intent():
+    r = parse_nlp_query("expired certificates")
+    assert "expired_certs" in r["inventory_intents"]
+
+def test_writeable_shares_intent():
+    r = parse_nlp_query("writeable shares")
+    assert "writeable_shares" in r["inventory_intents"]
+
+def test_lateral_movement_intent():
+    r = parse_nlp_query("lateral movement paths")
+    assert "lateral_paths" in r["inventory_intents"]
+
+def test_os_distribution_intent():
+    r = parse_nlp_query("OS family distribution")
+    assert "os_distribution" in r["inventory_intents"]
+
+def test_ai_ml_intent_sets_plugin_family():
+    r = parse_nlp_query("AI tools and ML risks")
+    assert "ai_ml" in r["inventory_intents"]
+    # AI/ML implies plugin_family = Artificial Intelligence on findings
+    assert r["finding_filters"].get("plugin_family") == "Artificial Intelligence"
+
+
+# ── Intent-vs-text-search isolation ──────────────────────────────────────────
+
+def test_intent_words_do_not_pollute_search():
+    """Widget/metric/inventory keywords must not show up as text search."""
+    queries = [
+        "funnel critical",
+        "heatmap of findings",
+        "MTTR trend",
+        "domain admins",
+        "expired certs",
+    ]
+    for q in queries:
+        r = parse_nlp_query(q)
+        search = r["finding_filters"].get("search")
+        if search:
+            for bad in ["funnel", "heatmap", "mttr", "domain admin", "expired cert"]:
+                assert bad not in search.lower(), f"'{bad}' leaked into search for query: {q}"
+
+
+# ── Result shape ─────────────────────────────────────────────────────────────
+
+def test_widget_hints_field_always_present():
+    r = parse_nlp_query("critical findings")
+    assert isinstance(r["widget_hints"], list)
+    assert isinstance(r["metric_intents"], list)
+    assert isinstance(r["inventory_intents"], list)
+
+
+# ── LLM / Analyst validation (NEW) ───────────────────────────────────────────
+
+def test_validated_findings():
+    r = parse_nlp_query("validated findings")
+    assert r["finding_filters"]["llm_verdict"] == "any"
+
+def test_true_positive_findings():
+    r = parse_nlp_query("true positive findings")
+    assert r["finding_filters"]["llm_verdict"] == "true_positive"
+
+def test_false_positive_validation():
+    r = parse_nlp_query("validated false positives")
+    assert r["finding_filters"]["llm_verdict"] == "false_positive"
+
+def test_needs_review_findings():
+    r = parse_nlp_query("findings that need review")
+    assert r["finding_filters"]["llm_verdict"] == "needs_review"
+
+
+# ── Validated context (NEW) ──────────────────────────────────────────────────
+
+def test_ctx_easily_exploitable():
+    r = parse_nlp_query("easily exploitable findings")
+    assert r["finding_filters"]["ctx_exploitability"] == "easily_exploitable"
+
+def test_ctx_unreachable():
+    r = parse_nlp_query("unreachable vulnerabilities")
+    assert r["finding_filters"]["ctx_reachability"] == "unreachable"
+
+def test_ctx_publicly_accessible():
+    r = parse_nlp_query("publicly accessible findings")
+    assert r["finding_filters"]["ctx_accessibility"] == "public"
+
+
+# ── Compensating controls (NEW) ──────────────────────────────────────────────
+
+def test_mitigated_by_controls():
+    r = parse_nlp_query("findings mitigated by controls")
+    assert r["finding_filters"]["control_mitigation_status"] == "mitigated"
+
+def test_partially_mitigated():
+    r = parse_nlp_query("partially mitigated vulns")
+    assert r["finding_filters"]["control_mitigation_status"] == "partially_mitigated"
+
+def test_unmitigated():
+    r = parse_nlp_query("unmitigated findings")
+    assert r["finding_filters"]["control_mitigation_status"] == "not_mitigated"
+
+
+# ── SSVC / Exploit maturity (NEW) ────────────────────────────────────────────
+
+def test_ssvc_act():
+    r = parse_nlp_query("SSVC Act findings")
+    assert r["finding_filters"]["ssvc_decision"] == "Act"
+
+def test_ssvc_attend():
+    r = parse_nlp_query("ssvc attend")
+    assert r["finding_filters"]["ssvc_decision"] == "Attend"
+
+def test_weaponized_exploits():
+    r = parse_nlp_query("findings with weaponized exploits")
+    assert r["finding_filters"]["exploit_maturity_level"] == "weaponized"
+
+def test_functional_exploits():
+    r = parse_nlp_query("functional exploits available")
+    assert r["finding_filters"]["exploit_maturity_level"] == "functional"
+
+
+# ── GreyNoise (NEW) ──────────────────────────────────────────────────────────
+
+def test_greynoise_seen():
+    r = parse_nlp_query("findings actively exploited in the wild")
+    assert r["finding_filters"]["greynoise_seen"] is True
+
+
+# ── Asset-side new fields ────────────────────────────────────────────────────
+
+def test_credentialed_assets():
+    r = parse_nlp_query("credentialed assets")
+    assert r["asset_filters"]["is_credentialed"] is True
+
+def test_authenticated_scans():
+    r = parse_nlp_query("authenticated scans")
+    assert r["asset_filters"]["is_credentialed"] is True
+
+def test_device_type_router():
+    r = parse_nlp_query("router devices")
+    assert r["asset_filters"]["device_type"] == "router"
+
+def test_device_type_workstation():
+    r = parse_nlp_query("workstation assets")
+    assert r["asset_filters"]["device_type"] == "workstation"
+
+def test_asset_type_web_app():
+    r = parse_nlp_query("web app assets")
+    assert r["asset_filters"]["asset_type"] == "web_app"
+
+def test_asset_type_cloud_instance():
+    r = parse_nlp_query("cloud instances")
+    assert r["asset_filters"]["asset_type"] == "cloud_instance"
+
+def test_asset_type_container_image():
+    r = parse_nlp_query("container images with critical vulns")
+    assert r["asset_filters"]["asset_type"] == "container_image"
+
+
+# ── Captured rules (NEW) ─────────────────────────────────────────────────────
+
+def test_owned_by_filter():
+    r = parse_nlp_query("findings owned by netops")
+    assert r["finding_filters"]["owner_suggestion"] == "netops"
+
+
+# ── Registry-as-source-of-truth (scaling guarantee) ──────────────────────────
+
+def test_new_field_does_not_leak_into_search():
+    """Every registry rule auto-contributes its consumed patterns to the residual
+    strip — adding a field should never cause it to surface as a Text: chip."""
+    queries = [
+        "validated findings", "true positive findings", "ssvc act",
+        "weaponized exploits", "credentialed assets", "router devices",
+        "easily exploitable", "unmitigated", "publicly accessible findings",
+    ]
+    for q in queries:
+        r = parse_nlp_query(q)
+        labels = [c["label"] for c in r["explanation"]]
+        assert "Text" not in labels, f"'{q}' leaked into Text: chip"

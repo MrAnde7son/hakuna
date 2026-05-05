@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { ShieldCheck, Play, Sparkles, Bot, ExternalLink } from 'lucide-react'
+import { ShieldCheck, Play, Sparkles, Bot, ExternalLink, ChevronRight, ChevronDown } from 'lucide-react'
+import ReactMarkdown from 'react-markdown'
 import { Card, Button, Pill, useToast } from '../shared/ui.jsx'
 import { getValidationStatus, runValidation } from '../../api.js'
 
@@ -22,6 +23,7 @@ export default function FindingValidationCard({ findingId, severity }) {
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(false)
   const [running, setRunning] = useState(false)
+  const [expandedRuns, setExpandedRuns] = useState({})
 
   const eligible = (severity ?? 0) >= 3
 
@@ -65,6 +67,14 @@ export default function FindingValidationCard({ findingId, severity }) {
   const validator = data?.validator || 'llm'
   const validatedAt = data?.validated_at
   const recent = data?.recent_agent_runs || []
+
+  function isExpanded(r, idx) {
+    if (r.id in expandedRuns) return expandedRuns[r.id]
+    return idx === 0 && !!r.output
+  }
+  function toggleRun(r, idx) {
+    setExpandedRuns(prev => ({ ...prev, [r.id]: !isExpanded(r, idx) }))
+  }
 
   return (
     <Card style={{
@@ -132,22 +142,55 @@ export default function FindingValidationCard({ findingId, severity }) {
               </span>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-              {recent.map(r => (
-                <div key={r.id} style={{
-                  display: 'flex', alignItems: 'center', gap: 8,
-                  padding: '6px 8px', borderRadius: 6,
-                  background: 'var(--bg-secondary)', fontSize: 11,
-                }}>
-                  <span style={{ color: 'var(--text-primary)' }}>#{r.id}</span>
-                  <span style={{ color: 'var(--text-muted)' }}>{r.status}</span>
-                  <span style={{ color: 'var(--text-muted)' }}>· {r.steps} step{r.steps === 1 ? '' : 's'}</span>
-                  {r.created_at && (
-                    <span style={{ color: 'var(--text-muted)', marginLeft: 'auto' }}>
-                      {new Date(r.created_at).toLocaleString()}
-                    </span>
-                  )}
-                </div>
-              ))}
+              {recent.map((r, idx) => {
+                const expanded = isExpanded(r, idx)
+                const hasOutput = !!r.output
+                return (
+                  <div key={r.id} style={{
+                    borderRadius: 6,
+                    background: 'var(--bg-secondary)',
+                    fontSize: 11,
+                    overflow: 'hidden',
+                  }}>
+                    <div
+                      onClick={hasOutput ? () => toggleRun(r, idx) : undefined}
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: 8,
+                        padding: '6px 8px',
+                        cursor: hasOutput ? 'pointer' : 'default',
+                      }}
+                    >
+                      {hasOutput ? (
+                        expanded ? <ChevronDown size={12} color="var(--text-muted)" /> : <ChevronRight size={12} color="var(--text-muted)" />
+                      ) : (
+                        <span style={{ width: 12 }} />
+                      )}
+                      <span style={{ color: 'var(--text-primary)' }}>#{r.id}</span>
+                      <span style={{ color: 'var(--text-muted)' }}>{r.status}</span>
+                      <span style={{ color: 'var(--text-muted)' }}>· {r.steps} step{r.steps === 1 ? '' : 's'}</span>
+                      {r.created_at && (
+                        <span style={{ color: 'var(--text-muted)', marginLeft: 'auto' }}>
+                          {new Date(r.created_at).toLocaleString()}
+                        </span>
+                      )}
+                    </div>
+                    {expanded && hasOutput && (
+                      <div style={{
+                        padding: '8px 12px 10px 26px',
+                        borderTop: '1px solid var(--border)',
+                        fontSize: 12,
+                        color: 'var(--text-secondary)',
+                        lineHeight: 1.55,
+                        background: 'var(--bg-card)',
+                      }}>
+                        <div className="markdown-body" style={{ whiteSpace: 'normal' }}>
+                          <ReactMarkdown>{r.output}</ReactMarkdown>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
             </div>
           </div>
         )}

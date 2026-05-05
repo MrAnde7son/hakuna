@@ -17,10 +17,19 @@ from services.rule_engine import (
     _str_op,
     _num_op,
     _eval_asset,
+    _eval_finding_row,
     migrate_autotag_condition,
     migrate_campaign_condition,
     migrate_conditions,
 )
+
+
+class _FakeFinding:
+    """Minimal finding stub for _eval_finding_row tests."""
+    def __init__(self, **kw):
+        for k, v in kw.items():
+            setattr(self, k, v)
+        self.custom_fields = kw.get("custom_fields", None)
 
 
 # ─────────────────────────────────────────────────────────
@@ -459,3 +468,49 @@ class TestMigrateConditions:
         result = migrate_conditions(conditions, mode="autotag")
         assert result[0] == {"field": "ip", "op": "eq", "value": "10.0.0.1"}
         assert result[1] == {"field": "os", "op": "contains", "value": "Linux"}
+
+
+# ─────────────────────────────────────────────────────────
+# _eval_finding_row — finding.id (bulk match)
+# ─────────────────────────────────────────────────────────
+
+class TestFindingIdBulkMatch:
+    """finding.id supports comma-separated bulk values, used by the
+    Create-Campaign-from-Aggregated-Solution CTA."""
+
+    def _f(self, fid):
+        return _FakeFinding(id=fid)
+
+    def test_eq_single_id_match(self):
+        assert _eval_finding_row({"field": "finding.id", "op": "eq", "value": "42"}, self._f(42)) is True
+
+    def test_eq_single_id_no_match(self):
+        assert _eval_finding_row({"field": "finding.id", "op": "eq", "value": "42"}, self._f(99)) is False
+
+    def test_eq_bulk_csv_match(self):
+        cond = {"field": "finding.id", "op": "eq", "value": "1,2,3,42,100"}
+        assert _eval_finding_row(cond, self._f(42)) is True
+
+    def test_eq_bulk_csv_no_match(self):
+        cond = {"field": "finding.id", "op": "eq", "value": "1,2,3"}
+        assert _eval_finding_row(cond, self._f(99)) is False
+
+    def test_eq_csv_with_whitespace(self):
+        cond = {"field": "finding.id", "op": "eq", "value": "1, 2 , 3"}
+        assert _eval_finding_row(cond, self._f(2)) is True
+
+    def test_neq_match(self):
+        cond = {"field": "finding.id", "op": "neq", "value": "1,2,3"}
+        assert _eval_finding_row(cond, self._f(99)) is True
+
+    def test_neq_no_match(self):
+        cond = {"field": "finding.id", "op": "neq", "value": "1,2,3"}
+        assert _eval_finding_row(cond, self._f(2)) is False
+
+    def test_empty_value_returns_false(self):
+        assert _eval_finding_row({"field": "finding.id", "op": "eq", "value": ""}, self._f(1)) is False
+
+    def test_invalid_value_returns_false(self):
+        # Non-numeric input must not raise
+        assert _eval_finding_row({"field": "finding.id", "op": "eq", "value": "abc"}, self._f(1)) is False
+

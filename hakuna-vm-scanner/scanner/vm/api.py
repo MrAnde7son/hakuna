@@ -1,14 +1,18 @@
 """VM Scanner API — trigger scans, check status, manage custom templates."""
 
 import glob
+import logging
 import os
 import tempfile
 import uuid
 from typing import Literal
 
+import httpx
 import yaml
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
+
+logger = logging.getLogger(__name__)
 
 from scanner.vm.agent_worker import run_agent_scan, run_agent_scan_adhoc
 from scanner.vm.agent_specialists import AGENT_CATEGORIES
@@ -74,7 +78,7 @@ class ScanRequest(BaseModel):
         default=None,
         description="Optional list of agent categories to run when "
                     "enable_agents=true. Valid values: "
-                    "injection, xss, ssrf, authn, authz. None = run all five "
+                    "injection, xss, ssrf, authn, authz, files. None = run all six "
                     "(each still self-gates via applicable_when).",
     )
     enable_content_discovery: bool = Field(
@@ -263,22 +267,32 @@ async def create_scan(body: ScanRequest):
             job_ids.append(cd_result.id)
 
         if body.enable_agents:
-            # Adhoc agents self-gate via applicable_when. With an empty
-            # endpoints list injection/ssrf/authz will cleanly skip; xss
-            # still fires on bare URL targets, and authn fires when
-            # credentials are supplied. Countdown +4 keeps the ordering
-            # (nuclei → content discovery → agents) so any surface the
-            # first two uncover warms the httpx connection pool before
-            # the LLM loop starts spending tokens.
-            agent_result = run_agent_scan_adhoc.apply_async(
-                args=[target, body.org_id],
-                kwargs={
-                    "credentials": credentials_payload,
-                    "categories": agent_categories,
-                },
-                countdown=(offset + i) * 5 + 4,
-            )
-            job_ids.append(agent_result.id)
+            # Adhoc agents need an http(s) URL — their applicable_when
+            # predicates all fail for bare hostnames (seed_base_endpoint
+            # won't synthesize a row without a scheme, so every specialist
+            # logs "not applicable" and the task exits skipped). Probe to
+            # confirm the target actually speaks HTTP(S) before burning a
+            # Celery slot + LLM provider handshake.
+            agent_url = await _web_url_for_agent(target)
+            if agent_url is None:
+                logger.info(
+                    "adhoc agent skipped target=%s (no HTTP(S) response on 443/80)",
+                    target,
+                )
+            else:
+                # Countdown +4 keeps the ordering (nuclei → content
+                # discovery → agents) so any surface the first two uncover
+                # warms the httpx connection pool before the LLM loop
+                # starts spending tokens.
+                agent_result = run_agent_scan_adhoc.apply_async(
+                    args=[agent_url, body.org_id],
+                    kwargs={
+                        "credentials": credentials_payload,
+                        "categories": agent_categories,
+                    },
+                    countdown=(offset + i) * 5 + 4,
+                )
+                job_ids.append(agent_result.id)
 
     return ScanResponse(
         job_ids=job_ids,
@@ -454,6 +468,41 @@ async def _assets_with_api_specs(asset_ids: list[str]) -> set[str]:
         return set()
     finally:
         await conn.close()
+
+
+_AGENT_WEB_PROBE_TIMEOUT = float(os.environ.get("AGENT_WEB_PROBE_TIMEOUT", "3.0"))
+
+
+async def _web_url_for_agent(target: str) -> str | None:
+    """Return an http(s) URL for ``target`` if it responds on 443 or 80, else None.
+
+    Adhoc agent specialists can only gate themselves on http(s) URLs
+    (``seed_base_endpoint`` refuses to synthesize a starting row without
+    a scheme). When the backend hands us a bare hostname/IP, probe both
+    schemes with a short timeout and normalize to the first that answers.
+    Any HTTP status counts — a 403/404/500 from the target still confirms
+    "web service here, worth running specialists against."
+
+    Already-schemed targets are trusted: the caller chose http vs https
+    deliberately, and adding a probe round-trip per target only delays
+    dispatch without changing the decision.
+    """
+    if target.startswith(("http://", "https://")):
+        return target
+
+    async with httpx.AsyncClient(
+        verify=False,
+        timeout=_AGENT_WEB_PROBE_TIMEOUT,
+        follow_redirects=False,
+    ) as client:
+        for scheme in ("https", "http"):
+            url = f"{scheme}://{target}"
+            try:
+                await client.head(url)
+            except Exception:
+                continue
+            return url
+    return None
 
 
 async def _assets_with_web_ports(asset_ids: list[str]) -> set[str]:

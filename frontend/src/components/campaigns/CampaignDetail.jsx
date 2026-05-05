@@ -183,6 +183,69 @@ function CampaignProgressBar({ statusCounts, total }) {
   )
 }
 
+// ─── Compliance Control Chips ────────────────────────────
+function ComplianceControlChips({ controls }) {
+  const { t } = useTranslation()
+  const navigate = useNavigate()
+  return (
+    <Card style={{ marginBottom: 20 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 10, gap: 8 }}>
+        <div style={{ fontSize: 13, fontWeight: 700 }}>
+          {t('campaigns.complianceControls', { defaultValue: 'Compliance controls' })}
+        </div>
+        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+          {t('campaigns.complianceControlsHelp', { defaultValue: 'Findings remediated also satisfy these controls' })}
+        </span>
+      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+        {controls.map(ctrl => {
+          const total = ctrl.total || 0
+          const resolved = ctrl.resolved || 0
+          const pct = total > 0 ? Math.round((resolved / total) * 100) : 0
+          const done = total > 0 && resolved === total
+          return (
+            <div
+              key={ctrl.control_id}
+              onClick={() => ctrl.framework_slug && navigate(`/compliance/${ctrl.framework_slug}/control/${ctrl.control_id}`)}
+              style={{
+                cursor: ctrl.framework_slug ? 'pointer' : 'default',
+                border: '1px solid var(--border)',
+                borderRadius: 8,
+                padding: '8px 12px',
+                minWidth: 220,
+                background: 'var(--bg-card)',
+              }}
+              title={ctrl.title}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                <code style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-primary)' }}>
+                  {ctrl.ref}
+                </code>
+                <Pill
+                  label={total > 0 ? `${resolved}/${total}` : '—'}
+                  color={done ? 'var(--success, #16a34a)' : 'var(--text-muted)'}
+                />
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 240 }}>
+                {ctrl.framework_name}
+              </div>
+              {total > 0 && (
+                <div style={{ marginTop: 6, height: 4, background: 'var(--bg-subtle)', borderRadius: 2, overflow: 'hidden' }}>
+                  <div style={{
+                    width: `${pct}%`, height: '100%',
+                    background: done ? 'var(--success, #16a34a)' : 'var(--accent)',
+                    transition: 'width 200ms ease',
+                  }} />
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    </Card>
+  )
+}
+
 // ─── Exception Reason Dialog ─────────────────────────────
 function ExceptionDialog({ finding, onConfirm, onCancel }) {
   const { t } = useTranslation()
@@ -1046,6 +1109,11 @@ export default function CampaignDetail() {
 
               {/* Progress bar */}
               <CampaignProgressBar statusCounts={campaign.status_counts} total={totalFindings} />
+
+              {/* Compliance controls this campaign remediates */}
+              {campaign.compliance_controls?.length > 0 && (
+                <ComplianceControlChips controls={campaign.compliance_controls} />
+              )}
 
               {/* Owner groups */}
               {campaign.owner_groups.map((group, idx) => (

@@ -26,6 +26,7 @@ from core.auth import (
     get_accessible_org_ids, ACCESS_TOKEN_EXPIRE_MINUTES,
 )
 from core.audit import log_audit
+from core.time_utils import iso_utc
 from models.models import Organization, User, SAMLConfig
 
 logger = logging.getLogger(__name__)
@@ -163,8 +164,8 @@ def _config_response(config: SAMLConfig) -> dict:
         "auto_provision": config.auto_provision,
         "force_sso": config.force_sso,
         "attribute_mapping": config.attribute_mapping or {},
-        "created_at": config.created_at.isoformat() if config.created_at else None,
-        "updated_at": config.updated_at.isoformat() if config.updated_at else None,
+        "created_at": iso_utc(config.created_at),
+        "updated_at": iso_utc(config.updated_at),
         "sp_acs_url": f"{BACKEND_URL}/api/saml/acs/{config.org_id}",
         "sp_metadata_url": f"{BACKEND_URL}/api/saml/metadata/{config.org_id}",
     }

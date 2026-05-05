@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from core.database import get_db
 from core.auth import require_auth, require_role
+from core.time_utils import iso_utc
 from models.models import Organization, User
 from services.billing import (
     create_checkout_session,
@@ -165,8 +166,8 @@ def billing_status(
     return {
         "subscription_tier": org.subscription_tier or "free",
         "subscription_status": org.subscription_status,
-        "current_period_end": org.current_period_end.isoformat() if org.current_period_end else None,
-        "trial_ends_at": org.trial_ends_at.isoformat() if org.trial_ends_at else None,
+        "current_period_end": iso_utc(org.current_period_end),
+        "trial_ends_at": iso_utc(org.trial_ends_at),
     }
 
 
@@ -237,11 +238,38 @@ def _handle_checkout_completed(session: dict, db: Session):
     if org.subscription_tier == "pro" and org.subscription_status == "active":
         return
 
+    previous_tier = org.subscription_tier or "free"
     org.subscription_tier = "pro"
     org.subscription_status = "active"
     org.stripe_subscription_id = subscription_id
     db.commit()
     logger.info(f"Org {org.id} upgraded to Pro via checkout")
+
+    # Analytics — authoritative paid-conversion event. Distinct_id is the
+    # admin who completed checkout (from Stripe metadata), falling back to
+    # the org's first admin so the event is always attached to a person.
+    try:
+        from services import posthog_client as analytics
+        admin_user_id = (session.get("metadata") or {}).get("user_id")
+        if not admin_user_id:
+            first_admin = (
+                db.query(User)
+                .filter(User.org_id == org.id, User.role.in_(("superadmin", "org_admin")))
+                .order_by(User.id.asc())
+                .first()
+            )
+            admin_user_id = first_admin.id if first_admin else None
+        if admin_user_id:
+            amount_total = session.get("amount_total")  # cents
+            analytics.capture(admin_user_id, "subscription_started", {
+                "tier": "pro",
+                "previous_tier": previous_tier,
+                "stripe_subscription_id": subscription_id,
+                "amount_total_cents": amount_total,
+                "currency": session.get("currency"),
+            }, org_id=org.id)
+    except Exception:
+        pass
 
 
 def _handle_invoice_paid(invoice: dict, db: Session):

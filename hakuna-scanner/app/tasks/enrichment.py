@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import text
 
-ENRICHMENT_STEP_COUNT = 16  # tlsx, httpx, cdncheck, js_fingerprint, favicon, endpoint_probe, katana, protocol_probe, kiterunner, trufflehog, llm_js_extraction, openapi_discovery, graphql_introspection, classify_assets, ai_exposure, nmap_dispatch
+ENRICHMENT_STEP_COUNT = 18  # tlsx, httpx, cdncheck, js_fingerprint, favicon, endpoint_probe, katana, protocol_probe, banner_grab, kiterunner, trufflehog, llm_js_extraction, openapi_discovery, graphql_introspection, classify_assets, attribution, ai_exposure, nmap_dispatch
 
 from app.celery_app import celery
 from app.config import settings
@@ -32,18 +32,33 @@ from app.ingest.enrichment import (
     store_js_fingerprints,
     store_katana_endpoints,
     store_tlsx_per_port,
+    upsert_asset_port,
+)
+from app.ingest.service_lookup import (
+    asset_has_matching_port,
+    matching_ports_for_asset,
+    port_matches_service,
 )
 from app.ingest.asset_classifier import classify_asset
+from app.ingest.attribution import attribute_asset
 from app.ingest.endpoint_probe import probe_assets
 from app.ingest.favicon_fingerprint import fingerprint_assets as favicon_fingerprint_assets
 from app.ingest.js_fingerprint import fingerprint_assets
 from app.ingest.protocol_probe import probe_batch as protocol_probe_batch
+from app.ingest.ssh_banner import probe_batch as ssh_banner_batch
+from app.ingest.rdp_nla_probe import probe_batch as rdp_nla_batch
+from app.ingest.mail_banner import probe_batch as mail_banner_batch
+from app.ingest.printer_banner import probe_batch as printer_banner_batch
+from app.ingest.tr069_upnp_probe import probe_batch as tr069_upnp_batch
+from app.ingest.db_banner import probe_batch as db_banner_batch
+from app.ingest.ajp_probe import probe_batch as ajp_probe_batch
 from app.runner.base import BaseRunner, batch_hosts, run_batches_parallel
 from app.runner.tools import CdncheckRunner, HttpxRunner, KatanaRunner, KiterunnerRunner, TlsxRunner, TrufflehogRunner
 from app.tasks.scoping import (
     build_stale_clause,
     build_target_scope,
     compose_where,
+    count_assets_in_scan_scope,
 )
 
 # Batch sizes tuned for 10k+ host scans. Each batch runs as an independent
@@ -55,6 +70,27 @@ HTTPX_BATCH_SIZE = 500
 KATANA_BATCH_SIZE = 200
 CDNCHECK_BATCH_SIZE = 2000
 KITERUNNER_BATCH_SIZE = 50  # heavier per-host than katana
+
+# Service-type gating sets (PR #2 of the service-type refactor).
+# Each pair is ``(service_types, legacy_ports)``. The legacy port set is
+# the OR-fallback used when a port hasn't been re-fingerprinted since
+# PR #1 — without it, every port that predates the migration drops out
+# of coverage. PR #4 will retire the fallback after a burn-in window.
+HTTP_SERVICE_TYPES: set[str] = {"http", "https"}
+HTTP_LEGACY_PORTS: set[int] = {80, 443, 8080, 8443}
+
+# Banner-grab superset — six probe modules' ports unioned into one gate
+# so the orchestrator only fans out for assets that could plausibly
+# match. Service types correspond to the protocols each module covers.
+BANNER_SERVICE_TYPES: set[str] = {
+    "http", "https", "ssh", "mysql", "postgres", "mssql",
+    "redis", "mongodb", "rdp", "ipp", "smtp", "imap", "pop3",
+    "ftp", "telnet", "vnc", "ajp",
+}
+BANNER_LEGACY_PORTS: set[int] = {
+    22, 25, 110, 143, 465, 587, 631, 993, 995,
+    1900, 3306, 3389, 5432, 7547, 8009,
+}
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +142,17 @@ async def _get_confirmed_alive_assets(
     stale_hours: int = 24,
     stale_column: str = "last_enriched",
 ) -> list[dict]:
-    """Get confirmed_alive (or HTTP-responsive unconfirmed) assets with ports for enrichment routing."""
+    """Get confirmed_alive (or HTTP-responsive unconfirmed) assets with ports for enrichment routing.
+
+    Each asset dict carries ``port_service_types: dict[int, str]`` —
+    the per-port ``asset_ports.service_type`` stamps from PR #1, used by
+    downstream gates to prefer service identity over hard-coded port
+    numbers. Ports without a stamp are simply absent from the dict;
+    callers fall back to the legacy port set per
+    ``service_lookup.port_matches_service``.
+    """
+    from app.ingest.service_lookup import attach_port_service_types
+
     scope_sql, scope_params = build_target_scope(target_scope)
     stale_sql = build_stale_clause(enabled=apply_stale, stale_hours=stale_hours, column=stale_column)
     extra = compose_where(scope_sql, stale_sql)
@@ -123,7 +169,7 @@ async def _get_confirmed_alive_assets(
             """),
             params,
         )
-        return [
+        assets = [
             {
                 "id": row.id,
                 "hostname": row.hostname,
@@ -134,6 +180,8 @@ async def _get_confirmed_alive_assets(
             }
             for row in result.fetchall()
         ]
+        await attach_port_service_types(db, assets)
+        return assets
 
 
 async def _get_asset_snapshot(
@@ -151,7 +199,8 @@ async def _get_asset_snapshot(
     async with sf() as db:
         result = await db.execute(
             text(f"""
-                SELECT id, hostname, host(ip) as ip, open_ports, tech_stack, tls_cert
+                SELECT id, hostname, host(ip) as ip, open_ports, open_udp_ports,
+                       tech_stack, tls_cert
                 FROM assets WHERE org_id = :org_id{extra}
             """),
             params,
@@ -162,6 +211,7 @@ async def _get_asset_snapshot(
                 "hostname": row.hostname,
                 "ip": row.ip,
                 "open_ports": row.open_ports,
+                "open_udp_ports": row.open_udp_ports,
                 "tech_stack": row.tech_stack,
                 "tls_cert": row.tls_cert,
             }
@@ -251,30 +301,49 @@ async def _do_tlsx(sf, org_id: str, target_scope: str | None = None) -> dict:
 async def _do_httpx(sf, org_id: str, target_scope: str | None = None) -> dict:
     """Extension 3: Run httpx with full flags + screenshots on confirmed_alive assets.
 
-    For large scans, hostnames are batched into HTTPX_BATCH_SIZE chunks; each batch
+    Targets are built per discovered open port (mirrors the tlsx fan-out
+    pattern), so HTTP services on non-canonical ports (e.g. an admin UI on
+    8088) get fingerprinted and the per-port fingerprint is persisted to
+    asset_ports for downstream scanners. Hosts with no open_ports fall back
+    to bare hostname (httpx defaults to 80/443).
+
+    For large scans, targets are batched into HTTPX_BATCH_SIZE chunks; each batch
     runs in its own subprocess with a scaled timeout, and multiple batches run in
     parallel bounded by settings.enrichment_batch_concurrency.
 
     Screenshots (headless Chromium) are ~1s/host — disabled on scans above
     settings.screenshot_max_hosts to keep wall time reasonable.
     """
-    hostnames = await _get_confirmed_alive_hostnames(
+    assets = await _get_confirmed_alive_assets(
         sf, org_id, target_scope=target_scope, apply_stale=True,
     )
-    if not hostnames:
+    if not assets:
         logger.info("org=%s httpx: no fresh assets to probe", org_id)
         return {"probed": 0, "skipped_fresh": True}
 
+    # Build host:port list across all open ports. httpx auto-detects http vs
+    # https per target and fail-fasts on non-HTTP services, so we don't filter
+    # the port set here — same approach as tlsx (_do_tlsx).
+    httpx_targets: list[str] = []
+    for asset in assets:
+        hostname = asset["hostname"]
+        ports = asset.get("open_ports") or []
+        if ports:
+            for port in ports:
+                httpx_targets.append(f"{hostname}:{port}")
+        else:
+            httpx_targets.append(hostname)
+
     ss_dir = os.path.join(settings.screenshot_dir, str(org_id))
-    batches = batch_hosts(hostnames, HTTPX_BATCH_SIZE)
+    batches = batch_hosts(httpx_targets, HTTPX_BATCH_SIZE)
     # 2.5s/host per batch accounts for slow CDN redirect chains and the
     # -follow-redirects flag — worker logs showed wordpress.org 500-host
     # batches hitting the previous 600s ceiling mid-chain.
     per_batch_timeout = BaseRunner.timeout_for_host_count(HTTPX_BATCH_SIZE, per_host_seconds=2.5)
-    screenshots_enabled = len(hostnames) <= settings.screenshot_max_hosts
+    screenshots_enabled = len(httpx_targets) <= settings.screenshot_max_hosts
     logger.info(
-        "org=%s httpx hosts=%d batches=%d concurrency=%d screenshots=%s per_batch_timeout=%ds",
-        org_id, len(hostnames), len(batches),
+        "org=%s httpx targets=%d batches=%d concurrency=%d screenshots=%s per_batch_timeout=%ds",
+        org_id, len(httpx_targets), len(batches),
         settings.enrichment_batch_concurrency, screenshots_enabled, per_batch_timeout,
     )
 
@@ -322,6 +391,12 @@ async def _do_httpx(sf, org_id: str, target_scope: str | None = None) -> dict:
             host = (entry.get("input") or entry.get("host") or "").strip().lower()
             if not host:
                 continue
+            # `input` may be "hostname:port" since we now fan out across all
+            # discovered ports — strip to the bare hostname for the asset
+            # lookup. The actual probed port lives in entry["port"] (or is
+            # derived from the URL scheme below).
+            if ":" in host:
+                host = host.rsplit(":", 1)[0]
             row = await db.execute(
                 text("SELECT id FROM assets WHERE org_id = :org_id AND hostname = :host"),
                 {"org_id": org_id, "host": host},
@@ -355,6 +430,99 @@ async def _do_httpx(sf, org_id: str, target_scope: str | None = None) -> dict:
     return {"probed": len(all_results), "updated": updated, "batches": len(batches)}
 
 
+async def _do_tls_deep_audit(sf, org_id: str, target_scope: str | None = None) -> dict:
+    """Run sslyze cipher-enumeration + chain validation + OCSP + CAA on
+    TLS-capable ports that tlsx already fingerprinted.
+
+    Gated by ``settings.tls_deep_audit_enabled`` because sslyze is 10-30s
+    per host and can trip WAF rate limits.
+    """
+    if not settings.tls_deep_audit_enabled:
+        return {"audited": 0, "disabled": True}
+
+    # Pull TLS-capable (host, port) pairs — only ports that already have a
+    # tls_cert row from tlsx. That filters out plain HTTP ports and ports
+    # where tlsx couldn't handshake, both of which sslyze would waste time on.
+    async with sf() as db:
+        rows = await db.execute(
+            text("""
+                SELECT a.hostname, ap.port, ap.id as port_id
+                FROM assets a
+                JOIN asset_ports ap ON ap.asset_id = a.id
+                WHERE a.org_id = :org_id
+                  AND a.liveness_state = 'confirmed_alive'
+                  AND ap.tls_cert IS NOT NULL
+                  AND (:scope IS NULL OR a.hostname LIKE :scope_like)
+                ORDER BY a.hostname, ap.port
+                LIMIT :cap
+            """),
+            {
+                "org_id": uuid.UUID(org_id),
+                "scope": target_scope,
+                "scope_like": f"%{target_scope}" if target_scope else None,
+                "cap": settings.tls_deep_audit_max_hosts,
+            },
+        )
+        targets = [(r.hostname, r.port, r.port_id) for r in rows.fetchall()]
+
+    if not targets:
+        logger.info("org=%s tls_deep_audit: no TLS-capable targets", org_id)
+        return {"audited": 0}
+
+    logger.info(
+        "org=%s tls_deep_audit: auditing %d targets concurrency=%d",
+        org_id, len(targets), settings.tls_deep_audit_concurrency,
+    )
+
+    # sslyze is blocking + CPU-bound on cryptography. Run in a thread pool
+    # with asyncio.Semaphore to bound concurrency.
+    import asyncio
+    from app.ingest.tls_deep_audit import audit_host
+
+    sem = asyncio.Semaphore(settings.tls_deep_audit_concurrency)
+
+    async def _audit(host: str, port: int, port_id):
+        async with sem:
+            try:
+                return port_id, await asyncio.wait_for(
+                    asyncio.to_thread(audit_host, host, port),
+                    timeout=settings.tls_deep_audit_host_timeout,
+                )
+            except asyncio.TimeoutError:
+                logger.warning("tls_deep_audit timeout host=%s port=%d", host, port)
+                return port_id, None
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("tls_deep_audit failed host=%s port=%d err=%s", host, port, exc)
+                return port_id, None
+
+    results = await asyncio.gather(*(_audit(h, p, pid) for h, p, pid in targets))
+
+    # Persist — one UPDATE per port_id.
+    audited = 0
+    issues_total = 0
+    async with sf() as db:
+        for port_id, audit in results:
+            if audit is None:
+                continue
+            await db.execute(
+                text("""
+                    UPDATE asset_ports
+                    SET tls_deep_audit = cast(:audit as jsonb), updated_at = :now
+                    WHERE id = :pid
+                """),
+                {
+                    "audit": json.dumps(audit),
+                    "now": datetime.now(timezone.utc),
+                    "pid": port_id,
+                },
+            )
+            audited += 1
+            issues_total += len(audit.get("issues", []))
+        await db.commit()
+
+    return {"audited": audited, "targets": len(targets), "issues": issues_total}
+
+
 async def _do_js_fingerprint(sf, org_id: str, target_scope: str | None = None) -> dict:
     """Run JS library fingerprinting on confirmed_alive HTTP assets.
 
@@ -377,12 +545,18 @@ async def _do_js_fingerprint(sf, org_id: str, target_scope: str | None = None) -
 
     # Filter to assets with HTTP ports (CDN assets are fine — we fetch the
     # actual page content, so Cloudflare etc. don't interfere).
-    HTTP_PORTS = {80, 443, 8080, 8443}
-    http_assets = []
-    for asset in assets:
-        ports = set(asset.get("open_ports") or [])
-        if ports & HTTP_PORTS:
-            http_assets.append(asset)
+    # PR #2: service_type-driven gate with legacy port fallback so an
+    # admin UI on 8081/8088 (or any port newly fingerprinted as http/https)
+    # gets fingerprinted even when it isn't in the canonical {80, 443,
+    # 8080, 8443} set.
+    http_assets = [
+        a for a in assets
+        if asset_has_matching_port(
+            a,
+            service_types=HTTP_SERVICE_TYPES,
+            legacy_ports=HTTP_LEGACY_PORTS,
+        )
+    ]
 
     if not http_assets:
         return {"fingerprinted": 0}
@@ -435,8 +609,15 @@ async def _do_favicon_fingerprint(sf, org_id: str, target_scope: str | None = No
         logger.info("org=%s favicon_fingerprint: no assets to fingerprint", org_id)
         return {"fingerprinted": 0}
 
-    HTTP_PORTS = {80, 443, 8080, 8443}
-    http_assets = [a for a in assets if set(a.get("open_ports") or []) & HTTP_PORTS]
+    # PR #2: service_type-driven gate with legacy port fallback.
+    http_assets = [
+        a for a in assets
+        if asset_has_matching_port(
+            a,
+            service_types=HTTP_SERVICE_TYPES,
+            legacy_ports=HTTP_LEGACY_PORTS,
+        )
+    ]
 
     if not http_assets:
         return {"fingerprinted": 0}
@@ -478,11 +659,15 @@ async def _do_endpoint_probe(sf, org_id: str, target_scope: str | None = None) -
         logger.info("org=%s endpoint_probe: no assets to probe", org_id)
         return {"probed": 0}
 
-    HTTP_PORTS = {80, 443, 8080, 8443}
+    # PR #2: service_type-driven gate with legacy port fallback.
     # Skip CDN assets — endpoint probes against CDN origins are noisy and slow.
     http_assets = [
         a for a in assets
-        if set(a.get("open_ports") or []) & HTTP_PORTS
+        if asset_has_matching_port(
+            a,
+            service_types=HTTP_SERVICE_TYPES,
+            legacy_ports=HTTP_LEGACY_PORTS,
+        )
         and not a.get("cdn_provider")
         and "cdn" not in (a.get("tags") or [])
     ]
@@ -519,18 +704,34 @@ async def _do_protocol_probe(sf, org_id: str, target_scope: str | None = None) -
     IoT, and AI infrastructure. Creates critical/high findings for
     internet-exposed industrial protocols.
     """
+    # `apply_stale=True` (matching tlsx/httpx/kiterunner) so retry waves
+    # after a SoftTimeLimitExceeded skip already-probed assets via the
+    # 24h `last_enriched` window — same trade-off the rest of the
+    # enrichment pipeline already accepts.
     assets = await _get_confirmed_alive_assets(
-        sf, org_id, target_scope=target_scope, apply_stale=False,
+        sf, org_id, target_scope=target_scope, apply_stale=True,
     )
     if not assets:
         return {"probed": 0}
 
-    # Only probe assets that have non-HTTP ports open
+    # PR #2: service_type-driven gate. Union the legacy ports + service
+    # types across every PROTOCOL_PROBES row so a host with Modbus on
+    # an alt port (service_type="modbus" via PR #1 stamping) still
+    # makes it past the orchestrator-level gate, even when 502 isn't
+    # in its open_ports.
     from app.ingest.protocol_probe import PROTOCOL_PROBES
-    probe_ports = {p["port"] for p in PROTOCOL_PROBES}
+    probe_ports: set[int] = set()
+    probe_service_types: set[str] = set()
+    for p in PROTOCOL_PROBES:
+        probe_ports.update(p.get("ports") or {p["port"]})
+        probe_service_types.update(p.get("service_types") or set())
     candidates = [
         a for a in assets
-        if set(a.get("open_ports") or []) & probe_ports
+        if asset_has_matching_port(
+            a,
+            service_types=probe_service_types,
+            legacy_ports=probe_ports,
+        )
     ]
     if not candidates:
         return {"probed": 0, "no_protocol_ports": True}
@@ -538,54 +739,97 @@ async def _do_protocol_probe(sf, org_id: str, target_scope: str | None = None) -
     logger.info("org=%s protocol_probe: probing %d assets with OT/IoT/AI ports", org_id, len(candidates))
 
     probe_results = await protocol_probe_batch(candidates, concurrency=10)
+    if not probe_results:
+        return {"probed": len(candidates), "assets_with_detections": 0}
 
-    # Store results and create findings
+    # Store results and create findings — bulk-resolved to avoid N
+    # serial roundtrips per asset (the unbatched loop was ~3× the
+    # actual probe time on 468-asset scans).
+    hostnames = list(probe_results.keys())
     total_detections = 0
     findings_created = 0
     async with sf() as db:
+        rows = await db.execute(
+            text("SELECT id, hostname FROM assets WHERE org_id = :org_id AND hostname = ANY(:hosts)"),
+            {"org_id": org_id, "hosts": hostnames},
+        )
+        host_to_id = {r.hostname: r.id for r in rows.fetchall()}
+
+        update_params: list[dict] = []
+        insert_params: list[dict] = []
+        # Per-port service_type stamps for asset_ports (migration 017).
+        # The detection's ``protocol`` field is already normalized
+        # (modbus, s7comm, ethernet_ip, etc.) so we use it as-is. The
+        # legacy protocol_detections JSON write below is preserved.
+        port_service_stamps: list[tuple[uuid.UUID, int, str, str | None]] = []
+        now = datetime.now(timezone.utc)
         for hostname, detections in probe_results.items():
             total_detections += len(detections)
-            # Find asset
-            row = await db.execute(
-                text("SELECT id FROM assets WHERE org_id = :org_id AND hostname = :host"),
-                {"org_id": org_id, "host": hostname},
-            )
-            asset_row = row.fetchone()
-            if not asset_row:
+            aid = host_to_id.get(hostname)
+            if aid is None:
                 continue
+            update_params.append({
+                "det": json.dumps(detections),
+                "id": aid,
+            })
+            for det in detections:
+                proto = det.get("protocol")
+                port = det.get("port")
+                if proto and isinstance(port, int):
+                    port_service_stamps.append((
+                        aid, port, str(proto), det.get("name"),
+                    ))
+                insert_params.append({
+                    "id": uuid.uuid4(),
+                    "org_id": org_id,
+                    "aid": aid,
+                    "ftype": f"exposed_{det['protocol']}",
+                    "sev": det["severity"],
+                    "title": det["finding_title"],
+                    "desc": (
+                        f"Detected {det['name']} on port {det['port']}. "
+                        f"This service should not be exposed to the internet."
+                    ),
+                    "meta": json.dumps(det.get("metadata", {})),
+                    "now": now,
+                })
 
-            # Store protocol detections on asset
+        if update_params:
             await db.execute(
                 text("UPDATE assets SET protocol_detections = :det WHERE id = :id"),
-                {"det": json.dumps(detections), "id": asset_row.id},
+                update_params,
             )
+        if insert_params:
+            await db.execute(
+                text("""
+                    INSERT INTO findings (id, org_id, asset_id, finding_type, severity,
+                                          title, description, metadata, status, created_at)
+                    VALUES (:id, :org_id, :aid, :ftype, :sev, :title, :desc, :meta, 'open', :now)
+                    ON CONFLICT DO NOTHING
+                """),
+                insert_params,
+            )
+            findings_created = len(insert_params)
 
-            # Create findings for critical/high exposed protocols
-            for det in detections:
-                finding_id = uuid.uuid4()
-                await db.execute(
-                    text("""
-                        INSERT INTO findings (id, org_id, asset_id, finding_type, severity,
-                                              title, description, metadata, status, created_at)
-                        VALUES (:id, :org_id, :aid, :ftype, :sev, :title, :desc, :meta, 'open', :now)
-                        ON CONFLICT DO NOTHING
-                    """),
-                    {
-                        "id": finding_id,
-                        "org_id": org_id,
-                        "aid": asset_row.id,
-                        "ftype": f"exposed_{det['protocol']}",
-                        "sev": det["severity"],
-                        "title": det["finding_title"],
-                        "desc": (
-                            f"Detected {det['name']} on port {det['port']}. "
-                            f"This service should not be exposed to the internet."
-                        ),
-                        "meta": json.dumps(det.get("metadata", {})),
-                        "now": datetime.now(timezone.utc),
-                    },
+        # Per-port service_type stamps for asset_ports (migration 017).
+        # Confidence 90 — protocol_probe sends a real protocol-specific
+        # payload and parses the response, so it's as authoritative as the
+        # banner-grab probes.
+        for aid, port, svc_type, product in port_service_stamps:
+            try:
+                await upsert_asset_port(
+                    db,
+                    aid,
+                    port,
+                    service_type=svc_type,
+                    service_product=product,
+                    service_confidence=90,
                 )
-                findings_created += 1
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "org=%s protocol_probe service_type stamp failed asset=%s port=%s: %s",
+                    org_id, aid, port, exc,
+                )
 
         await db.commit()
 
@@ -594,6 +838,255 @@ async def _do_protocol_probe(sf, org_id: str, target_scope: str | None = None) -
         "assets_with_detections": len(probe_results),
         "total_detections": total_detections,
         "findings_created": findings_created,
+        "service_type_stamps": len(port_service_stamps),
+    }
+
+
+# Map from banner-probe ``protocol`` field to the normalized service_type
+# stamped on asset_ports.service_type by the banner_grab merge loop. These
+# probes are hand-rolled parsers — confidence 90 (db, ssh) or 85 (rdp,
+# printer) so they win over an httpx scheme guess (70) or nmap detection
+# (80) on the same port. Kept alongside the loop instead of in the probe
+# modules to keep them transport-only.
+_BANNER_SERVICE_TYPE: dict[str, tuple[str, int]] = {
+    "ssh": ("ssh", 90),
+    "mysql": ("mysql", 90),
+    "postgresql": ("postgres", 90),
+    "rdp": ("rdp", 85),
+    "ipp": ("ipp", 85),
+    "ajp": ("ajp", 90),
+}
+
+
+def _banner_service_product(banner: dict) -> str | None:
+    """Best-effort product/version string extracted from a banner_finding.
+
+    Mirrors the per-probe ``version`` dict shapes:
+
+    * ssh → ``{"software": "OpenSSH_8.4p1", ...}`` → ``"OpenSSH 8.4p1"``
+    * mysql → ``{"server_version": "8.0.32", ...}`` → ``"MySQL 8.0.32"``
+    * postgresql → ``{"server_version": "14.5", ...}`` → ``"PostgreSQL 14.5"``
+    * ipp → ``{"make_and_model": "HP LaserJet", ...}`` → ``"HP LaserJet"``
+    * rdp → ``{"selected_protocol": "ssl"}`` → ``"RDP (ssl)"``
+    """
+    proto = banner.get("protocol")
+    version = banner.get("version") or {}
+    if proto == "ssh":
+        software = version.get("software") or ""
+        if software:
+            # Convert "OpenSSH_8.4p1" → "OpenSSH 8.4p1" for readability.
+            return software.replace("_", " ", 1) or "OpenSSH"
+        return "OpenSSH"
+    if proto == "mysql":
+        sv = version.get("server_version")
+        return f"MySQL {sv}" if sv else "MySQL"
+    if proto == "postgresql":
+        sv = version.get("server_version")
+        return f"PostgreSQL {sv}" if sv else "PostgreSQL"
+    if proto == "ipp":
+        return version.get("make_and_model") or version.get("firmware")
+    if proto == "rdp":
+        sp = version.get("selected_protocol")
+        return f"RDP ({sp})" if sp else "RDP"
+    if proto == "ajp":
+        # CPing/CPong has no version info in-band — Tomcat is the
+        # dominant AJP server but the protocol is also implemented by
+        # mod_jk standalone, Jetty's AJP connector, etc. Default to a
+        # generic product label.
+        return version.get("product") or "Tomcat-AJP"
+    return None
+
+
+async def _do_banner_grab(sf, org_id: str, target_scope: str | None = None) -> dict:
+    """Phase-2 EASM fingerprinter — banner-depth probes for SSH/RDP/mail/IPP/TR-069/UPnP/DB/AJP.
+
+    Each protocol module returns ``{hostname: [banner_finding, ...]}``. We
+    merge them and write the union to ``assets.easm_data.banner_findings``
+    for the backend's CVE correlator to consume. Banner_findings that carry
+    ``severity`` + ``finding_title`` (e.g. RDP without NLA, SMTP missing
+    STARTTLS, UPnP descriptor exposed) also produce a row in ``findings``.
+
+    Banner-grab is best-effort by design: any module/asset failure returns
+    an empty result rather than raising, so partial coverage still ships.
+    """
+    # `apply_stale=True` so a SoftTimeLimitExceeded retry doesn't redo
+    # the full 6-protocol probe over assets the previous attempt already
+    # touched (the 24h `last_enriched` window covers retry waves; full
+    # nightly rescans pick up new banners on the next day's run).
+    assets = await _get_confirmed_alive_assets(
+        sf, org_id, target_scope=target_scope, apply_stale=True,
+    )
+    if not assets:
+        return {"probed": 0}
+
+    # PR #2: service_type-driven gate. The legacy port set
+    # (BANNER_LEGACY_PORTS) is the OR-fallback so ports not yet
+    # re-fingerprinted since PR #1 still fan out to the right module.
+    # Modules themselves (ssh_banner, db_banner, …) re-apply the same
+    # gate per-port via ``port_service_types`` so they don't blast
+    # SSH probes at every banner-relevant port on a host.
+    candidates = [
+        a for a in assets
+        if asset_has_matching_port(
+            a,
+            service_types=BANNER_SERVICE_TYPES,
+            legacy_ports=BANNER_LEGACY_PORTS,
+        )
+    ]
+    if not candidates:
+        return {"probed": 0, "no_banner_ports": True}
+
+    logger.info(
+        "org=%s banner_grab: probing %d assets across 7 protocol families",
+        org_id, len(candidates),
+    )
+
+    # Run all seven modules in parallel — they target disjoint port
+    # sets so there's no contention on a single asset.
+    module_results = await asyncio.gather(
+        ssh_banner_batch(candidates),
+        rdp_nla_batch(candidates),
+        mail_banner_batch(candidates),
+        printer_banner_batch(candidates),
+        tr069_upnp_batch(candidates),
+        db_banner_batch(candidates),
+        ajp_probe_batch(candidates),
+        return_exceptions=True,
+    )
+
+    # Merge {hostname: [banner_finding, ...]} dicts.
+    per_host: dict[str, list[dict]] = {}
+    for module_result in module_results:
+        if isinstance(module_result, Exception):
+            logger.debug("banner_grab module errored: %s", module_result)
+            continue
+        for hostname, hits in module_result.items():
+            per_host.setdefault(hostname, []).extend(hits)
+
+    if not per_host:
+        return {"probed": len(candidates), "assets_with_banners": 0}
+
+    # Bulk-resolve hostname → asset_id, then write all UPDATEs and
+    # INSERTs via executemany. The previous serial-per-asset loop
+    # produced 468 awaits per stage on tenable.com — enough to push
+    # the scan past the 4h soft_time_limit.
+    hostnames = list(per_host.keys())
+    total_banners = 0
+    findings_created = 0
+    async with sf() as db:
+        rows = await db.execute(
+            text("SELECT id, hostname FROM assets WHERE org_id = :org_id AND hostname = ANY(:hosts)"),
+            {"org_id": org_id, "hosts": hostnames},
+        )
+        host_to_id = {r.hostname: r.id for r in rows.fetchall()}
+
+        update_params: list[dict] = []
+        insert_params: list[dict] = []
+        # Per-port service_type stamps for asset_ports (migration 017).
+        # Done alongside the easm_data write — the banner_findings legacy
+        # path stays untouched. PR #2 will start reading from
+        # asset_ports.service_type for downstream gates.
+        port_service_stamps: list[tuple[uuid.UUID, dict]] = []
+        now = datetime.now(timezone.utc)
+        for hostname, banners in per_host.items():
+            # Count banners regardless of whether the asset row still
+            # exists — `assets_with_banners` reflects what the modules
+            # observed; missing rows just skip the writes.
+            total_banners += len(banners)
+            aid = host_to_id.get(hostname)
+            if aid is None:
+                continue
+            update_params.append({
+                "banners": json.dumps(banners),
+                "id": aid,
+            })
+            for banner in banners:
+                proto = banner.get("protocol")
+                port = banner.get("port")
+                if proto in _BANNER_SERVICE_TYPE and isinstance(port, int):
+                    port_service_stamps.append((aid, banner))
+                if "severity" not in banner or "finding_title" not in banner:
+                    continue
+                insert_params.append({
+                    "id": uuid.uuid4(),
+                    "org_id": org_id,
+                    "aid": aid,
+                    "ftype": f"banner_{banner['protocol']}",
+                    "sev": banner["severity"],
+                    "title": banner["finding_title"],
+                    "desc": (
+                        f"Banner-grab on port {banner['port']} "
+                        f"({banner['protocol']}) flagged: {banner['finding_title']}."
+                    ),
+                    "meta": json.dumps({
+                        "protocol": banner["protocol"],
+                        "port": banner["port"],
+                        "banner": banner.get("banner"),
+                        "version": banner.get("version"),
+                        "metadata": banner.get("metadata"),
+                    }),
+                    "now": now,
+                })
+
+        if update_params:
+            # Merge into easm_data.banner_findings via JSONB || semantics.
+            await db.execute(
+                text("""
+                    UPDATE assets
+                    SET easm_data = (
+                        coalesce(easm_data::jsonb, '{}'::jsonb)
+                        || jsonb_build_object('banner_findings', cast(:banners as jsonb))
+                    )::json
+                    WHERE id = :id
+                """),
+                update_params,
+            )
+        if insert_params:
+            await db.execute(
+                text("""
+                    INSERT INTO findings (
+                        id, org_id, asset_id, finding_type, severity,
+                        title, description, metadata, status, created_at
+                    ) VALUES (
+                        :id, :org_id, :aid, :ftype, :sev, :title, :desc,
+                        cast(:meta as jsonb), 'open', :now
+                    )
+                    ON CONFLICT DO NOTHING
+                """),
+                insert_params,
+            )
+            findings_created = len(insert_params)
+
+        # Per-port service_type stamps for asset_ports (migration 017).
+        # Done after the easm_data + findings writes so a banner-grab
+        # failure on a single port doesn't roll back the whole batch.
+        # ``upsert_asset_port`` enforces higher-confidence-wins semantics
+        # so this is safe to retry on a re-run.
+        for aid, banner in port_service_stamps:
+            svc_type, conf = _BANNER_SERVICE_TYPE[banner["protocol"]]
+            try:
+                await upsert_asset_port(
+                    db,
+                    aid,
+                    int(banner["port"]),
+                    service_type=svc_type,
+                    service_product=_banner_service_product(banner),
+                    service_confidence=conf,
+                )
+            except Exception as exc:  # noqa: BLE001 — never block banner_grab on a single stamp
+                logger.warning(
+                    "org=%s banner_grab service_type stamp failed asset=%s port=%s: %s",
+                    org_id, aid, banner.get("port"), exc,
+                )
+
+        await db.commit()
+
+    return {
+        "probed": len(candidates),
+        "assets_with_banners": len(per_host),
+        "total_banners": total_banners,
+        "findings_created": findings_created,
+        "service_type_stamps": len(port_service_stamps),
     }
 
 
@@ -653,6 +1146,96 @@ async def _do_classify_assets(sf, org_id: str, target_scope: str | None = None) 
         await db.commit()
 
     return {"total_assets": len(assets), "classified": classified}
+
+
+async def _do_attribution(sf, org_id: str, target_scope: str | None = None) -> dict:
+    """Attribute cloud-hosted assets to their actual tenant owner.
+
+    Only runs against assets where ``cloud_provider IS NOT NULL`` — for
+    non-cloud IPs the asset's own DNS already identifies the owner, so
+    attribution adds no signal. Pulls per-port TLS certs and a reverse-DNS
+    lookup, then delegates to ``app.ingest.attribution.attribute_asset``.
+    The result lands in ``assets.attribution`` (JSONB).
+    """
+    import socket
+
+    scope_sql, scope_params = build_target_scope(target_scope)
+    extra = compose_where(scope_sql)
+    params = {"org_id": org_id, **scope_params}
+
+    async with sf() as db:
+        # Per-asset cert SAN/CN aggregation across all asset_ports rows.
+        result = await db.execute(
+            text(f"""
+                SELECT a.id, a.hostname, host(a.ip) as ip, a.cloud_provider,
+                       coalesce(
+                           jsonb_agg(ap.tls_cert) FILTER (WHERE ap.tls_cert IS NOT NULL),
+                           '[]'::jsonb
+                       ) as tls_certs
+                FROM assets a
+                LEFT JOIN asset_ports ap ON ap.asset_id = a.id
+                WHERE a.org_id = :org_id
+                  AND a.cloud_provider IS NOT NULL
+                  {extra}
+                GROUP BY a.id
+            """),
+            params,
+        )
+        rows = result.fetchall()
+
+        domain_rows = await db.execute(
+            text("SELECT domain FROM target_domains WHERE org_id = :org_id AND active = true"),
+            {"org_id": org_id},
+        )
+        target_domains = [r.domain for r in domain_rows.fetchall()]
+
+    if not rows:
+        return {"total_assets": 0, "attributed": 0}
+
+    async def _rdns(ip: str | None) -> str | None:
+        if not ip:
+            return None
+        try:
+            host, _aliases, _addrs = await asyncio.wait_for(
+                asyncio.to_thread(socket.gethostbyaddr, ip),
+                timeout=2.0,
+            )
+            return host
+        except (socket.herror, socket.gaierror, asyncio.TimeoutError, OSError):
+            return None
+
+    # Bound concurrency on rDNS — each lookup is cheap but we don't want
+    # 10k parallel DNS queries to hammer the resolver.
+    sem = asyncio.Semaphore(20)
+
+    async def _attribute_one(row) -> tuple[uuid.UUID, dict]:
+        async with sem:
+            rdns = await _rdns(str(row.ip) if row.ip else None)
+        certs = row.tls_certs or []
+        attribution = attribute_asset(
+            hostname=row.hostname,
+            cloud_provider=row.cloud_provider,
+            tls_certs=certs,
+            target_domains=target_domains,
+            rdns=rdns,
+        )
+        return row.id, attribution
+
+    tasks = [_attribute_one(r) for r in rows]
+    pairs = await asyncio.gather(*tasks)
+
+    attributed = 0
+    async with sf() as db:
+        for asset_id, attribution in pairs:
+            await db.execute(
+                text("UPDATE assets SET attribution = cast(:a as jsonb) WHERE id = :id"),
+                {"a": json.dumps(attribution), "id": asset_id},
+            )
+            if attribution.get("best_guess"):
+                attributed += 1
+        await db.commit()
+
+    return {"total_assets": len(rows), "attributed": attributed}
 
 
 async def _do_ai_exposure(sf, org_id: str, target_scope: str | None = None) -> dict:
@@ -762,7 +1345,6 @@ async def _do_katana(sf, org_id: str, target_scope: str | None = None) -> dict:
         logger.info("org=%s katana: no fresh assets to crawl", org_id)
         return {"crawled": 0, "skipped_fresh": True}
 
-    HTTP_PORTS = {80, 443, 8080, 8443}
     targets: list[str] = []
     target_asset_map: dict[str, uuid.UUID] = {}
 
@@ -771,16 +1353,25 @@ async def _do_katana(sf, org_id: str, target_scope: str | None = None) -> dict:
         if asset.get("cdn_provider") or "cdn" in (asset.get("tags") or []):
             continue
 
+        # PR #2: service_type-driven gate with legacy port fallback.
+        # ``443 in ports`` HTTPS-preference check is preserved as-is —
+        # the canonical TLS port is still a reliable signal even when
+        # service_type stamping eventually expands to alt ports.
+        if not asset_has_matching_port(
+            asset,
+            service_types=HTTP_SERVICE_TYPES,
+            legacy_ports=HTTP_LEGACY_PORTS,
+        ):
+            continue
         ports = set(asset.get("open_ports") or [])
-        if ports & HTTP_PORTS:
-            hostname = asset["hostname"]
-            # Prefer HTTPS if 443 is open
-            if 443 in ports:
-                url = f"https://{hostname}"
-            else:
-                url = f"http://{hostname}"
-            targets.append(url)
-            target_asset_map[hostname] = asset["id"]
+        hostname = asset["hostname"]
+        # Prefer HTTPS if 443 is open
+        if 443 in ports:
+            url = f"https://{hostname}"
+        else:
+            url = f"http://{hostname}"
+        targets.append(url)
+        target_asset_map[hostname] = asset["id"]
 
     if not targets:
         return {"crawled": 0}
@@ -855,6 +1446,18 @@ async def _do_katana(sf, org_id: str, target_scope: str | None = None) -> dict:
 
 async def _do_kiterunner(sf, org_id: str, target_scope: str | None = None) -> dict:
     """Run kiterunner API endpoint brute-forcing on confirmed_alive HTTP assets (skip CDN)."""
+    import shutil
+
+    if shutil.which("kr") is None:
+        logger.warning("org=%s kiterunner: 'kr' binary missing, skipping stage", org_id)
+        return {"bruted": 0, "skipped_missing_binary": True}
+    if not os.path.isfile(settings.kiterunner_wordlist):
+        logger.warning(
+            "org=%s kiterunner: wordlist %s missing, skipping stage",
+            org_id, settings.kiterunner_wordlist,
+        )
+        return {"bruted": 0, "skipped_missing_wordlist": True}
+
     assets = await _get_confirmed_alive_assets(
         sf, org_id, target_scope=target_scope, apply_stale=True,
     )
@@ -862,19 +1465,24 @@ async def _do_kiterunner(sf, org_id: str, target_scope: str | None = None) -> di
         logger.info("org=%s kiterunner: no fresh assets", org_id)
         return {"bruted": 0, "skipped_fresh": True}
 
-    HTTP_PORTS = {80, 443, 8080, 8443}
     targets: list[str] = []
     target_asset_map: dict[str, uuid.UUID] = {}
 
     for asset in assets:
         if asset.get("cdn_provider") or "cdn" in (asset.get("tags") or []):
             continue
+        # PR #2: service_type-driven gate with legacy port fallback.
+        if not asset_has_matching_port(
+            asset,
+            service_types=HTTP_SERVICE_TYPES,
+            legacy_ports=HTTP_LEGACY_PORTS,
+        ):
+            continue
         ports = set(asset.get("open_ports") or [])
-        if ports & HTTP_PORTS:
-            hostname = asset["hostname"]
-            url = f"https://{hostname}" if 443 in ports else f"http://{hostname}"
-            targets.append(url)
-            target_asset_map[hostname] = asset["id"]
+        hostname = asset["hostname"]
+        url = f"https://{hostname}" if 443 in ports else f"http://{hostname}"
+        targets.append(url)
+        target_asset_map[hostname] = asset["id"]
 
     if not targets:
         return {"bruted": 0}
@@ -1190,11 +1798,14 @@ async def _do_openapi_discovery(sf, org_id: str, target_scope: str | None = None
     if not assets:
         return {"specs_found": 0, "skipped_fresh": True}
 
-    HTTP_PORTS = {80, 443, 8080, 8443}
     targets: list[dict] = []
     for asset in assets:
-        ports = set(asset.get("open_ports") or [])
-        if not (ports & HTTP_PORTS):
+        # PR #2: service_type-driven gate with legacy port fallback.
+        if not asset_has_matching_port(
+            asset,
+            service_types=HTTP_SERVICE_TYPES,
+            legacy_ports=HTTP_LEGACY_PORTS,
+        ):
             continue
         if asset.get("cdn_provider"):
             # Probing a CDN's well-known paths returns the CDN's responses,
@@ -1203,6 +1814,7 @@ async def _do_openapi_discovery(sf, org_id: str, target_scope: str | None = None
         hostname = asset.get("hostname")
         if not hostname:
             continue
+        ports = set(asset.get("open_ports") or [])
         scheme = "https" if 443 in ports or 8443 in ports else "http"
         targets.append({
             "asset_id": asset["id"],
@@ -1241,17 +1853,21 @@ async def _do_graphql_introspection(sf, org_id: str, target_scope: str | None = 
     if not assets:
         return {"introspection_hits": 0, "skipped_fresh": True}
 
-    HTTP_PORTS = {80, 443, 8080, 8443}
     targets: list[dict] = []
     for asset in assets:
-        ports = set(asset.get("open_ports") or [])
-        if not (ports & HTTP_PORTS):
+        # PR #2: service_type-driven gate with legacy port fallback.
+        if not asset_has_matching_port(
+            asset,
+            service_types=HTTP_SERVICE_TYPES,
+            legacy_ports=HTTP_LEGACY_PORTS,
+        ):
             continue
         if asset.get("cdn_provider"):
             continue
         hostname = asset.get("hostname")
         if not hostname:
             continue
+        ports = set(asset.get("open_ports") or [])
         scheme = "https" if 443 in ports or 8443 in ports else "http"
         targets.append({
             "asset_id": asset["id"],
@@ -1309,11 +1925,20 @@ def run_enrichment_chain(self, org_id: str, scan_run_id: str | None = None) -> d
                     ("httpx", _do_httpx),
                     ("cdncheck", _do_cdncheck),
                 ],
+                # Deep TLS audit runs after tlsx/httpx because it reads
+                # asset_ports.tls_cert to pick which ports to audit. In its
+                # own group so the sslyze wall time doesn't bottleneck the
+                # fast fingerprint stages below. Disabled by default — see
+                # settings.tls_deep_audit_enabled.
+                [
+                    ("tls_deep_audit", _do_tls_deep_audit),
+                ],
                 [
                     ("js_fingerprint", _do_js_fingerprint),
                     ("favicon_fingerprint", _do_favicon_fingerprint),
                     ("endpoint_probe", _do_endpoint_probe),
                     ("protocol_probe", _do_protocol_probe),
+                    ("banner_grab", _do_banner_grab),
                     ("katana", _do_katana),
                     ("kiterunner", _do_kiterunner),
                 ],
@@ -1331,6 +1956,11 @@ def run_enrichment_chain(self, org_id: str, scan_run_id: str | None = None) -> d
                 ],
                 [
                     ("classify_assets", _do_classify_assets),
+                    # Tenant attribution shares classify_assets's read-then-
+                    # update shape and writes a disjoint column (attribution
+                    # vs asset_type), so it can run alongside without lock
+                    # contention.
+                    ("attribution", _do_attribution),
                 ],
                 [
                     # ai_exposure depends on asset_type set by classify_assets,
@@ -1517,8 +2147,33 @@ def run_enrichment_chain(self, org_id: str, scan_run_id: str | None = None) -> d
 async def _mark_failed(scan_run_id: str, error: str):
     sf = get_task_session()
     async with sf() as db:
-        await db.execute(
-            text("UPDATE scan_runs SET status = 'failed', finished_at = :now, error = :err WHERE id = :id"),
-            {"id": scan_run_id, "now": datetime.now(timezone.utc), "err": error},
-        )
+        # Best-effort partial-progress count: enrichment runs after
+        # discovery has already populated assets, so a mid-pipeline
+        # timeout almost always has real assets to report.
+        partial = None
+        try:
+            partial = await count_assets_in_scan_scope(db, scan_run_id)
+        except Exception:
+            logger.exception("scan_run=%s partial asset count failed", scan_run_id)
+
+        if partial is None:
+            await db.execute(
+                text("UPDATE scan_runs SET status = 'failed', finished_at = :now, error = :err WHERE id = :id"),
+                {"id": scan_run_id, "now": datetime.now(timezone.utc), "err": error},
+            )
+        else:
+            await db.execute(
+                text("""
+                    UPDATE scan_runs
+                    SET status = 'failed', finished_at = :now, error = :err,
+                        assets_found = :found
+                    WHERE id = :id
+                """),
+                {
+                    "id": scan_run_id,
+                    "now": datetime.now(timezone.utc),
+                    "err": error,
+                    "found": partial,
+                },
+            )
         await db.commit()

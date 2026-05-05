@@ -1,0 +1,38 @@
+{
+  "id": "gcp_vertex_models",
+  "name": "GCP Vertex AI — Models",
+  "description": "List registered Vertex AI models in a project + location. Used by the managed_ai mission for context — which custom and pre-trained models are registered in this project.",
+  "category": "AI Governance",
+  "logo": "/logos/vendors/gcp.svg",
+  "direction": "pull",
+  "entity": "audit_only",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://{{params.location}}-aiplatform.googleapis.com",
+    "method": "GET",
+    "path": "/v1/projects/{{params.project_id}}/locations/{{params.location}}/models",
+    "headers": {"Accept": "application/json"},
+    "auth_strategy": "gcp_service_account",
+    "gcp_scopes": [
+      "https://www.googleapis.com/auth/cloud-platform.read-only"
+    ],
+    "pagination": {
+      "strategy": "cursor",
+      "cursor_field": "nextPageToken",
+      "cursor_param": "pageToken",
+      "page_size": 100,
+      "page_size_param": "pageSize"
+    }
+  },
+  "records_path": "models",
+  "credential_acquisition": {
+    "pattern": "shared_credential",
+    "shared_with": "gcp_iam_service_accounts"
+  },
+  "default_field_map": [],
+  "dedup_key": ["source_system", "source_id"],
+  "params_schema": {
+    "project_id": {"type": "string", "required": true},
+    "location": {"type": "string", "required": true, "default": "us-central1"}
+  }
+}

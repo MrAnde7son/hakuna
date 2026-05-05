@@ -12,6 +12,19 @@ httptools==0.6.1
 python-multipart==0.0.9
 python-libnmap==0.7.3
 aiohttp>=3.9.0
+# Radix-tree CIDR matching for cloud-provider attribution
+# (app.ingest.cloud_ranges). At 10k+ assets per scan, linear scan of
+# the ~7000 AWS + 500 GCP + 100 Cloudflare prefixes dominates wall-time.
+pytricia>=1.0.2
+# Public-suffix-aware registrable-domain extraction for tenant
+# attribution (app.ingest.attribution). Used to compare TLS SAN entries
+# against the org's target_domains at the right granularity (so
+# "api.acme.com" attributes to acme.com, not api.acme.com).
+tldextract>=5.1.0
 playwright>=1.40.0
 packaging>=23.0
 pyyaml>=6.0
+# TLS deep audit (ingest/tls_deep_audit.py): cipher enumeration, chain
+# validation, OCSP stapling, plus DNS CAA cross-check against cert issuer.
+sslyze>=6.0
+dnspython>=2.6

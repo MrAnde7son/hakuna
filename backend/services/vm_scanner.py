@@ -4,8 +4,10 @@ and manages Scan records in the main database.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
+import uuid
 from datetime import datetime
 from typing import List, Optional
 from urllib.parse import urlparse
@@ -17,6 +19,7 @@ from sqlalchemy import cast, or_, String
 from sqlalchemy.orm import Session
 
 from models.models import Asset, Finding, Scan, Organization
+from services import scan_planner
 from services.asset_observations import record_observation, record_finding_observation
 
 logger = logging.getLogger(__name__)
@@ -36,6 +39,50 @@ VM_SCAN_STALE_THRESHOLD_SECONDS = 3 * 3600
 # scans start producing STARTED/SUCCESS statuses within a few minutes even for
 # slow targets, so 20 min is well outside the normal ramp-up window.
 VM_SCAN_PENDING_ORPHAN_SECONDS = 20 * 60
+
+
+def _emit_vm_scan_failed_notification(
+    db: Session,
+    scan: Scan,
+    error_msg: str,
+    phase: str,
+) -> None:
+    """Fire-and-forget scan_failed notification for a VM scan.
+
+    Mirrors ``services.easm._emit_easm_scan_failed_notification`` so VM scan
+    failures surface in the user-facing notifications panel — without this,
+    timeouts and broker-loss orphans only flipped ``raw_metadata.status`` to
+    "failed" and the user had no signal beyond the badge in the scan list.
+
+    ``phase`` labels which detector tripped: "stale" / "orphan" (refresh path)
+    or "reaper_stale" / "reaper_orphan" (background sweeper).
+    """
+    try:
+        from services.notifications import create_notification
+        meta = scan.raw_metadata or {}
+        targets = meta.get("targets") or []
+        target_label = targets[0] if len(targets) == 1 else (
+            f"{len(targets)} targets" if targets else f"scan #{scan.id}"
+        )
+        scan_label = scan.scan_name or f"VM Scan — {target_label}"
+        create_notification(
+            db, scan.org_id, "scan_failed",
+            f"VM scan '{scan_label}' failed",
+            body=(error_msg or "")[:200],
+            link="/settings?tab=upload",
+            entity_type="scan", entity_id=scan.id,
+            metadata={
+                "scan_name": scan_label,
+                "targets": targets[:10],
+                "source_type": "vm_scanner",
+                "phase": phase,
+                "error": (error_msg or "")[:500],
+            },
+        )
+    except Exception:
+        logger.exception(
+            f"Failed to emit VM scan_failed notification for scan_id={scan.id} (non-fatal)"
+        )
 
 
 def _has_observed_progress(job_statuses: dict) -> bool:
@@ -281,8 +328,11 @@ async def start_vm_scan(
         "job_ids": [],
         "completed_jobs": 0,
         "total_jobs": len(targets),
+        "completed_targets": 0,
+        "total_targets": len(targets),
         "findings_emitted": 0,
         "imported_job_ids": [],
+        "current_run_id": uuid.uuid4().hex,
     }
     # Store only id references — NEVER the decrypted values / session blob.
     if credential_id:
@@ -328,6 +378,55 @@ async def start_vm_scan(
             row.id: {"plan": row.scan_plan, "version": row.scan_plan_version or 0}
             for row in plan_rows if row.scan_plan
         }
+
+        # Lazily compute plans for targets whose asset has none — without
+        # a plan, nuclei runs the full ~10k-template store per target and
+        # blows past SCAN_TIMEOUT_SECONDS. Per-asset failures fall back to
+        # the legacy TemplateRouter path so a flaky planner can't block a
+        # whole dispatch. The whole batch is bounded so a slow LLM doesn't
+        # hang the scan request.
+        missing_plan_aids = [
+            aid for aid in set(target_asset_map.values()) if aid not in plans_by_aid
+        ]
+        if missing_plan_aids:
+            sem = asyncio.Semaphore(5)
+            async def _compute_one(aid: int):
+                async with sem:
+                    try:
+                        plan = await scan_planner.compute_and_persist_scan_plan(
+                            db, org.id, aid, force=False,
+                        )
+                        return aid, plan
+                    except Exception:
+                        logger.exception(
+                            "scan_plan compute failed for asset %s; using legacy path", aid,
+                        )
+                        return aid, None
+            try:
+                computed = await asyncio.wait_for(
+                    asyncio.gather(*[_compute_one(aid) for aid in missing_plan_aids]),
+                    timeout=120,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "scan_plan compute timed out for %d asset(s); dispatching with partial plans",
+                    len(missing_plan_aids),
+                )
+                computed = []
+            if computed:
+                fresh_versions = dict(
+                    db.query(Asset.id, Asset.scan_plan_version)
+                    .filter(Asset.id.in_([aid for aid, plan in computed if plan is not None]))
+                    .all()
+                )
+                for aid, plan in computed:
+                    if plan is None:
+                        continue
+                    plans_by_aid[aid] = {
+                        "plan": plan.to_dict(),
+                        "version": fresh_versions.get(aid) or 1,
+                    }
+
         for tgt, aid in target_asset_map.items():
             if aid in plans_by_aid:
                 scan_plans[tgt] = plans_by_aid[aid]
@@ -414,17 +513,23 @@ async def rescan_vm_scan(
 
     now = datetime.utcnow()
 
-    # Snapshot previous run before wiping state
+    # Snapshot previous run before rotating state. We keep the prior run's
+    # findings/assets in place (tagged with previous_run_id) until the new run
+    # finalizes successfully — see _drop_superseded_run in post_ingest.
+    previous_run_id = meta.get("current_run_id")
     previous_run = {
         "status": meta.get("status", "unknown"),
         "completed_jobs": meta.get("completed_jobs", 0),
         "total_jobs": meta.get("total_jobs", 0),
+        "completed_targets": meta.get("completed_targets", 0),
+        "total_targets": meta.get("total_targets", len(meta.get("targets") or [])),
         "findings_emitted": meta.get("findings_emitted", 0),
         "job_statuses": meta.get("job_statuses", {}),
         "scan_date": scan.scan_date,
         "targets": meta.get("targets", []),
         "credential_id": meta.get("credential_id"),
         "auth_profile_id": meta.get("auth_profile_id"),
+        "run_id": previous_run_id,
     }
 
     # Resolve auth before wiping state — a bad profile/credential should fail
@@ -435,13 +540,11 @@ async def rescan_vm_scan(
     elif credential_id:
         credentials_payload = await _resolve_scan_credentials(db, scan.org_id, credential_id)
 
-    # Delete findings and assets from the previous run that belong to this scan
-    finding_ids = [r[0] for r in db.query(Finding.id).filter(Finding.scan_id == scan.id).all()]
-    if finding_ids:
-        db.query(Finding).filter(Finding.id.in_(finding_ids)).delete(synchronize_session=False)
-    db.query(Asset).filter(Asset.scan_id == scan.id).delete(synchronize_session=False)
-
-    # Reset scan state, preserving previous_run history + updated targets/auth
+    # Reset scan state, preserving previous_run history + updated targets/auth.
+    # Old run's Finding/Asset rows stay in the DB until finalize — a failed
+    # rescan then rolls back via _rollback_failed_run and the prior run is
+    # restored intact.
+    new_run_id = uuid.uuid4().hex
     new_meta = {
         **meta,
         "targets": targets,
@@ -449,10 +552,14 @@ async def rescan_vm_scan(
         "job_ids": [],
         "completed_jobs": 0,
         "total_jobs": len(targets),
+        "completed_targets": 0,
+        "total_targets": len(targets),
         "findings_emitted": 0,
         "imported_job_ids": [],
         "job_statuses": {},
         "previous_run": previous_run,
+        "previous_run_id": previous_run_id,
+        "current_run_id": new_run_id,
     }
     # Update id references (or drop them if cleared)
     if credential_id:
@@ -500,6 +607,7 @@ async def rescan_vm_scan(
             "total_jobs": len(result["job_ids"]),
         }
     else:
+        _rollback_failed_run(db, scan)
         scan.raw_metadata = {**scan.raw_metadata, "status": "failed"}
 
     db.commit()
@@ -539,8 +647,11 @@ async def refresh_vm_scan(db: Session, scan_id: int) -> Optional[dict]:
                 scan_id, VM_SCAN_STALE_THRESHOLD_SECONDS // 3600,
             )
             _revoke_vm_jobs_sync(job_ids)
-            stale_meta = {**meta, "status": "failed", "error": "Scan timed out — job results may have expired"}
+            _rollback_failed_run(db, scan)
+            rolled_meta = dict(scan.raw_metadata or {})
+            stale_meta = {**rolled_meta, "status": "failed", "error": "Scan timed out — job results may have expired"}
             scan.raw_metadata = stale_meta
+            _emit_vm_scan_failed_notification(db, scan, stale_meta["error"], "stale")
             db.commit()
             return stale_meta
     except Exception:
@@ -634,10 +745,29 @@ async def refresh_vm_scan(db: Session, scan_id: int) -> Optional[dict]:
                 "target": target or job_statuses.get(job_id, {}).get("target", ""),
             }
 
+    # Target-level progress: a target is complete only when *every* job it
+    # fanned out into (nuclei + content discovery + agent scans) is terminal.
+    # Users submit targets, so we show targets — the underlying job count is
+    # a scanner implementation detail.
+    terminal_states = {"SUCCESS", "FAILURE"}
+    jobs_by_target: dict[str, list[str]] = {}
+    for info in job_statuses.values():
+        tgt = (info or {}).get("target") or ""
+        if not tgt:
+            continue
+        jobs_by_target.setdefault(tgt, []).append((info or {}).get("status") or "")
+    completed_targets = sum(
+        1 for statuses in jobs_by_target.values()
+        if statuses and all(s in terminal_states for s in statuses)
+    )
+    total_targets = meta.get("total_targets") or len(meta.get("targets") or [])
+
     # Update metadata
     new_meta = {
         **meta,
         "completed_jobs": completed,
+        "completed_targets": completed_targets,
+        "total_targets": total_targets,
         "findings_emitted": total_findings,
         "imported_job_ids": list(imported_job_ids),
         "job_statuses": job_statuses,
@@ -664,14 +794,18 @@ async def refresh_vm_scan(db: Session, scan_id: int) -> Optional[dict]:
                 scan_id, len(job_ids), age_seconds,
             )
             _revoke_vm_jobs_sync(job_ids)
-            new_meta["status"] = "failed"
-            new_meta["error"] = (
+            scan.raw_metadata = new_meta
+            _rollback_failed_run(db, scan)
+            orphan_meta = dict(scan.raw_metadata or {})
+            orphan_meta["status"] = "failed"
+            orphan_meta["error"] = (
                 "Orphaned — scanner broker lost the job queue (likely restart). "
                 "Rescan to dispatch fresh jobs."
             )
-            scan.raw_metadata = new_meta
+            scan.raw_metadata = orphan_meta
+            _emit_vm_scan_failed_notification(db, scan, orphan_meta["error"], "orphan")
             db.commit()
-            return new_meta
+            return orphan_meta
 
     if all_done:
         new_meta["status"] = "completed" if not any_failed else "completed_with_errors"
@@ -703,8 +837,13 @@ async def refresh_vm_scan(db: Session, scan_id: int) -> Optional[dict]:
 
     # Run full post-ingest pipeline when scan completes
     if all_done:
-        from services.post_ingest import finalize_scan
-        finalize_scan(db, scan_id=scan.id, org_id=scan.org_id)
+        try:
+            from services.post_ingest import finalize_scan
+            finalize_scan(db, scan_id=scan.id, org_id=scan.org_id)
+            db.commit()
+        except Exception:
+            logger.exception("finalize_scan failed for scan %d", scan.id)
+            db.rollback()
 
     return new_meta
 
@@ -730,8 +869,8 @@ def reap_stale_vm_scans(db: Session | None = None) -> dict:
     checked = 0
     try:
         # All VM scans that may still be running. The set is small (running
-        # scans, per org), so filter status in Python to stay dialect-agnostic
-        # across SQLite/Postgres JSON access.
+        # scans, per org), so filter status in Python rather than reaching
+        # into the JSON column in SQL.
         candidates = (
             db.query(Scan)
             .filter(Scan.source_type == "vm_scanner")
@@ -760,11 +899,15 @@ def reap_stale_vm_scans(db: Session | None = None) -> dict:
                 # Revoke before mutating metadata so the tasks stop consuming
                 # queue time even if the commit below fails.
                 _revoke_vm_jobs_sync(meta.get("job_ids") or [])
+                _rollback_failed_run(db, scan)
+                rolled = dict(scan.raw_metadata or {})
+                err = "Scan timed out — job results may have expired (reaped by background job)"
                 scan.raw_metadata = {
-                    **meta,
+                    **rolled,
                     "status": "failed",
-                    "error": "Scan timed out — job results may have expired (reaped by background job)",
+                    "error": err,
                 }
+                _emit_vm_scan_failed_notification(db, scan, err, "reaper_stale")
                 reaped += 1
                 continue
 
@@ -784,14 +927,18 @@ def reap_stale_vm_scans(db: Session | None = None) -> dict:
                     scan.id, scan.org_id, age_seconds,
                 )
                 _revoke_vm_jobs_sync(meta.get("job_ids") or [])
+                _rollback_failed_run(db, scan)
+                rolled = dict(scan.raw_metadata or {})
+                err = (
+                    "Orphaned — scanner broker lost the job queue (likely restart). "
+                    "Rescan to dispatch fresh jobs."
+                )
                 scan.raw_metadata = {
-                    **meta,
+                    **rolled,
                     "status": "failed",
-                    "error": (
-                        "Orphaned — scanner broker lost the job queue (likely restart). "
-                        "Rescan to dispatch fresh jobs."
-                    ),
+                    "error": err,
                 }
+                _emit_vm_scan_failed_notification(db, scan, err, "reaper_orphan")
                 reaped += 1
                 continue
 
@@ -807,7 +954,427 @@ def reap_stale_vm_scans(db: Session | None = None) -> dict:
     return {"checked": checked, "reaped": reaped}
 
 
+def process_pending_easm_vm_triggers(db: Session | None = None) -> dict:
+    """Sweep EASM scans flagged for follow-up VM scanning and dispatch them.
+
+    Replaces the previous in-process `loop.create_task()` handoff in
+    `post_ingest._auto_vm_scan_for_easm`. That fire-and-forget task died with
+    the API container on every Cloud Run liveness-probe shutdown or rolling
+    deploy, leaving EASM scans without their VM follow-up. Now the intent is
+    persisted on the EASM scan's `raw_metadata.needs_auto_vm_scan = True` and
+    this sweeper drains it on a 60s interval — surviving any number of
+    container restarts.
+
+    Idempotency comes for free from `trigger_vm_scan_for_easm_assets`, which
+    already short-circuits when a VM scan with `easm_scan_id` is on file. The
+    flag is cleared in either case (success, no-op, or filtered-out) so we
+    don't loop forever on a scan that genuinely has no VM-scannable assets.
+
+    Returns ``{"swept": n, "dispatched": m, "skipped": k, "errors": e}``.
+    """
+    import asyncio
+
+    from core.database import SessionLocal
+
+    own_session = db is None
+    if own_session:
+        db = SessionLocal()
+
+    swept = 0
+    dispatched = 0
+    skipped = 0
+    errors = 0
+    try:
+        # Cast-to-string match keeps this portable across SQLite (tests) and
+        # Postgres (prod) — JSON ->> operator support diverges.
+        candidates = (
+            db.query(Scan)
+            .filter(
+                Scan.source_type == "easm",
+                cast(Scan.raw_metadata, String).contains('"needs_auto_vm_scan": true'),
+            )
+            .all()
+        )
+        for scan in candidates:
+            swept += 1
+            md = dict(scan.raw_metadata or {})
+            if not md.get("needs_auto_vm_scan"):
+                # Lost the race with another sweeper / the JSON cast matched a
+                # substring on a key we don't care about. Skip silently.
+                continue
+
+            domain = md.get("domain")
+            org = db.query(Organization).filter(Organization.id == scan.org_id).first()
+            if not org or not domain:
+                logger.warning(
+                    "easm vm trigger sweep: scan %s missing org/domain — clearing flag",
+                    scan.id,
+                )
+                md.pop("needs_auto_vm_scan", None)
+                scan.raw_metadata = md
+                db.commit()
+                skipped += 1
+                continue
+
+            try:
+                result = asyncio.run(
+                    trigger_vm_scan_for_easm_assets(db, org, scan.id, domain)
+                )
+            except Exception:
+                logger.exception(
+                    "easm vm trigger sweep: dispatch failed for scan %s",
+                    scan.id,
+                )
+                errors += 1
+                # Leave the flag set — next sweep will retry. Most failures
+                # here are transient (vm-api 5xx, network blip).
+                continue
+
+            # Whether result is a dict (dispatched / already triggered) or
+            # None (no scannable assets), clear the flag — re-sweeping won't
+            # change the outcome until the EASM scan re-runs and refreshes
+            # `easm_data` on its assets.
+            md.pop("needs_auto_vm_scan", None)
+            scan.raw_metadata = md
+            db.commit()
+            if result is not None:
+                dispatched += 1
+            else:
+                skipped += 1
+    except Exception:
+        logger.exception("easm vm trigger sweep failed")
+    finally:
+        if own_session:
+            db.close()
+
+    return {"swept": swept, "dispatched": dispatched, "skipped": skipped, "errors": errors}
+
+
+def poll_running_vm_scans(db: Session | None = None) -> dict:
+    """Refresh every in-flight VM scan so results land without a user polling.
+
+    ``refresh_vm_scan`` is what imports findings and flips scans to
+    ``completed``/``failed``; until now it only ran on user-driven GETs and
+    the 5-min reaper (which just ages scans out at 3h). That left a window
+    where jobs finished on the scanner but their results expired in Redis
+    before anyone asked — user sees "Failed" for a scan that actually
+    succeeded. This poller closes the gap.
+
+    Returns ``{"polled": n, "completed": m, "failed": k}``.
+    """
+    import asyncio
+
+    from core.database import SessionLocal
+
+    own_session = db is None
+    if own_session:
+        db = SessionLocal()
+
+    polled = 0
+    completed = 0
+    failed = 0
+    try:
+        candidates = (
+            db.query(Scan)
+            .filter(Scan.source_type == "vm_scanner")
+            .all()
+        )
+        for scan in candidates:
+            meta = scan.raw_metadata or {}
+            if meta.get("status") != "running":
+                continue
+            polled += 1
+            try:
+                # Each refresh owns its own async context; failures on one
+                # scan shouldn't stop the sweep.
+                result = asyncio.run(refresh_vm_scan(db, scan.id))
+            except Exception:
+                logger.exception("poll_running_vm_scans: refresh failed for scan %d", scan.id)
+                continue
+            status = (result or {}).get("status")
+            if status == "completed":
+                completed += 1
+            elif status == "failed":
+                failed += 1
+    except Exception:
+        logger.exception("poll_running_vm_scans sweep failed")
+    finally:
+        if own_session:
+            db.close()
+
+    return {"polled": polled, "completed": completed, "failed": failed}
+
+
+def current_run_scope(scan: Scan, column):
+    """Return a SQLAlchemy filter clause that scopes rows to the scan's
+    current run_id (NULL-safe so legacy rows and non-VM scans aren't dropped).
+
+    Use this when querying Findings/Assets for a scan whose rescan may have
+    an old run and a new run temporarily coexisting — e.g. in-flight rescan
+    counts and listings. Pass ``Finding.scan_run_id`` or ``Asset.scan_run_id``
+    as the ``column``.
+    """
+    meta = (scan.raw_metadata or {}) if scan is not None else {}
+    current_run_id = meta.get("current_run_id")
+    if not current_run_id:
+        return True  # no run scoping available — match everything
+    return or_(column.is_(None), column == current_run_id)
+
+
+def _rollback_failed_run(db: Session, scan: Scan) -> dict:
+    """Undo the in-flight run when a VM scan fails or is reaped.
+
+    Deletes Finding/Asset rows stamped with the current run_id and restores
+    the metadata pointer to the previous run_id so the UI keeps showing the
+    last successful scan. For first-ever scans (no previous_run_id) this
+    just empties the scan — the rollback is idempotent.
+
+    Mutates scan.raw_metadata in place; caller is responsible for the commit.
+    """
+    meta = dict(scan.raw_metadata or {})
+    current_run_id = meta.get("current_run_id")
+    previous_run_id = meta.get("previous_run_id")
+    if not current_run_id:
+        return {"findings_deleted": 0, "assets_deleted": 0}
+
+    findings_deleted = db.query(Finding).filter(
+        Finding.scan_id == scan.id,
+        Finding.scan_run_id == current_run_id,
+    ).delete(synchronize_session=False)
+
+    # An asset tagged with current_run_id isn't necessarily *new* to this run —
+    # imports re-stamp pre-existing assets with the in-flight run_id so mid-scan
+    # query scoping works. If the prior run's findings still reference it, the
+    # asset pre-existed and must be preserved (revert its stamp); otherwise it's
+    # safe to delete. Hard-deleting an asset with surviving findings tripped a
+    # FK integrity error on stop/rollback.
+    assets_deleted = 0
+    if previous_run_id:
+        db.query(Asset).filter(
+            Asset.scan_id == scan.id,
+            Asset.scan_run_id == current_run_id,
+            Asset.id.in_(
+                db.query(Finding.asset_id).filter(
+                    Finding.scan_id == scan.id,
+                    Finding.scan_run_id == previous_run_id,
+                )
+            ),
+        ).update({Asset.scan_run_id: previous_run_id}, synchronize_session=False)
+
+        assets_deleted = db.query(Asset).filter(
+            Asset.scan_id == scan.id,
+            Asset.scan_run_id == current_run_id,
+        ).delete(synchronize_session=False)
+    else:
+        assets_deleted = db.query(Asset).filter(
+            Asset.scan_id == scan.id,
+            Asset.scan_run_id == current_run_id,
+        ).delete(synchronize_session=False)
+
+    # Restore the previous run_id so mid-scan query scoping falls back to
+    # the preserved prior run. If there was no previous run, clear the field.
+    if previous_run_id:
+        meta["current_run_id"] = previous_run_id
+    else:
+        meta.pop("current_run_id", None)
+    meta.pop("previous_run_id", None)
+    scan.raw_metadata = meta
+
+    if findings_deleted or assets_deleted:
+        logger.info(
+            "Rolled back failed run (scan_id=%s run_id=%s): findings=%d assets=%d",
+            scan.id, current_run_id, findings_deleted, assets_deleted,
+        )
+    return {
+        "findings_deleted": findings_deleted,
+        "assets_deleted": assets_deleted,
+    }
+
+
 _CVE_RE = re.compile(r"CVE-\d{4}-\d{4,}", re.IGNORECASE)
+_CWE_RE = re.compile(r"CWE-\d+", re.IGNORECASE)
+
+
+# Template-path prefix / tag → family mapping. Order matters: more specific
+# prefixes come first so `http/default-logins/*` matches DefaultLogin, not HTTP.
+# Compliance mappings key off these families, so values must stay stable.
+_NUCLEI_FAMILY_RULES: list[tuple[str, str]] = [
+    # Curated remote-access appliance set under custom/vpn-appliance/.
+    # Listed first so a template like custom/vpn-appliance/cves/ivanti-...
+    # routes to "VPN Appliance" rather than the generic "CVE" family.
+    ("/vpn-appliance/", "VPN Appliance"),
+    ("cves/", "CVE"),
+    ("/default-logins/", "DefaultLogin"),
+    ("/misconfiguration/", "Misconfiguration"),
+    ("/misconfigurations/", "Misconfiguration"),
+    ("/exposed-panels/", "ExposedPanel"),
+    ("/exposures/", "Exposure"),
+    ("/takeovers/", "Takeover"),
+    ("/vulnerabilities/", "Vulnerability"),
+    ("/iot/", "IoT"),
+    ("dns/", "DNS"),
+    ("network/", "Network"),
+    ("ssl/", "TLS"),
+    ("tcp/", "Network"),
+    ("file/", "File"),
+]
+
+_NUCLEI_TAG_FAMILY_FALLBACKS: dict[str, str] = {
+    # Tag-based fallback so public templates with `tags: vpn-appliance` (or
+    # tags: vpn,...) classify into the VPN Appliance family even when the
+    # template path is opaque. Listed before generic "cve" so it wins.
+    "vpn-appliance": "VPN Appliance",
+    "cve": "CVE",
+    "default-login": "DefaultLogin",
+    "misconfig": "Misconfiguration",
+    "exposure": "Exposure",
+    "exposed-panel": "ExposedPanel",
+    "takeover": "Takeover",
+    "dns": "DNS",
+    "network": "Network",
+    "ssl": "TLS",
+    "tls": "TLS",
+}
+
+
+def _extract_nuclei_cwes(f: dict) -> list[str]:
+    """Pull CWE IDs off a Nuclei result.
+
+    Nuclei reports CWEs under info.classification["cwe-id"] (string or list,
+    e.g. "CWE-79" or ["CWE-74", "CWE-79"]). Returned values are uppercased
+    and deduped, preserving first-seen order.
+    """
+    cwes: list[str] = []
+    classification = f.get("classification") or {}
+    raw = classification.get("cwe-id") if isinstance(classification, dict) else None
+    if isinstance(raw, str):
+        cwes.extend(m.group(0).upper() for m in _CWE_RE.finditer(raw))
+    elif isinstance(raw, list):
+        for item in raw:
+            if isinstance(item, str):
+                cwes.extend(m.group(0).upper() for m in _CWE_RE.finditer(item))
+    seen: set[str] = set()
+    unique: list[str] = []
+    for c in cwes:
+        if c not in seen:
+            seen.add(c)
+            unique.append(c)
+    return unique
+
+
+def _classify_nuclei_plugin_family(f: dict) -> str:
+    """Derive a stable plugin_family from a Nuclei result.
+
+    Reads the template_id path prefix and info.tags. Template IDs in Nuclei's
+    public catalog follow the on-disk path (e.g. "http/default-logins/apache"),
+    so path-based classification is deterministic where paths are preserved.
+    Falls back to info.tags for templates whose IDs are opaque, then to the
+    literal string "Nuclei" so legacy consumers don't see NULL.
+    """
+    template_id = (f.get("template_id") or "").lower()
+    raw_tags = f.get("tags") or []
+    tag_set: set[str] = set()
+    if isinstance(raw_tags, list):
+        tag_set = {t.lower() for t in raw_tags if isinstance(t, str)}
+
+    # VPN/remote-access appliance pre-pass. A public CVE template like
+    # `http/cves/2024/CVE-2024-21887` would otherwise match "cves/" and
+    # collapse into the generic CVE family — losing the family weight that
+    # makes internet-facing VPN findings outrank everything else.
+    if "vpn-appliance" in tag_set:
+        return "VPN Appliance"
+
+    for needle, family in _NUCLEI_FAMILY_RULES:
+        if needle in template_id or template_id.startswith(needle.lstrip("/")):
+            return family
+
+    for tag in tag_set:
+        family = _NUCLEI_TAG_FAMILY_FALLBACKS.get(tag)
+        if family:
+            return family
+
+    return "Nuclei"
+
+
+def _extract_nuclei_references(f: dict) -> dict:
+    """Return the references dict to persist on Finding.references.
+
+    Nuclei's info.reference is a list of URLs (vendor advisories, PoCs, CVE
+    pages). The Finding schema stores references as a JSON dict, so we wrap
+    the list under ``urls`` to leave room for future reference kinds without
+    breaking consumers of the existing shape.
+    """
+    raw = f.get("reference")
+    urls: list[str] = []
+    if isinstance(raw, list):
+        urls = [str(u) for u in raw if isinstance(u, str) and u.strip()]
+    elif isinstance(raw, str) and raw.strip():
+        urls = [raw.strip()]
+    return {"urls": urls} if urls else {}
+
+
+_SEVERITY_LABEL_BY_STR = {
+    "critical": "Critical",
+    "high": "High",
+    "medium": "Medium",
+    "low": "Low",
+    "info": "Info",
+}
+
+
+def _seed_nuclei_context(f: dict, asset: Asset, authenticated: bool) -> dict:
+    """Derive ctx_* fields from scan evidence.
+
+    A Nuclei match empirically proved network reachability and exploitability
+    at the moment of scan. ctx_accessibility tracks whether credentials were
+    used to reach the surface. Leaving these NULL wastes ground truth; scan-
+    time defaults can always be overridden by an analyst (the upsert handler
+    honours Finding.user_edited_fields to protect manual edits on re-ingest).
+    """
+    reachable = "internet_facing" if bool(asset.is_internet_facing) else "internal_only"
+    accessible = "authenticated_only" if authenticated else "public"
+    return {
+        "ctx_reachability": reachable,
+        "ctx_accessibility": accessible,
+        "ctx_exploitability": "easily_exploitable",
+    }
+
+
+_AGENT_SPECIALIST_FAMILY: dict[str, str] = {
+    "injection": "Agent: Injection",
+    "xss": "Agent: XSS",
+    "ssrf": "Agent: SSRF",
+    "authn": "Agent: AuthN",
+    "authz": "Agent: AuthZ",
+    "csrf": "Agent: CSRF",
+    "files": "Agent: File Inclusion",
+    "upload": "Agent: File Upload",
+    "session": "Agent: Session",
+}
+
+
+def _agent_specialist_family(f: dict) -> str:
+    """Map an agent-worker finding to a per-specialist plugin_family.
+
+    The worker tags every payload with ["agent", <category>] and uses a
+    `agent-<category>-<digest>` template_id, so we read the category from
+    tags first and fall back to the template_id prefix. Unknown categories
+    collapse to bare "Agent" so a new specialist doesn't disappear from
+    family filters before this map is updated.
+    """
+    tags = f.get("tags") or []
+    category = ""
+    for t in tags:
+        if isinstance(t, str) and t and t != "agent":
+            category = t.lower()
+            break
+    if not category:
+        tid = (f.get("template_id") or "").lower()
+        if tid.startswith("agent-"):
+            rest = tid.split("-", 2)
+            if len(rest) >= 2:
+                category = rest[1]
+    return _AGENT_SPECIALIST_FAMILY.get(category, "Agent")
 
 
 def _extract_nuclei_cves(f: dict) -> list[str]:
@@ -895,6 +1462,130 @@ def _build_nuclei_plugin_output(f: dict) -> str:
     return "\n".join(lines)
 
 
+_DEFAULT_SCHEME_PORTS = {"http": 80, "https": 443}
+
+
+def _extract_port_from_url(url: str) -> Optional[int]:
+    """Pull a port out of a URL string, defaulting by scheme when absent.
+
+    Returns None for malformed inputs so callers can short-circuit. Used to
+    catch services Nuclei probes on non-default ports (e.g. ``https://x:8443``)
+    that EASM port discovery may not have surfaced.
+    """
+    if not url or not isinstance(url, str):
+        return None
+    try:
+        parsed = urlparse(url.strip())
+    except (ValueError, AttributeError):
+        return None
+    if not parsed.scheme or not parsed.hostname:
+        return None
+    if parsed.port:
+        return parsed.port
+    return _DEFAULT_SCHEME_PORTS.get(parsed.scheme.lower())
+
+
+def _collect_finding_ports(target: str, findings_data: list) -> set[int]:
+    """Collect every TCP port observed in this Nuclei job batch.
+
+    Pulls from three sources in priority order:
+      * each finding's ``port`` field (template-supplied)
+      * each finding's ``matched_at`` URL (host:port from the actual hit)
+      * the job's ``target`` URL (for adhoc URL-targeted scans)
+
+    Garbage values are discarded. Caller diffs the result against the
+    asset's previously-known ports; new ports drive a synthetic
+    ``port_change`` event into the auto-audit trigger.
+    """
+    ports: set[int] = set()
+    for f in findings_data or []:
+        raw_port = f.get("port")
+        if raw_port is not None:
+            try:
+                ports.add(int(raw_port))
+            except (TypeError, ValueError):
+                pass
+        url_port = _extract_port_from_url(f.get("matched_at") or "")
+        if url_port:
+            ports.add(url_port)
+    target_port = _extract_port_from_url(target or "")
+    if target_port:
+        ports.add(target_port)
+    return ports
+
+
+def _sync_vm_ports_and_trigger_audits(
+    db: Session,
+    scan: Scan,
+    asset: Asset,
+    target: str,
+    findings_data: list,
+) -> int:
+    """Sync VM-discovered TCP ports into ``asset.easm_data["open_ports"]``
+    and dispatch matching anonymous audits for any newly-seen ports.
+
+    EASM is the primary source of port data and feeds the audit auto-trigger
+    via scanner_event_bridge. But Nuclei occasionally probes services on
+    ports EASM missed (non-standard HTTP, web apps on high ports, etc.). We
+    surface those by:
+
+      1. Diffing the batch's observed ports against ``easm_data["open_ports"]``
+      2. Persisting new entries into ``open_ports`` (data-correctness benefit
+         independent of audits — downstream rules read this field)
+      3. Constructing a synthetic TCP ``port_change`` event and calling the
+         shared ``maybe_auto_trigger_anon_audits`` so the existing
+         org/cooldown/predicate gating still applies.
+
+    Returns the number of audits dispatched (0 when no new ports, no matching
+    rule, or any gate trips). Failures are logged and swallowed — finding
+    import must not be blocked by audit dispatch problems.
+    """
+    observed = _collect_finding_ports(target, findings_data)
+    if not observed:
+        return 0
+
+    easm = dict(asset.easm_data or {})
+    known_raw = easm.get("open_ports") or []
+    known: set[int] = set()
+    for p in known_raw:
+        try:
+            known.add(int(p))
+        except (TypeError, ValueError):
+            continue
+    new_ports = observed - known
+    if not new_ports:
+        return 0
+
+    easm["open_ports"] = sorted(known | new_ports)
+    asset.easm_data = easm
+
+    org = db.query(Organization).filter(Organization.id == scan.org_id).first()
+    if not org:
+        return 0
+
+    event = {
+        "event_type": "port_change",
+        "asset_id": easm.get("easm_asset_id"),
+        "created_at": datetime.utcnow().isoformat() + "Z",
+        "payload": {
+            "new_ports": sorted(new_ports),
+            "transport": "tcp",
+            "hostname": asset.hostname or asset.fqdn or None,
+            "source": "vm_scanner",
+        },
+    }
+
+    try:
+        from services.audit_auto_trigger import maybe_auto_trigger_anon_audits
+        return maybe_auto_trigger_anon_audits(db, org, event, asset=asset)
+    except Exception as e:
+        logger.warning(
+            "vm_scanner: org=%d asset=%d auto-audit trigger failed: %s",
+            scan.org_id, asset.id, e,
+        )
+        return 0
+
+
 def _import_nuclei_job_findings(db: Session, scan: Scan, job_result: dict) -> dict:
     """Import findings from a completed nuclei Celery job into the scan.
 
@@ -917,6 +1608,7 @@ def _import_nuclei_job_findings(db: Session, scan: Scan, job_result: dict) -> di
     asset_id_in = job_result.get("asset_id")
 
     meta = scan.raw_metadata or {}
+    current_run_id = meta.get("current_run_id")
     asset: Asset | None = None
     new_asset_ids: list[int] = []
     cls = _classify_vm_target(target) if target else {
@@ -938,6 +1630,8 @@ def _import_nuclei_job_findings(db: Session, scan: Scan, job_result: dict) -> di
         existing_sources = list(asset.source_systems or [])
         if "vm_scanner" not in existing_sources:
             asset.source_systems = existing_sources + ["vm_scanner"]
+        if asset.scan_id == scan.id and current_run_id:
+            asset.scan_run_id = current_run_id
     else:
         # Adhoc job — resolve by target against this scan's prefilled map,
         # then by IP/hostname/url in the same org, creating a new asset if none.
@@ -977,6 +1671,7 @@ def _import_nuclei_job_findings(db: Session, scan: Scan, job_result: dict) -> di
         if not asset:
             asset_kwargs = {
                 "scan_id": scan.id,
+                "scan_run_id": current_run_id,
                 "ip": cls["ip"] or "",
                 "hostname": cls["hostname"] or "",
                 "source_systems": ["vm_scanner"],
@@ -992,6 +1687,8 @@ def _import_nuclei_job_findings(db: Session, scan: Scan, job_result: dict) -> di
             existing_sources = list(asset.source_systems or [])
             if "vm_scanner" not in existing_sources:
                 asset.source_systems = existing_sources + ["vm_scanner"]
+            if asset.scan_id == scan.id and current_run_id:
+                asset.scan_run_id = current_run_id
 
     # Record per-source observation
     record_observation(
@@ -1013,14 +1710,22 @@ def _import_nuclei_job_findings(db: Session, scan: Scan, job_result: dict) -> di
     now = datetime.utcnow()
     severity_map = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
 
+    # Whether this Celery job ran authenticated. Used to seed ctx_accessibility
+    # on every finding. Nuclei worker sets `authenticated=True` when credentials
+    # were passed; absent/False means the scan ran unauthenticated.
+    authenticated = bool(job_result.get("authenticated"))
+
     for f in findings_data:
         severity_str = (f.get("severity") or "info").lower()
         if severity_str not in severity_map:
             severity_str = "info"
 
-        # Check for duplicate
+        # Check for duplicate within the current run only — old-run rows
+        # coexist until finalize swaps them out, so we must scope by run_id
+        # or we'd silently drop fresh findings as "already ingested".
         existing = db.query(Finding.id).filter(
             Finding.scan_id == scan.id,
+            Finding.scan_run_id == current_run_id,
             Finding.asset_id == asset.id,
             Finding.plugin_id == f.get("template_id", ""),
         ).first()
@@ -1032,16 +1737,19 @@ def _import_nuclei_job_findings(db: Session, scan: Scan, job_result: dict) -> di
         # agent LLM-driven findings — all three flow through this
         # worker → backend path via identical payload shape, but
         # downstream (llm validator, rule engine, UI badge) wants to
-        # treat them differently.
+        # treat them differently. Nuclei itself is further subdivided
+        # (CVE / DefaultLogin / Misconfiguration / …) so compliance
+        # mappings can key on the specific family without inspecting
+        # the template_id string at rule-eval time.
         _finding_type = (f.get("type") or "").lower()
         if _finding_type == "agent-vuln":
-            plugin_family = "Agent"
+            plugin_family = _agent_specialist_family(f)
         elif _finding_type == "api-fuzz":
             plugin_family = "Schemathesis"
         elif _finding_type == "content-discovery":
             plugin_family = "ContentDiscovery"
         else:
-            plugin_family = "Nuclei"
+            plugin_family = _classify_nuclei_plugin_family(f)
 
         # Schemathesis pre-seeds llm_validation.verdict on its results so
         # high-confidence findings (server errors, schema violations)
@@ -1051,16 +1759,37 @@ def _import_nuclei_job_findings(db: Session, scan: Scan, job_result: dict) -> di
         llm_validation = f.get("llm_validation") if isinstance(f.get("llm_validation"), dict) else None
 
         cves = _extract_nuclei_cves(f)
+        cwes = _extract_nuclei_cwes(f)
         cvss3_score, cvss3_vector = _extract_nuclei_cvss(f)
+        ctx = _seed_nuclei_context(f, asset, authenticated)
+
+        # Agent specialists confirm the vuln by sending a PoC request and
+        # observing the response — the LLM verdict is the exploit signal.
+        # Without this flag, "Has Exploit" filters miss findings the
+        # platform literally just exploited.
+        exploit_available = (
+            _finding_type == "agent-vuln"
+            and (llm_validation or {}).get("verdict") == "true_positive"
+        )
+
+        # Persist Nuclei tags so the post-ingest TTP matcher can use them
+        # as technique hints for non-CVE templates (default-login, takeover,
+        # misconfig) where keyword + family matching misses.
+        nuclei_tags = [
+            t for t in (f.get("tags") or []) if isinstance(t, str) and t.strip()
+        ]
+        custom_fields = {"nuclei_tags": nuclei_tags} if nuclei_tags else {}
 
         finding = Finding(
             scan_id=scan.id,
+            scan_run_id=current_run_id,
             asset_id=asset.id,
             source_type="vm_scanner",
             source_systems=["vm_scanner"],
             plugin_id=f.get("template_id", ""),
             plugin_name=f.get("name", ""),
             severity=severity_map.get(severity_str, 0),
+            severity_label=_SEVERITY_LABEL_BY_STR.get(severity_str, "Info"),
             description=f.get("description", ""),
             solution="",
             plugin_family=plugin_family,
@@ -1070,9 +1799,16 @@ def _import_nuclei_job_findings(db: Session, scan: Scan, job_result: dict) -> di
             last_seen=now,
             llm_validation=llm_validation,
             cves=cves,
+            cwe_ids=cwes,
+            references=_extract_nuclei_references(f),
             normalized_id=cves[0] if cves else None,
             cvss3_score=cvss3_score,
             cvss3_vector=cvss3_vector,
+            ctx_reachability=ctx["ctx_reachability"],
+            ctx_accessibility=ctx["ctx_accessibility"],
+            ctx_exploitability=ctx["ctx_exploitability"],
+            exploit_available=exploit_available,
+            custom_fields=custom_fields,
         )
         db.add(finding)
         db.flush()
@@ -1083,6 +1819,12 @@ def _import_nuclei_job_findings(db: Session, scan: Scan, job_result: dict) -> di
             raw_fields=f, scan_id=scan.id, org_id=scan.org_id,
         )
         created += 1
+
+    # Sync VM-observed ports back into easm_data and fire anon audits for any
+    # ports EASM hadn't already surfaced. Wrapped in try/except inside the
+    # helper — never let audit dispatch fail the finding import.
+    if asset is not None:
+        _sync_vm_ports_and_trigger_audits(db, scan, asset, target, findings_data)
 
     return {
         "count": created,
@@ -1112,9 +1854,10 @@ def _classify_vm_target(target: str) -> dict:
         parsed = urlparse(t)
         if parsed.scheme in ("http", "https") and parsed.hostname:
             host = parsed.hostname
+            from services.dedup import normalize_web_app_url
             return {
                 "asset_type": "web_app",
-                "url": t,
+                "url": normalize_web_app_url(t) or t,
                 "ip": host if _is_ip(host) else None,
                 "hostname": host if not _is_ip(host) else None,
             }
@@ -1138,6 +1881,12 @@ _HIGH_VALUE_PORTS = {80, 443, 8080, 8443, 8888, 3000, 5000, 8000, 9090, 9443}
 
 MAX_AUTO_VM_TARGETS = 20
 
+# Bypass cap: assets with high-confidence CVE banners (Shodan vulns) skip the
+# top-N gate, but we still cap the bypass to keep one bad EASM run from
+# blowing up the VM scan budget. 50 is roughly 2.5x the normal cap — enough
+# headroom for a real exposed-VPN sweep without unbounded fan-out.
+MAX_AUTO_VM_BYPASS_TARGETS = 50
+
 
 async def trigger_vm_scan_for_easm_assets(
     db: Session, org: Organization, easm_scan_id: int, domain: str,
@@ -1148,6 +1897,12 @@ async def trigger_vm_scan_for_easm_assets(
     Called after EASM import completes. Selects up to MAX_AUTO_VM_TARGETS assets
     prioritized by: has high-value open ports, has detected tech stack,
     not behind CDN/WAF (direct targets yield better results).
+
+    Assets with non-empty ``easm_data["shodan_vulns"]`` are *always* queued
+    (capped at ``MAX_AUTO_VM_BYPASS_TARGETS``) — these are high-confidence
+    CVE banners from Shodan, the exact "exposed VPN with known RCE" case the
+    auto-VM rail exists to cover. Without this bypass a Shodan-discovered
+    Fortinet/Pulse/Citrix box could lose to N web apps in the score sort.
 
     Creates a proper Scan record so it appears on the scans page.
     Idempotent — skips if a VM scan was already triggered for this EASM scan.
@@ -1172,9 +1927,28 @@ async def trigger_vm_scan_for_easm_assets(
         logger.info("No EASM assets to auto-scan for org %s", org.id)
         return None
 
-    # Score and rank assets for VM scanning
+    # Bypass list: assets with high-confidence CVE banners go in regardless of
+    # score. Collected first so they don't compete for top-N slots with web
+    # apps that just happen to have richer tech stacks.
+    #
+    # Track *every* shodan_vulns asset in shodan_vuln_ids so the score-sort
+    # below excludes them all — including ones that overflow the bypass cap.
+    # Otherwise overflow assets get a second bite at the apple via the
+    # score-sort path and the cap stops being a real cap on total queued.
+    bypass_assets: list[Asset] = []
+    shodan_vuln_ids: set[int] = set()
+    for asset in assets:
+        easm = asset.easm_data or {}
+        if easm.get("shodan_vulns"):
+            shodan_vuln_ids.add(asset.id)
+            if len(bypass_assets) < MAX_AUTO_VM_BYPASS_TARGETS:
+                bypass_assets.append(asset)
+
+    # Score and rank the remaining assets for VM scanning
     scored: list[tuple[float, Asset]] = []
     for asset in assets:
+        if asset.id in shodan_vuln_ids:
+            continue
         easm = asset.easm_data or {}
         score = 0.0
 
@@ -1204,13 +1978,22 @@ async def trigger_vm_scan_for_easm_assets(
 
         scored.append((score, asset))
 
-    if not scored:
+    if not scored and not bypass_assets:
         logger.info("No scannable EASM assets for org %s (all filtered out)", org.id)
         return None
 
-    # Sort by score descending, take top N
+    # Sort by score descending, take top N. Bypass assets sit ahead of the
+    # scored list so they're guaranteed to be queued.
     scored.sort(key=lambda x: x[0], reverse=True)
-    selected = scored[:MAX_AUTO_VM_TARGETS]
+    selected: list[tuple[float, Asset]] = (
+        [(float("inf"), a) for a in bypass_assets]
+        + scored[:MAX_AUTO_VM_TARGETS]
+    )
+    if bypass_assets:
+        logger.info(
+            "Auto-VM scan: %d asset(s) bypassed top-N via shodan_vulns (org=%s, domain=%s)",
+            len(bypass_assets), org.id, domain,
+        )
 
     # Build targets and asset_id mapping
     targets = []

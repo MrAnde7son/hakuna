@@ -10,7 +10,7 @@ Multi-tenant exposure management platform. Ingests scan data (Nessus, Qualys, Ra
 |-------|-----------|
 | Backend | Python 3.11, FastAPI 0.115, SQLAlchemy 2.0, Pydantic 2.9 |
 | Frontend | React 18, Vite 7, React Router 6, Recharts, i18next (12 languages) |
-| Database | SQLite (dev), PostgreSQL (prod) |
+| Database | PostgreSQL 15 (dev via docker-compose, prod via Cloud SQL) |
 | Auth | JWT (python-jose) + RBAC with 30+ granular permissions |
 | AI | Claude, GPT, Gemini, Groq/Llama — multi-provider with graceful fallback |
 | Infra | Docker Compose (local), GCP Cloud Run + Cloud SQL (prod), Terraform |
@@ -56,18 +56,22 @@ hakuna/
 ## Quick Start
 
 ```bash
-# Full dev environment (creates venv, installs deps, starts both servers)
-./start.sh
+# Full containerized dev (backend + postgres + frontend + minio).
+# Add --profile audits to also run redis + audit-worker.
+docker compose up -d
+docker compose --profile audits up -d   # with audit worker
 
-# Or manually:
+# Host-running backend (against the compose Postgres on :5433):
 cd backend && python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
-uvicorn app:app --host 0.0.0.0 --port 8000 --reload --env-file .env
+DATABASE_URL=postgresql://hakuna:hakuna@localhost:5433/hakuna \
+  uvicorn app:app --host 0.0.0.0 --port 8000 --reload --env-file .env
 
 cd frontend && npm install && npm run dev
 ```
 
 - Backend: `http://localhost:8000` (Swagger docs at `/docs`)
 - Frontend: `http://localhost:3000` (proxies `/api` to backend)
+- Postgres: `localhost:5433` (user/pw `hakuna/hakuna`, db `hakuna`)
 - Backend logs: `/tmp/nessus-backend.log`
 - Frontend logs: `/tmp/nessus-frontend.log`
 
@@ -186,12 +190,16 @@ Standard query parameters: `page`, `page_size`, `search`, `sort_by`, `order`, pl
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `DATABASE_URL` | No | Defaults to SQLite; set to PostgreSQL URI for prod |
+| `DATABASE_URL` | Yes | PostgreSQL connection string (e.g. `postgresql://hakuna:hakuna@postgres:5432/hakuna`). SQLite is not supported. |
 | `JWT_SECRET` | Yes (prod) | Secret for JWT signing |
 | `ANTHROPIC_API_KEY` | No | Claude API access for AI agents |
 | `OPENAI_API_KEY` | No | GPT API access for AI agents |
 | `GOOGLE_API_KEY` | No | Gemini API access for AI agents |
 | `SENTRY_DSN` | No | Error tracking |
+| `POSTHOG_API_KEY` | No | Backend product analytics (project API key, `phc_…`) |
+| `POSTHOG_HOST` | No | PostHog host, defaults to `https://us.i.posthog.com` |
+| `VITE_POSTHOG_KEY` | No | Frontend product analytics (same key as backend) |
+| `VITE_POSTHOG_HOST` | No | Frontend PostHog host |
 | `SHODAN_API_KEY` | No | Threat intel enrichment |
 
 ## Testing Strategy
@@ -208,4 +216,4 @@ Standard query parameters: `page`, `page_size`, `search`, `sort_by`, `order`, pl
 - The frontend proxies `/api` to `localhost:8000` in dev — don't hardcode backend URLs in components.
 - All database queries MUST filter by `org_id` / `org_ids` for tenant isolation.
 - Migrations are NOT Alembic — they're standalone scripts. Run them individually.
-- SQLite is the default database. Some PostgreSQL-specific features may not work in dev without switching to Postgres.
+- Dev runs against Postgres via docker-compose (`postgres` service on port 5433). The backend boot sequence auto-creates the schema via `init_db()` on first connect — no separate bootstrap step.

@@ -52,6 +52,7 @@ import {
   Network,
   Sparkles,
   Home as HomeIcon,
+  ShieldCheck,
 } from 'lucide-react'
 import { SUPPORTED_LANGUAGES } from './i18n/index.js'
 // Auth pages loaded eagerly (small, needed immediately)
@@ -101,6 +102,8 @@ const EventSearch = React.lazy(() => import('./components/siem/EventSearch.jsx')
 const DetectionRules = React.lazy(() => import('./components/siem/DetectionRules.jsx'))
 const AlertTriage = React.lazy(() => import('./components/siem/AlertTriage.jsx'))
 const AttackPaths = React.lazy(() => import('./components/attackpaths/AttackPaths.jsx'))
+const Compliance = React.lazy(() => import('./components/compliance/Compliance.jsx'))
+const ComplianceControlDetail = React.lazy(() => import('./components/compliance/ComplianceControlDetail.jsx'))
 
 // Global scan context
 export const ScanContext = createContext({ activeScanId: null, setActiveScanId: () => {}, scans: [], refreshScans: () => {} })
@@ -133,6 +136,7 @@ const NAV_GROUPS = [
       { path: '/campaigns-v2', labelKey: 'nav.campaignsV2', icon: Sparkles, permission: 'page_campaigns' },
       { path: '/campaigns', labelKey: 'nav.campaigns', icon: Target, permission: 'page_campaigns' },
       { path: '/aggregated-solutions', labelKey: 'nav.remediation', icon: Layers, permission: 'page_remediation' },
+      { path: '/compliance', labelKey: 'nav.compliance', icon: ShieldCheck, permission: 'page_compliance' },
       { path: '/agents', labelKey: 'nav.agents', icon: Bot, permission: 'page_agents' },
     ],
   },
@@ -152,14 +156,15 @@ const NAV_GROUPS = [
       { path: '/inventory', labelKey: 'nav.inventory', icon: Database, permission: 'page_inventory' },
     ],
   },
-  {
-    labelKey: 'nav.siem',
-    items: [
-      { path: '/siem/search', labelKey: 'nav.eventSearch', icon: Radio, permission: 'page_siem' },
-      { path: '/siem/rules', labelKey: 'nav.detectionRules', icon: Shield, permission: 'page_siem' },
-      { path: '/siem/alerts', labelKey: 'nav.alerts', icon: AlertTriangle, permission: 'page_siem' },
-    ],
-  },
+  // # TODO:remove to simplify navigation
+  // {
+  //   labelKey: 'nav.siem',
+  //   items: [
+  //     { path: '/siem/search', labelKey: 'nav.eventSearch', icon: Radio, permission: 'page_siem' },
+  //     { path: '/siem/rules', labelKey: 'nav.detectionRules', icon: Shield, permission: 'page_siem' },
+  //     { path: '/siem/alerts', labelKey: 'nav.alerts', icon: AlertTriangle, permission: 'page_siem' },
+  //   ],
+  // },
 ]
 
 const NAV_SETTINGS = { path: '/settings', labelKey: 'nav.settings', icon: SettingsIcon, permission: 'page_settings' }
@@ -1259,6 +1264,9 @@ function AppShell() {
                 <Route path="/siem/rules" element={<DetectionRules />} />
                 <Route path="/siem/alerts" element={<AlertTriage />} />
                 <Route path="/attack-paths" element={<AttackPaths />} />
+                <Route path="/compliance" element={<Compliance />} />
+                <Route path="/compliance/:slug" element={<Compliance />} />
+                <Route path="/compliance/:slug/control/:id" element={<ComplianceControlDetail />} />
                 <Route path="/docs" element={<UserDocs />} />
               </Routes>
             </Suspense>

@@ -25,12 +25,21 @@ from models.models import (
     AttackPath,
     Finding,
 )
+from core.database import _IS_SQLITE
 from services.finding_correlator import (
     _build_entry_set,
     _build_target_set,
     _generate_attack_paths,
     _score_chain,
 )
+
+
+# The correlator uses Postgres-only SQL (BOOL_OR, jsonb_set, NULLS LAST, etc.)
+# since the runtime code is Postgres-only. The unit-test suite runs on
+# in-memory SQLite for speed, so skip the DB-touching tests here. The pure
+# Python helpers (_score_chain, _extract_finding_port, _describe_edge) still
+# run — only the test classes that hit the DB are gated.
+_PG_ONLY = pytest.mark.skipif(_IS_SQLITE, reason="requires Postgres")
 
 
 def _asset(db, scan, *, hostname, ip=None, criticality=5, internet_facing=False):
@@ -77,6 +86,7 @@ def _edge(db, org, src, tgt, rel_type, confidence="high", properties=None):
     db.flush()
 
 
+@_PG_ONLY
 class TestEntryAndTargetSets:
     def test_non_internet_facing_asset_qualifies_as_entry(self, db_session, test_org, test_scan):
         a = _asset(db_session, test_scan, hostname="internal-1", internet_facing=False)
@@ -168,6 +178,7 @@ class TestScoreChain:
         assert score < high_score
 
 
+@_PG_ONLY
 class TestGenerateAttackPaths:
     def _setup(self, db_session, test_org, test_scan, *, entry_if=False):
         """Seed an internal entry → connects_to → DC target scenario."""
@@ -269,6 +280,7 @@ class TestExtractFindingPort:
         assert _extract_finding_port("70000") is None
 
 
+@_PG_ONLY
 class TestPortCorrelation:
     """Cover finding-port ↔ netconn-port matching in the BFS hop."""
 

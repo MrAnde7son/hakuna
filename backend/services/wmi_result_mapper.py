@@ -35,36 +35,30 @@ logger = logging.getLogger(__name__)
 SOURCE_PREFIX = "hakuna_wmi_"
 
 
-def ingest_result(db, scan: Scan, asset_id: int, result: dict) -> dict[str, int]:
-    """Write all profiles from one host's WMI result into Inventory* tables.
+def build_rows(scan: Scan, asset_id: int, result: dict) -> dict[str, list]:
+    """Pure mapping — raw WMI result dict → Inventory* ORM instances by bucket.
 
-    Returns per-profile row counts: {"software": 128, "services": 42, ...}.
-    Does NOT commit — the caller batches commits across hosts.
+    No session, no I/O. Easy to unit-test and reused by the Collector interface
+    in services.collectors.wmi_collector.
     """
-    counts: dict[str, int] = {}
+    buckets: dict[str, list] = {}
 
     software_rows = _collect_software_rows(scan, asset_id, result)
     if software_rows:
-        db.add_all(software_rows)
-        counts["software"] = len(software_rows)
+        buckets["software"] = software_rows
 
     service_rows = _map_services(scan, asset_id, result.get("services") or [])
     if service_rows:
-        db.add_all(service_rows)
-        counts["services"] = len(service_rows)
+        buckets["services"] = service_rows
 
     patch_rows = _map_patches(scan, asset_id, result.get("patches") or [])
     if patch_rows:
-        db.add_all(patch_rows)
-        counts["patches"] = len(patch_rows)
+        buckets["patches"] = patch_rows
 
     share_rows = _map_shares(scan, asset_id, result.get("shares") or [])
     if share_rows:
-        db.add_all(share_rows)
-        counts["shares"] = len(share_rows)
+        buckets["shares"] = share_rows
 
-    # Users + groups + membership are mapped together so we can compute the
-    # is_local_admin flag on InventoryUser in one pass.
     user_rows, group_rows = _map_users_and_groups(
         scan, asset_id,
         result.get("local_users") or [],
@@ -72,19 +66,29 @@ def ingest_result(db, scan: Scan, asset_id: int, result: dict) -> dict[str, int]
         result.get("group_membership") or [],
     )
     if user_rows:
-        db.add_all(user_rows)
-        counts["users"] = len(user_rows)
+        buckets["users"] = user_rows
     if group_rows:
-        db.add_all(group_rows)
-        counts["groups"] = len(group_rows)
-
-    # os_info is mapped back onto the Asset row upstream (wmi_scanner.py); the
-    # mapper doesn't touch Asset fields — that's a different concern.
+        buckets["groups"] = group_rows
 
     errors = result.get("_errors") or {}
     if errors:
         logger.warning("WMI result had per-profile errors for asset=%s: %s", asset_id, errors)
 
+    return buckets
+
+
+def ingest_result(db, scan: Scan, asset_id: int, result: dict) -> dict[str, int]:
+    """Write all profiles from one host's WMI result into Inventory* tables.
+
+    Returns per-profile row counts: {"software": 128, "services": 42, ...}.
+    Does NOT commit — the caller batches commits across hosts.
+    """
+    buckets = build_rows(scan, asset_id, result)
+    counts: dict[str, int] = {}
+    for bucket, rows in buckets.items():
+        if rows:
+            db.add_all(rows)
+            counts[bucket] = len(rows)
     return counts
 
 

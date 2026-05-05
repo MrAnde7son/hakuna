@@ -12,21 +12,21 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-from fastapi import APIRouter, Depends, HTTPException, Header
+from fastapi import APIRouter, Depends, HTTPException, Header, UploadFile, File
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from core.database import get_db, SessionLocal
 from core.auth import get_current_user, get_accessible_org_ids, apply_org_filter
-from models.models import Agent, CopilotConversation, User
+from core.time_utils import iso_utc
+from models.models import Agent, CopilotAttachment, CopilotConversation, User
 from agents.agent_tools import TOOL_REGISTRY
 from agents.tool_categories import select_tools_for_message
 from agents.agent_engine import (
     run_agent_streaming, get_default_model, get_available_providers,
-    PROVIDER_FOR_MODEL, _get_anthropic_client, _get_openai_client,
-    _get_gemini_client, _get_ollama_client, _get_vertex_client,
 )
+from core.llm_router import router as llm_router
 from agents.copilot_prompt import COPILOT_SYSTEM_PROMPT
 from models.models import Organization
 
@@ -41,10 +41,10 @@ MAX_CONTEXT_TURNS = 10  # Last N exchanges to include as conversation context
 # fundamentally incompatible with multi-step agentic workflows.
 # Ollama models vary in tool-use quality — we include it as a last resort.
 _COPILOT_MODEL_PREFERENCE = [
+    ("vertex_ai", "vertex/gemini-2.5-pro"),
+    ("google_gemini", "gemini-2.5-pro"),
     ("anthropic", "claude-sonnet-4-6"),
     ("openai", "gpt-4o"),
-    ("google_gemini", "gemini-2.5-flash"),
-    ("vertex_ai", "vertex/gemini-2.5-flash"),
     ("ollama", None),  # model resolved dynamically from Ollama config
 ]
 
@@ -54,6 +54,7 @@ _COPILOT_MODEL_PREFERENCE = [
 class MessageRequest(BaseModel):
     message: str
     context: Optional[str] = None
+    attachment_ids: Optional[List[int]] = None  # files uploaded via /attachments
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -146,8 +147,8 @@ def _conversation_to_dict(c: CopilotConversation) -> dict:
         "id": c.id,
         "title": c.title,
         "message_count": len(c.messages) if c.messages else 0,
-        "created_at": c.created_at.isoformat() if c.created_at else None,
-        "updated_at": c.updated_at.isoformat() if c.updated_at else None,
+        "created_at": iso_utc(c.created_at),
+        "updated_at": iso_utc(c.updated_at),
     }
 
 
@@ -293,6 +294,119 @@ def delete_conversation(
     return {"ok": True}
 
 
+# ── Chat attachments ────────────────────────────────────────────────
+
+# Same cap as `/api/upload` so a copilot upload can drive the same ingest path.
+COPILOT_ATTACHMENT_MAX_BYTES = 200 * 1024 * 1024  # 200 MB
+
+
+@router.post("/conversations/{conversation_id}/attachments")
+async def upload_attachment(
+    conversation_id: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user),
+    x_org_context: Optional[str] = Header(None, alias="X-Org-Context"),
+):
+    """Stage a file the user dropped into the chat. Returns an attachment_id
+    that subsequent tool calls (e.g. `upload_scan`) can resolve to the bytes."""
+    conv = db.query(CopilotConversation).filter(
+        CopilotConversation.id == conversation_id,
+        CopilotConversation.user_id == current_user.id,
+    ).first()
+    if not conv:
+        raise HTTPException(404, "Conversation not found")
+
+    # Stream into a bounded buffer.
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(1024 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > COPILOT_ATTACHMENT_MAX_BYTES:
+            raise HTTPException(
+                413,
+                f"Attachment too large (max {COPILOT_ATTACHMENT_MAX_BYTES // (1024 * 1024)} MB)",
+            )
+        chunks.append(chunk)
+    content = b"".join(chunks)
+    del chunks
+
+    if not content:
+        raise HTTPException(400, "Attachment is empty")
+
+    effective_org_id = int(x_org_context) if x_org_context else (current_user.org_id if current_user else None)
+    att = CopilotAttachment(
+        org_id=effective_org_id,
+        user_id=current_user.id,
+        conversation_id=conv.id,
+        filename=file.filename or "attachment",
+        content_type=file.content_type,
+        size_bytes=total,
+        content=content,
+    )
+    db.add(att)
+    db.commit()
+    db.refresh(att)
+    return {
+        "id": att.id,
+        "filename": att.filename,
+        "size_bytes": att.size_bytes,
+        "content_type": att.content_type,
+    }
+
+
+@router.delete("/conversations/{conversation_id}/attachments/{attachment_id}")
+def delete_attachment(
+    conversation_id: int,
+    attachment_id: int,
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user),
+):
+    """Discard an unsent attachment (user removed it before hitting send)."""
+    att = db.query(CopilotAttachment).filter(
+        CopilotAttachment.id == attachment_id,
+        CopilotAttachment.user_id == current_user.id,
+        CopilotAttachment.conversation_id == conversation_id,
+    ).first()
+    if not att:
+        raise HTTPException(404, "Attachment not found")
+    db.delete(att)
+    db.commit()
+    return {"ok": True}
+
+
+def _attachment_hint(db: Session, user_id: int, attachment_ids: list[int]) -> Optional[str]:
+    """Render attachment metadata into a hint block the LLM sees so it knows
+    to call the appropriate tool (upload_scan, etc.) with the attachment_id."""
+    if not attachment_ids:
+        return None
+    rows = db.query(CopilotAttachment).filter(
+        CopilotAttachment.id.in_(attachment_ids),
+        CopilotAttachment.user_id == user_id,
+    ).all()
+    if not rows:
+        return None
+    lines = []
+    for a in rows:
+        size_mb = (a.size_bytes or 0) / (1024 * 1024)
+        lines.append(
+            f"- attachment_id={a.id} filename={a.filename!r} "
+            f"size={size_mb:.2f}MB content_type={a.content_type or 'unknown'}"
+        )
+    return (
+        "<attachments>\n"
+        "The user attached the following file(s) to this message. "
+        "If a file looks like a vulnerability scan (Nessus .nessus, Qualys XML, "
+        "Rapid7, OpenVAS), call `upload_scan` with the attachment_id to ingest it. "
+        "Confirm with the user before processing if intent is unclear.\n"
+        + "\n".join(lines)
+        + "\n</attachments>"
+    )
+
+
 # ── Send message (streaming) ────────────────────────────────────────
 
 @router.post("/conversations/{conversation_id}/message")
@@ -315,7 +429,7 @@ async def send_message(
     copilot_agent = _get_or_create_copilot_agent(db, effective_org_id)
 
     # Append user message to conversation (store clean message without context metadata)
-    user_msg = {"role": "user", "content": body.message, "timestamp": datetime.utcnow().isoformat()}
+    user_msg = {"role": "user", "content": body.message, "timestamp": iso_utc(datetime.utcnow())}
     messages = list(conv.messages or [])
     messages.append(user_msg)
     conv.messages = messages
@@ -329,6 +443,11 @@ async def send_message(
 
     # Prepend page context (if provided) to the LLM input only, not stored in history
     user_input = (body.context + "\n\n" + body.message) if body.context else body.message
+
+    # Surface attached files to the LLM so it can call upload_scan / etc.
+    att_hint = _attachment_hint(db, current_user.id, body.attachment_ids or [])
+    if att_hint:
+        user_input = att_hint + "\n\n" + user_input
     agent_id = copilot_agent.id
     conv_id = conv.id
     user_id = current_user.id
@@ -365,7 +484,7 @@ async def send_message(
                     msgs.append({
                         "role": "assistant",
                         "content": text_accum,
-                        "timestamp": datetime.utcnow().isoformat(),
+                        "timestamp": iso_utc(datetime.utcnow()),
                     })
                     c.messages = msgs
                     c.updated_at = datetime.utcnow()
@@ -472,51 +591,15 @@ def _generate_recommendations(db: Session, model: str, messages: list) -> list:
     conversation_text = "\n".join(summary_parts)
     full_prompt = f"{_RECOMMENDATION_PROMPT}\n\nConversation:\n{conversation_text}"
 
-    provider = PROVIDER_FOR_MODEL.get(model, "")
-
     try:
-        if provider == "anthropic":
-            client = _get_anthropic_client(db)
-            resp = client.messages.create(
-                model=model,
-                max_tokens=200,
-                messages=[{"role": "user", "content": full_prompt}],
-            )
-            text = resp.content[0].text.strip()
-        elif provider == "openai":
-            client = _get_openai_client(db)
-            resp = client.chat.completions.create(
-                model=model,
-                max_tokens=200,
-                messages=[{"role": "user", "content": full_prompt}],
-            )
-            text = resp.choices[0].message.content.strip()
-        elif provider == "google_gemini":
-            client = _get_gemini_client(db)
-            resp = client.models.generate_content(
-                model=f"models/{model}",
-                contents=full_prompt,
-                config={"max_output_tokens": 200},
-            )
-            text = resp.text.strip()
-        elif provider == "vertex_ai":
-            client = _get_vertex_client(db)
-            base_model = model.replace("vertex/", "")
-            resp = client.models.generate_content(
-                model=f"models/{base_model}",
-                contents=full_prompt,
-                config={"max_output_tokens": 200},
-            )
-            text = resp.text.strip()
-        elif model and model.startswith("ollama/"):
-            client = _get_ollama_client(db)
-            resp = client.chat.completions.create(
-                model=model.replace("ollama/", ""),
-                max_tokens=200,
-                messages=[{"role": "user", "content": full_prompt}],
-            )
-            text = resp.choices[0].message.content.strip()
-        else:
+        text, _ = llm_router.call(
+            db,
+            user=full_prompt,
+            max_tokens=200,
+            model=model,
+        )
+        text = (text or "").strip()
+        if not text:
             return []
 
         # Parse JSON array from response (handle markdown code blocks)

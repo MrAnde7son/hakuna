@@ -29,6 +29,7 @@
     "ingestSources": "Sources",
     "campaigns": "Campaigns",
     "campaignsV2": "Campaigns v2",
+    "compliance": "Compliance",
     "remediation": "Remediation",
     "agents": "Agents",
     "agentApprovals": "Approval Queue",
@@ -105,6 +106,7 @@
     "owner": "Owner",
     "effort": "Effort",
     "cve": "CVE",
+    "cwe": "CWE",
     "rootCause": "Root Cause",
     "search": "Search findings...",
     "noResults": "No findings match your criteria",
@@ -519,9 +521,9 @@
     "canvasEmpty": "Canvas is empty",
     "canvasEmptyHint": "Click any widget from the library on the left to add it to your report",
     "customReport": "Custom Security Report · Generated {{date}}",
-    "uploadFirstScan": "Upload your first scan to get started",
-    "uploadFirstScanDesc": "Import a Nessus, HTML, or CSV vulnerability scan to populate your dashboards with real data.",
-    "uploadScan": "Upload Scan",
+    "uploadFirstScan": "Start or upload your first scan to get started",
+    "uploadFirstScanDesc": "Start your first scan or upload scan to get started.",
+    "uploadScan": "View Scans",
     "saved": "Saved!",
     "preview": "Preview",
     "widgetConfig": "Widget Config",
@@ -606,9 +608,6 @@
     "tagPlaceholder": "e.g. org:engineering,env:production — press Enter to apply",
     "filtering": "Filtering",
     "aiQuery": "AI Query",
-    "uploadFirstScan": "Upload your first scan",
-    "uploadFirstScanDesc": "Import a Nessus scan (.nessus, .csv, or .html) to populate your dashboard with vulnerability data, asset inventory, and remediation priorities.",
-    "uploadScan": "Upload Scan",
     "widthOptions": {
       "quarter": "1/4 Width",
       "third": "1/3 Width",
@@ -940,7 +939,8 @@
       "deprecated_protocol": "Deprecated Protocol",
       "outdated_version": "Outdated Version",
       "misconfiguration": "Misconfiguration",
-      "missing_patch": "Missing Patches"
+      "missing_patch": "Missing Patches",
+      "vuln_class": "Vulnerability Class"
     },
     "actionLabels": {
       "migrate_to_supported": "Migrate",
@@ -948,7 +948,8 @@
       "upgrade_component": "Upgrade",
       "remediate_config": "Fix Config",
       "apply_patch": "Patch",
-      "bulk_patch": "Bulk Patch"
+      "bulk_patch": "Bulk Patch",
+      "fix_code_defect": "Fix Code"
     }
   },
   "workflows": {
@@ -1123,5 +1124,125 @@
     "errFlowEmpty": "Flow must have at least one step",
     "errFlowJson": "Invalid JSON",
     "errSuccessRequired": "Pick a success condition"
+  },
+  "compliance": {
+    "title": "Compliance",
+    "subtitle": "Map exposures to framework controls",
+    "frameworks": "Frameworks",
+    "controls": "Controls",
+    "scope": "Scope",
+    "reports": "Reports",
+    "subscribed": "Subscribed",
+    "notSubscribed": "Not subscribed",
+    "subscribe": "Subscribe",
+    "unsubscribe": "Unsubscribe",
+    "version": "Version",
+    "authority": "Authority",
+    "domain": "Domain",
+    "ref": "Ref",
+    "control": "Control",
+    "state": "State",
+    "states": {
+      "passing": "Passing",
+      "failing": "Failing",
+      "partial": "Partial",
+      "compensating_control": "Compensating",
+      "not_applicable": "Not Applicable",
+      "not_evaluated": "Not Evaluated"
+    },
+    "verdicts": {
+      "failing": "Failing",
+      "satisfied_by_compensating": "Satisfied (compensating)",
+      "exception_suppressed": "Suppressed",
+      "resolved": "Resolved"
+    },
+    "stats": {
+      "totalControls": "Controls",
+      "passing": "Passing",
+      "failing": "Failing",
+      "partial": "Partial",
+      "compensating": "Compensating",
+      "notApplicable": "N/A",
+      "failingFindings": "Failing findings",
+      "failingAssets": "Failing assets"
+    },
+    "scopeRule": "Scope rule",
+    "scopeTagExpr": "Scope tag expression",
+    "scopeAllAssets": "All org assets",
+    "scopePlaceholder": "e.g. env:prod,cde:yes",
+    "scopeHint": "Comma-separated category:value tags. Leave empty to scope to every asset in the org.",
+    "saveScope": "Save scope",
+    "control_detail": {
+      "guidance": "Auditor Guidance",
+      "mappings": "Detection Mappings",
+      "compensatingControls": "Compensating Controls",
+      "noCompensating": "No compensating controls documented",
+      "addCompensating": "Add compensating control",
+      "rationale": "Rationale",
+      "rationalePlaceholder": "e.g. WAF rule SEC-123 blocks the exploit path; documented in Confluence #compliance-pci-cde",
+      "validUntil": "Valid until",
+      "linkedException": "Linked exception",
+      "rationaleHelp": "Auditor-facing explanation of why this control is satisfied despite failing detections.",
+      "noMappings": "No automated mappings — control is testability=manual_only",
+      "ruleVersion": "Rule v{{version}}",
+      "deleteCC": "Remove",
+      "deleteCCConfirm": "Remove this compensating control? Failing findings will revert to failing verdict on the next evaluator pass."
+    },
+    "findings": {
+      "header": "Findings",
+      "verdict": "Verdict",
+      "matchedVia": "Matched via",
+      "asset": "Asset",
+      "noFindings": "No findings under this control",
+      "viewFinding": "View finding"
+    },
+    "reportRuns": {
+      "header": "Reports",
+      "generate": "Generate report",
+      "generating": "Generating…",
+      "format": "Format",
+      "createdAt": "Generated",
+      "generatedBy": "By",
+      "size": "Size",
+      "download": "Download",
+      "noReports": "No reports yet — click Generate to produce one",
+      "pdfNotImplemented": "PDF reports are not yet supported. Use CSV or JSON for v1.",
+      "ofFramework": "Reports for {{framework}}"
+    },
+    "noFrameworks": "No frameworks installed yet — ship a YAML under backend/compliance/frameworks/ and restart the backend.",
+    "subscribeFirst": "Subscribe to this framework to start tracking compliance posture.",
+    "scopeUpdated": "Scope updated",
+    "subscribed_toast": "Subscribed to {{framework}}",
+    "unsubscribed_toast": "Unsubscribed from {{framework}}",
+    "compensatingCreated": "Compensating control added",
+    "compensatingDeleted": "Compensating control removed",
+    "reportGenerated": "Report generated",
+    "imported": "Imported",
+    "export": {
+      "label": "Export YAML",
+      "tooltip": "Download the framework as a YAML file",
+      "success": "Exported {{framework}}"
+    },
+    "import": {
+      "button": "Import YAML",
+      "title": "Import compliance framework",
+      "hint": "Upload a framework YAML file or paste the contents below. Imports are private to your organization and validated against the rule engine catalog before any database write.",
+      "fileLabel": "Upload file",
+      "pasteLabel": "Or paste YAML",
+      "chooseFile": "Choose file…",
+      "submit": "Import framework",
+      "submitting": "Importing…",
+      "empty": "Paste a YAML body or upload a file before importing.",
+      "success": "Imported {{slug}} ({{controls}} controls)",
+      "loaded": "Loaded",
+      "updated": "Updated existing import",
+      "skipped": "Already imported (no changes)"
+    },
+    "deleteImported": {
+      "tooltip": "Delete this imported framework",
+      "confirmTitle": "Delete {{framework}}?",
+      "confirmBody": "This removes the imported framework, its controls, mappings, and any per-control compliance state for your org. Subscriptions to this framework will be deleted. Built-in packs are not affected. This cannot be undone.",
+      "success": "Deleted {{framework}}"
+    }
   }
 }

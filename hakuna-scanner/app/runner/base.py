@@ -67,6 +67,65 @@ class RunResult:
     retries: int = 0
 
 
+@dataclass
+class BatchOutcome:
+    """Per-batch outcome for callers that need to distinguish 'scanned with
+    no results' from 'scan failed'. Yielded by run_batches_parallel_with_outcomes.
+    """
+    batch_input: list
+    success: bool
+    results: list[dict] = field(default_factory=list)
+    error: str = ""
+
+
+async def run_batches_parallel_with_outcomes(
+    build_runner,
+    batches: list,
+    org_id: str | None,
+    concurrency: int,
+    stage_name: str = "",
+) -> list[BatchOutcome]:
+    """Like run_batches_parallel but preserves per-batch outcome.
+
+    Returns one BatchOutcome per input batch. ``success=False`` when the
+    runner raised, timed out, or exited non-zero. Use this when callers
+    need to mark hosts in a failed batch differently from hosts that were
+    scanned but produced no findings.
+    """
+    if not batches:
+        return []
+
+    sem = asyncio.Semaphore(max(1, concurrency))
+    total = len(batches)
+
+    async def _run_one(idx: int, batch) -> BatchOutcome:
+        async with sem:
+            try:
+                runner = build_runner(batch)
+                result = await runner.run(org_id=org_id)
+            except Exception as e:
+                logger.error("stage=%s org=%s batch=%d/%d crashed: %s",
+                             stage_name, org_id, idx, total, e)
+                return BatchOutcome(batch_input=batch, success=False, error=str(e))
+
+            success = result.exit_code == 0
+            logger.info(
+                "stage=%s org=%s batch=%d/%d size=%d results=%d duration=%.1fs success=%s",
+                stage_name, org_id, idx, total, len(batch),
+                len(result.results), result.duration_seconds, success,
+            )
+            return BatchOutcome(
+                batch_input=batch,
+                success=success,
+                results=result.results,
+                error="" if success else (result.stderr[:500] or f"exit={result.exit_code}"),
+            )
+
+    tasks = [_run_one(i + 1, b) for i, b in enumerate(batches)]
+    outcomes = await asyncio.gather(*tasks, return_exceptions=False)
+    return list(outcomes)
+
+
 class BaseRunner:
     """Async subprocess wrapper for ProjectDiscovery tools.
 
@@ -83,6 +142,16 @@ class BaseRunner:
     # If set (bytes), piped to subprocess stdin. Default behavior remains
     # DEVNULL so existing runners are unaffected.
     stdin_input: bytes | None = None
+    # Substrings in stderr that indicate the failure will recur deterministically
+    # (e.g. naabu's "no valid ipv4 or ipv6 targets" when DNS resolves to nothing).
+    # Match short-circuits the retry loop — three identical 5-minute failures in a
+    # row burn worker time without changing the outcome.
+    non_retryable_stderr_patterns: tuple[str, ...] = ()
+    # Substrings that indicate a silent failure: tool exited 0 but stderr proves
+    # the run was meaningless (e.g. naabu losing the raw-socket open in Cloud Run
+    # produces exit 0 with zero results). Match flips exit_code to -1 so callers
+    # mark the batch failed instead of "scanned, nothing open".
+    silent_failure_stderr_patterns: tuple[str, ...] = ()
 
     def build_command(self) -> list[str]:
         raise NotImplementedError
@@ -115,11 +184,30 @@ class BaseRunner:
                 )
 
                 if result.exit_code == 0:
+                    if self.silent_failure_stderr_patterns and result.stderr and any(
+                        p in result.stderr for p in self.silent_failure_stderr_patterns
+                    ):
+                        logger.warning(
+                            "tool=%s exit=0 but stderr matches silent-failure pattern; treating as failure: %s",
+                            self.tool_name, result.stderr[:500],
+                        )
+                        result.exit_code = -1
+                        last_result = result
+                        break
                     return result
 
                 last_result = result
                 if result.stderr:
                     logger.warning("tool=%s stderr: %s", self.tool_name, result.stderr[:500])
+
+                if self.non_retryable_stderr_patterns and result.stderr and any(
+                    p in result.stderr for p in self.non_retryable_stderr_patterns
+                ):
+                    logger.info(
+                        "tool=%s skipping retries — stderr matches non-retryable pattern",
+                        self.tool_name,
+                    )
+                    break
 
             except asyncio.TimeoutError:
                 last_result = RunResult(

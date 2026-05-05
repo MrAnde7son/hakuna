@@ -44,6 +44,140 @@ async def emit_new_asset_events(
     return len(new_asset_ids)
 
 
+async def apply_shodan_observations(
+    db: AsyncSession,
+    org_id: uuid.UUID,
+    hosts: list[dict],
+) -> dict:
+    """Merge Shodan port/banner/CVE observations onto existing assets and emit
+    port_change events for any genuinely new ports.
+
+    Designed to run *after* upsert_discovered_hosts so the asset row already
+    exists. We deliberately *merge* (not overwrite) ``open_ports`` and
+    ``services`` — Shodan's view is partial, and we don't want to clobber a
+    naabu sweep that landed earlier with a richer port list.
+
+    Per-port banner data lands in ``services[port]`` along with a
+    ``shodan_vulns`` array — the backend's _build_easm_data forwards this into
+    the platform's ``Asset.easm_data`` so prioritization and the VM
+    auto-trigger can see the high-confidence CVE banners.
+
+    Each genuinely-new port produces one ``port_change`` event with
+    ``payload.source = 'shodan'``. The backend's audit auto-trigger fires on
+    these the same way it fires on naabu-derived events; the synthesized event
+    carries enough context (hostname, transport, new_ports) for the existing
+    matcher.
+
+    Returns ``{"updated": n, "events": m}``.
+    """
+    if not hosts:
+        return {"updated": 0, "events": 0}
+
+    # Aggregate per (hostname, ip): one Shodan host can appear in our entry
+    # list multiple times (one row per port observation). Group them so we
+    # do a single UPDATE per asset.
+    by_host: dict[tuple[str, str | None], list[dict]] = {}
+    for entry in hosts:
+        hostname = (entry.get("host") or entry.get("hostname") or "").strip().lower()
+        if not hostname:
+            continue
+        port = entry.get("shodan_port")
+        if port is None:
+            continue
+        try:
+            port = int(port)
+        except (TypeError, ValueError):
+            continue
+        ip = entry.get("ip")
+        by_host.setdefault((hostname, ip), []).append({
+            "port": port,
+            "product": entry.get("shodan_product"),
+            "version": entry.get("shodan_version"),
+            "vulns": entry.get("shodan_vulns") or [],
+        })
+
+    if not by_host:
+        return {"updated": 0, "events": 0}
+
+    now = datetime.now(timezone.utc)
+    updated = 0
+    events_emitted = 0
+
+    for (hostname, _ip), observations in by_host.items():
+        row = await db.execute(
+            text("""
+                SELECT id, open_ports, services
+                FROM assets
+                WHERE org_id = :org_id AND hostname = :hostname
+            """),
+            {"org_id": org_id, "hostname": hostname},
+        )
+        asset = row.fetchone()
+        if not asset:
+            continue
+
+        existing_ports = set(asset.open_ports or [])
+        new_ports_set: set[int] = set()
+        merged_services = dict(asset.services or {})
+        for ob in observations:
+            p = ob["port"]
+            if p not in existing_ports:
+                new_ports_set.add(p)
+            svc_entry = dict(merged_services.get(str(p)) or {})
+            # Don't clobber a richer naabu banner with a thinner Shodan one.
+            if ob["product"] and not svc_entry.get("product"):
+                svc_entry["product"] = ob["product"]
+            if ob["version"] and not svc_entry.get("version"):
+                svc_entry["version"] = ob["version"]
+            if "name" not in svc_entry and svc_entry.get("product"):
+                svc_entry["name"] = svc_entry["product"].lower()
+            if ob["vulns"]:
+                # Union with any prior CVE list on the same port.
+                prior = set(svc_entry.get("shodan_vulns") or [])
+                svc_entry["shodan_vulns"] = sorted(prior | set(ob["vulns"]))
+            merged_services[str(p)] = svc_entry
+
+        merged_ports = sorted(existing_ports | {ob["port"] for ob in observations})
+
+        await db.execute(
+            text("""
+                UPDATE assets SET
+                    open_ports = :ports,
+                    services = cast(:services as json),
+                    last_seen = :now
+                WHERE id = :id
+            """),
+            {
+                "ports": merged_ports,
+                "services": json.dumps(merged_services),
+                "now": now,
+                "id": asset.id,
+            },
+        )
+        updated += 1
+
+        if new_ports_set:
+            await _insert_event(
+                db, org_id, asset.id, "port_change",
+                {
+                    "hostname": hostname,
+                    "transport": "tcp",
+                    "new_ports": sorted(new_ports_set),
+                    "removed_ports": [],
+                    "source": "shodan",
+                },
+                now,
+            )
+            events_emitted += 1
+
+    await db.commit()
+    logger.info(
+        "shodan: org=%s assets_updated=%d port_change_events=%d",
+        org_id, updated, events_emitted,
+    )
+    return {"updated": updated, "events": events_emitted}
+
+
 async def detect_changes(
     db: AsyncSession,
     org_id: uuid.UUID,
@@ -52,8 +186,9 @@ async def detect_changes(
     """Compare current asset state with a previous snapshot and emit change events.
 
     `previous_snapshot` should be a list of dicts with keys:
-    {id, hostname, ip, open_ports, tech_stack, tls_cert}
-    captured before the scan run updated the assets.
+    {id, hostname, ip, open_ports, open_udp_ports, tech_stack, tls_cert}
+    captured before the scan run updated the assets. ``open_udp_ports`` is
+    optional for back-compat with snapshots taken before Phase 4.0.
     """
     now = datetime.now(timezone.utc)
     events_created = 0
@@ -61,7 +196,11 @@ async def detect_changes(
     for prev in previous_snapshot:
         asset_id = prev["id"]
         row = await db.execute(
-            text("SELECT hostname, host(ip) as ip, open_ports, tech_stack, tls_cert FROM assets WHERE id = :id"),
+            text("""
+                SELECT hostname, host(ip) as ip, open_ports, open_udp_ports,
+                       tech_stack, tls_cert
+                FROM assets WHERE id = :id
+            """),
             {"id": asset_id},
         )
         current = row.fetchone()
@@ -77,7 +216,7 @@ async def detect_changes(
             }, now)
             events_created += 1
 
-        # Port change
+        # TCP port change
         prev_ports = sorted(prev.get("open_ports") or [])
         curr_ports = sorted(current.open_ports or [])
         if prev_ports != curr_ports:
@@ -86,8 +225,25 @@ async def detect_changes(
             if new_ports or removed_ports:
                 await _insert_event(db, org_id, asset_id, "port_change", {
                     "hostname": current.hostname,
+                    "transport": "tcp",
                     "new_ports": new_ports,
                     "removed_ports": removed_ports,
+                }, now)
+                events_created += 1
+
+        # UDP port change (Phase 4.0). Same payload shape as TCP — the
+        # ``transport`` field is what the audit auto-trigger filters on.
+        prev_udp = sorted(prev.get("open_udp_ports") or [])
+        curr_udp = sorted(current.open_udp_ports or [])
+        if prev_udp != curr_udp:
+            new_udp = [p for p in curr_udp if p not in prev_udp]
+            removed_udp = [p for p in prev_udp if p not in curr_udp]
+            if new_udp or removed_udp:
+                await _insert_event(db, org_id, asset_id, "port_change", {
+                    "hostname": current.hostname,
+                    "transport": "udp",
+                    "new_ports": new_udp,
+                    "removed_ports": removed_udp,
                 }, now)
                 events_created += 1
 
@@ -153,6 +309,54 @@ async def detect_cert_expiring(db: AsyncSession, org_id: uuid.UUID) -> int:
 
     await db.commit()
     return events
+
+
+async def decay_unseen_assets(
+    db: AsyncSession,
+    org_id: uuid.UUID,
+    decay: int = 10,
+    lookback_scans: int = 1,
+) -> int:
+    """Decay liveness_score for assets that weren't validated this cycle.
+
+    Counterpart to ``validate_and_update_assets`` (which bumps/decays the
+    score for assets that *did* run a liveness probe). An asset whose
+    last_validated_at is older than the most recent finished scan got
+    skipped — usually because liveness only validates a sample on large
+    scans — so we decay by a small fixed amount per skipped cycle. Floor
+    at 0 so the score is never negative.
+
+    Returns the number of rows touched.
+    """
+    result = await db.execute(
+        text(
+            """
+            SELECT finished_at FROM scan_runs
+            WHERE org_id = :org_id AND status = 'done'
+            ORDER BY finished_at DESC
+            LIMIT 1 OFFSET :offset
+            """
+        ),
+        {"org_id": org_id, "offset": lookback_scans - 1},
+    )
+    cutoff_row = result.fetchone()
+    if not cutoff_row or not cutoff_row.finished_at:
+        return 0
+
+    cutoff = cutoff_row.finished_at
+    res = await db.execute(
+        text(
+            """
+            UPDATE assets SET
+                liveness_score = GREATEST(0, COALESCE(liveness_score, 100) - :decay)
+            WHERE org_id = :org_id
+              AND (last_validated_at IS NULL OR last_validated_at < :cutoff)
+            """
+        ),
+        {"org_id": org_id, "cutoff": cutoff, "decay": decay},
+    )
+    await db.commit()
+    return res.rowcount or 0
 
 
 async def detect_gone_assets(db: AsyncSession, org_id: uuid.UUID, lookback_scans: int = 3) -> int:

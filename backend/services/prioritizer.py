@@ -16,6 +16,9 @@ Plugin family weights and attack surface plugin IDs are Nessus-originated but
 applied generically — findings without a matching family get a neutral weight.
 """
 
+import re
+
+
 PLUGIN_FAMILY_WEIGHTS = {
     # High-value families — direct exploitation paths
     "Windows": 1.3,
@@ -39,6 +42,10 @@ PLUGIN_FAMILY_WEIGHTS = {
     "Service detection": 0.7,
     "Settings": 0.5,
     "Policy Compliance": 0.8,
+    # Internet-facing remote-access appliances. Heavily weighted because the
+    # exploit chain is "scan → public PoC → ransomware" with days, not months,
+    # of patch latency. CISA KEV is dominated by this surface.
+    "VPN Appliance": 1.5,
 }
 
 EXPLOIT_MATURITY_MULTIPLIERS = {
@@ -131,6 +138,8 @@ OWNER_MAP = {
     "Policy Compliance": "GRC",
     # VM — vulnerability management team owns findings from the VM scanners they operate
     "Nuclei": "VM",
+    # Networking owns perimeter remote-access appliances
+    "VPN Appliance": "Networking",
     # SecOps — residual hardening / misc security controls
     "RPC": "SecOps",
     "General": "SecOps",
@@ -415,6 +424,68 @@ def compute_priority_score(
     }
 
 
+# CWE → concrete remediation guidance. Scanner-agnostic; preferred over
+# plugin_name/family keyword matching because CWE is normalized at ingest.
+_CWE_GUIDANCE = {
+    "CWE-89": "Use parameterized queries / prepared statements with bound variables. Reject input via allow-list validation, never blocklist. Apply least-privilege DB credentials so a successful injection can't read other tables. Add a WAF rule for the affected endpoint as a short-term mitigation.",
+    "CWE-79": "Context-aware output encoding (HTML, JS, URL, attribute) on every untrusted value at render time. Set a strict Content-Security-Policy with `default-src 'self'` and no `unsafe-inline`. Sanitize stored content via a vetted library (DOMPurify, OWASP Java Encoder).",
+    "CWE-78": "Avoid shelling out — call the OS API directly. If a shell call is unavoidable, pass arguments as an array (never a concatenated string) and validate against an allow-list. Drop privileges before invocation.",
+    "CWE-77": "Replace string-concatenated commands with structured APIs. Validate inputs against an allow-list and quote/escape any remaining user-controlled values.",
+    "CWE-94": "Eliminate dynamic code evaluation (`eval`, `exec`, `Function()`, deserialization-driven code paths). If dynamic dispatch is required, use a fixed allow-list of handlers keyed by a sanitized identifier.",
+    "CWE-22": "Resolve user-supplied paths against a fixed base directory and reject any result that escapes it (`os.path.realpath` + `startswith` check). Never trust filename input directly — map to opaque IDs.",
+    "CWE-918": "Validate outbound URLs against an allow-list of hosts. Resolve DNS once and reuse the resolved IP for the request. Block requests to RFC1918, link-local (169.254/16, including 169.254.169.254 metadata), and loopback ranges.",
+    "CWE-352": "Require an unguessable per-session anti-CSRF token on every state-changing request. Use `SameSite=Lax` (or `Strict`) cookies and verify the `Origin`/`Referer` header on sensitive endpoints.",
+    "CWE-287": "Enforce authentication on every protected route at the framework/middleware layer, not per-handler. Centralize the check, add automated tests for unauthenticated access on each endpoint, and audit recent access logs for exploitation.",
+    "CWE-306": "This endpoint is missing authentication entirely. Add the auth middleware/guard used by the rest of the application and verify the route is no longer reachable anonymously.",
+    "CWE-862": "Add explicit authorization checks for this resource. Verify the authenticated principal has the required role/permission before returning data or performing the action.",
+    "CWE-863": "Authorization is enforced incorrectly. Re-check object ownership/tenant scoping on the server side — do not rely on client-supplied IDs or hidden form fields.",
+    "CWE-798": "Remove the hardcoded credential from source. Rotate the secret immediately (assume compromise) and load it from a secret manager (Vault, AWS Secrets Manager, GCP Secret Manager) at runtime.",
+    "CWE-611": "Disable external entity resolution in the XML parser (`disallow-doctype-decl` / `XMLConstants.FEATURE_SECURE_PROCESSING`). Prefer a parser configured for XXE-safety by default (defusedxml, etc.).",
+    "CWE-502": "Do not deserialize untrusted input with native deserializers (`pickle`, Java `ObjectInputStream`, `unserialize`). Switch to a data-only format (JSON) with strict schema validation.",
+    "CWE-434": "Validate uploaded files by content type and magic bytes, not extension. Store outside the web root, generate a server-side filename, and serve via a download handler that sets `Content-Disposition: attachment`.",
+    "CWE-601": "Validate redirect targets against an allow-list of known internal paths. Never echo a user-supplied URL into a `Location` header without verification.",
+    "CWE-200": "Audit the response for sensitive fields (stack traces, internal IDs, tokens, PII) and strip them. Disable verbose error pages in production.",
+    "CWE-269": "Apply least privilege — review the role/capability granted and reduce to the minimum required. Audit recent uses of the elevated permission for misuse.",
+    "CWE-330": "Replace the weak randomness source with a CSPRNG (`secrets` in Python, `crypto.randomBytes` in Node, `SecureRandom` in Java). Rotate any tokens generated with the weak source.",
+    "CWE-327": "Migrate to a current algorithm (AES-GCM, ChaCha20-Poly1305 for encryption; SHA-256+ for hashing; Argon2/bcrypt for passwords). Re-encrypt or re-hash existing data during the next user touch.",
+    "CWE-319": "Enforce TLS for this channel. Redirect HTTP→HTTPS, set HSTS with `includeSubDomains`, and disable plaintext fallback in clients.",
+}
+
+# Heuristic name match when cwe_ids is empty — covers EASM/agent findings
+# whose plugin_name describes the vuln class directly.
+_VULN_NAME_TO_CWE = [
+    (re.compile(r"\bSQL\s*Injection\b", re.I), "CWE-89"),
+    (re.compile(r"\bCross[-\s]Site\s+Scripting\b|\bXSS\b", re.I), "CWE-79"),
+    (re.compile(r"\b(?:OS\s+)?Command\s+Injection\b", re.I), "CWE-78"),
+    (re.compile(r"\bCode\s+Injection\b|\bRemote\s+Code\s+Execution\b|\bRCE\b", re.I), "CWE-94"),
+    (re.compile(r"\bPath\s+Traversal\b|\bDirectory\s+Traversal\b", re.I), "CWE-22"),
+    (re.compile(r"\bSSRF\b|\bServer[-\s]Side\s+Request\s+Forgery\b", re.I), "CWE-918"),
+    (re.compile(r"\bCSRF\b|\bCross[-\s]Site\s+Request\s+Forgery\b", re.I), "CWE-352"),
+    (re.compile(r"\bXXE\b|\bXML\s+External\s+Entity\b", re.I), "CWE-611"),
+    (re.compile(r"\b(?:Insecure|Unsafe)\s+Deserialization\b", re.I), "CWE-502"),
+    (re.compile(r"\bUnrestricted\s+File\s+Upload\b|\bArbitrary\s+File\s+Upload\b", re.I), "CWE-434"),
+    (re.compile(r"\bOpen\s+Redirect\b", re.I), "CWE-601"),
+    (re.compile(r"\bHardcoded\s+(?:Credential|Password|Secret)\b", re.I), "CWE-798"),
+    (re.compile(r"\bMissing\s+Authentication\b", re.I), "CWE-306"),
+    (re.compile(r"\bBroken\s+Access\s+Control\b|\bIDOR\b|\bInsecure\s+Direct\s+Object\b", re.I), "CWE-863"),
+]
+
+
+def _cwe_guidance(cwe_ids, plugin_name):
+    """Return CWE-driven guidance for the first matching CWE, or None."""
+    for raw in cwe_ids or []:
+        if not isinstance(raw, str):
+            continue
+        cwe = raw.upper().strip()
+        if cwe in _CWE_GUIDANCE:
+            return _CWE_GUIDANCE[cwe]
+    name = plugin_name or ""
+    for pattern, cwe in _VULN_NAME_TO_CWE:
+        if pattern.search(name):
+            return _CWE_GUIDANCE.get(cwe)
+    return None
+
+
 def _generate_remediation_steps(finding: dict) -> str:
     """Generate plain-English remediation steps based on finding context."""
     solution = finding.get("solution", "")
@@ -422,7 +493,7 @@ def _generate_remediation_steps(finding: dict) -> str:
     family = finding.get("plugin_family", "")
     severity = finding.get("severity", 0)
     cves = finding.get("cves", [])
-    cvss = finding.get("cvss3_score") or finding.get("cvss2_score") or 0
+    cwe_ids = finding.get("cwe_ids", []) or []
 
     steps = []
 
@@ -433,35 +504,37 @@ def _generate_remediation_steps(finding: dict) -> str:
         cve_list = ", ".join(cves[:3])
         steps.append(f"Review the following CVE(s): {cve_list}")
 
-    # Step 2: Specific remediation
+    # Step 2: Specific remediation from the scanner's solution field, if present
     if solution and solution.strip() not in ("N/A", "n/a", ""):
         steps.append(f"**Recommended fix:** {solution.strip()}")
 
-    # Step 3: Family-specific guidance
-    family_lower = family.lower() if family else ""
-    if "windows" in family_lower or "microsoft" in family_lower:
-        steps.append("Apply the latest Windows Update or the specific KB article referenced. Test in staging before production rollout.")
-    elif "ssl" in plugin_name.lower() or "tls" in plugin_name.lower():
-        steps.append("Disable weak cipher suites and protocols. Enable TLS 1.2/1.3 only. Renew or replace the certificate if expired.")
-    elif "ssh" in plugin_name.lower():
-        steps.append("Review SSH configuration (/etc/ssh/sshd_config). Disable root login, weak algorithms, and unused authentication methods.")
-    elif "smb" in plugin_name.lower():
-        steps.append("Disable SMBv1 via PowerShell: `Set-SmbServerConfiguration -EnableSMB1Protocol $false`. Ensure SMB signing is enforced.")
-    elif "rdp" in plugin_name.lower():
-        steps.append("Enable Network Level Authentication (NLA). Restrict RDP access via firewall to trusted IP ranges only.")
-    elif "ip forwarding" in plugin_name.lower():
-        steps.append("Disable IP forwarding unless this host is a router: Linux: `echo 0 > /proc/sys/net/ipv4/ip_forward`. Windows: Set IPEnableRouter=0 in registry.")
-    elif "default" in plugin_name.lower() and "account" in plugin_name.lower():
-        steps.append("Change all default credentials immediately. Disable accounts that are not needed.")
-    elif "icmp" in plugin_name.lower():
-        steps.append("Configure firewall rules to block ICMP timestamp requests (type 13) and replies (type 14).")
+    # Step 3: Vuln-class guidance — prefer CWE (taxonomy is scanner-agnostic),
+    # fall back to plugin_family / plugin_name keyword heuristics.
+    cwe_step = _cwe_guidance(cwe_ids, plugin_name)
+    if cwe_step:
+        steps.append(cwe_step)
+    else:
+        family_lower = family.lower() if family else ""
+        plugin_lower = plugin_name.lower() if plugin_name else ""
+        if "windows" in family_lower or "microsoft" in family_lower:
+            steps.append("Apply the latest Windows Update or the specific KB article referenced. Test in staging before production rollout.")
+        elif "ssl" in plugin_lower or "tls" in plugin_lower:
+            steps.append("Disable weak cipher suites and protocols. Enable TLS 1.2/1.3 only. Renew or replace the certificate if expired.")
+        elif "ssh" in plugin_lower:
+            steps.append("Review SSH configuration (/etc/ssh/sshd_config). Disable root login, weak algorithms, and unused authentication methods.")
+        elif "smb" in plugin_lower:
+            steps.append("Disable SMBv1 via PowerShell: `Set-SmbServerConfiguration -EnableSMB1Protocol $false`. Ensure SMB signing is enforced.")
+        elif "rdp" in plugin_lower:
+            steps.append("Enable Network Level Authentication (NLA). Restrict RDP access via firewall to trusted IP ranges only.")
+        elif "ip forwarding" in plugin_lower:
+            steps.append("Disable IP forwarding unless this host is a router: Linux: `echo 0 > /proc/sys/net/ipv4/ip_forward`. Windows: Set IPEnableRouter=0 in registry.")
+        elif "default" in plugin_lower and "account" in plugin_lower:
+            steps.append("Change all default credentials immediately. Disable accounts that are not needed.")
+        elif "icmp" in plugin_lower:
+            steps.append("Configure firewall rules to block ICMP timestamp requests (type 13) and replies (type 14).")
 
-    # Step 4: Verification
-    steps.append("Verify the fix by re-running the Nessus scan against the affected host after remediation.")
-
-    # Step 5: Compensating controls
-    if severity >= 3 and not cves:
-        steps.append("If immediate patching is not possible, implement compensating controls: network segmentation, access restrictions, or additional monitoring.")
+    # Step 4: Verification — scanner-agnostic
+    steps.append("Verify the fix by re-running a scan against the affected host after remediation.")
 
     return "\n\n".join(steps)
 

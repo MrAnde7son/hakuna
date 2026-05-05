@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import {
   Target, Plus, Play, Trash2, Clock, AlertTriangle, CheckCircle, PauseCircle,
@@ -7,8 +7,9 @@ import {
   Flame, Shield, Timer, Wrench, Globe, Sparkles, FileText, CalendarClock, Siren, Ticket, ShieldAlert,
 } from 'lucide-react'
 import { useScan } from '../../App.jsx'
-import { getCampaigns, createCampaign, deleteCampaign, runCampaign, getWorkflows, createWorkflow, deleteWorkflow, getWorkflowTemplates, createWorkflowFromTemplate, exportConfig, importConfig, authListUsers, getIntegrations, previewCampaignQuery } from '../../api.js'
+import { getCampaigns, createCampaign, deleteCampaign, runCampaign, getWorkflows, createWorkflow, deleteWorkflow, getWorkflowTemplates, createWorkflowFromTemplate, exportConfig, importConfig, authListUsers, getIntegrations, previewCampaignQuery, nlpToCampaignConditions, generateWorkflow, createWorkflowFromGenerated } from '../../api.js'
 import { Card, PageHeader, Button, Spinner, EmptyState, Pill, ExportImportButtons, ErrorBanner, SkeletonCard, useToast } from '../shared/ui.jsx'
+import { capture } from '../../utils/analytics.js'
 
 const STATUS_KEYS = {
   draft:     { key: 'campaigns.draft',     color: 'var(--muted)',   bg: 'rgba(100,116,139,0.1)', border: 'rgba(100,116,139,0.25)', icon: Clock },
@@ -296,16 +297,31 @@ function readableCondition(cond) {
   return `${field} ${op} ${val ?? ''}`
 }
 
-function CreateCampaignModal({ scanId, onClose, onCreate }) {
+function CreateCampaignModal({ scanId, onClose, onCreate, prefill }) {
   const { t } = useTranslation()
   const toast = useToast()
-  const [step, setStep] = useState('templates') // 'templates' | 'details'
-  const [selectedTemplate, setSelectedTemplate] = useState(null)
-  const [name, setName] = useState('')
-  const [description, setDescription] = useState('')
+  const prefillTemplate = prefill ? {
+    id: 'threat_intel_prefill',
+    icon: ShieldAlert,
+    color: '#dc2626',
+    bg: 'rgba(220,38,38,0.10)',
+    border: 'rgba(220,38,38,0.25)',
+    name: prefill.name || 'Threat-intel campaign',
+    description: prefill.description || '',
+    query: prefill.query || [],
+    query_logic: prefill.query_logic || 'AND',
+  } : null
+  const [step, setStep] = useState(prefillTemplate ? 'details' : 'templates') // 'templates' | 'details'
+  const [selectedTemplate, setSelectedTemplate] = useState(prefillTemplate)
+  const [name, setName] = useState(prefillTemplate?.name || '')
+  const [description, setDescription] = useState(prefillTemplate?.description || '')
   const [saving, setSaving] = useState(false)
   const [users, setUsers] = useState([])
   const [ownerId, setOwnerId] = useState('')
+  // NLP input on template-selection step
+  const [nlpQuery, setNlpQuery] = useState('')
+  const [nlpLoading, setNlpLoading] = useState(false)
+  const [nlpError, setNlpError] = useState(null)
   // Auto-ticket config
   const [ticketEnabled, setTicketEnabled] = useState(false)
   const [ticketIntegration, setTicketIntegration] = useState('jira')
@@ -318,6 +334,18 @@ function CreateCampaignModal({ scanId, onClose, onCreate }) {
   const [previewResult, setPreviewResult] = useState(null)
   const [previewing, setPreviewing] = useState(false)
 
+  // Auto-preview when opened with prefilled query (e.g. from threat intel)
+  useEffect(() => {
+    if (prefillTemplate && prefillTemplate.query.length > 0 && scanId) {
+      setPreviewing(true)
+      previewCampaignQuery({ query: prefillTemplate.query, query_logic: prefillTemplate.query_logic, scan_id: scanId })
+        .then(res => setPreviewResult(res))
+        .catch(() => {})
+        .finally(() => setPreviewing(false))
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   useEffect(() => {
     authListUsers().then(data => setUsers(data.users || data || [])).catch(() => {})
     getIntegrations().then(data => {
@@ -329,6 +357,48 @@ function CreateCampaignModal({ scanId, onClose, onCreate }) {
       if (ticketing.length === 1) setTicketIntegration(ticketing[0].provider)
     }).catch(() => {})
   }, [])
+
+  const handleNLPSubmit = async () => {
+    const q = nlpQuery.trim()
+    if (!q) return
+    setNlpLoading(true)
+    setNlpError(null)
+    try {
+      const res = await nlpToCampaignConditions(q, scanId || null)
+      if (!res.conditions || res.conditions.length === 0) {
+        setNlpError("Couldn't extract conditions from that query. Try rephrasing or pick a template.")
+        return
+      }
+      const tpl = {
+        id: 'nlp_generated',
+        icon: Sparkles,
+        color: '#a855f7',
+        bg: 'rgba(168,85,247,0.10)',
+        border: 'rgba(168,85,247,0.25)',
+        name: q.length > 60 ? q.slice(0, 57) + '…' : q,
+        description: `From natural language: "${q}"`,
+        query: res.conditions,
+        query_logic: res.query_logic || 'AND',
+      }
+      setSelectedTemplate(tpl)
+      setName(tpl.name)
+      setDescription(tpl.description)
+      setPreviewResult({
+        asset_count: res.asset_count || 0,
+        finding_count: res.finding_count || 0,
+      })
+      setStep('details')
+      capture('campaign_nlp_used', {
+        query_length: q.length,
+        condition_count: res.conditions.length,
+        finding_count: res.finding_count || 0,
+      })
+    } catch (e) {
+      setNlpError('Failed to interpret query. Try again or pick a template.')
+    } finally {
+      setNlpLoading(false)
+    }
+  }
 
   const handleSelectTemplate = (tpl) => {
     setSelectedTemplate(tpl)
@@ -378,6 +448,12 @@ function CreateCampaignModal({ scanId, onClose, onCreate }) {
         }
       }
       const c = await createCampaign(payload)
+      capture('campaign_created', {
+        campaign_id: c.id,
+        template_id: selectedTemplate?.id || null,
+        has_auto_ticket: !!payload.auto_ticket,
+        query_conditions: (payload.query || []).length,
+      })
       toast.success('Campaign created')
       onCreate(c)
     } finally {
@@ -418,6 +494,42 @@ function CreateCampaignModal({ scanId, onClose, onCreate }) {
         {step === 'templates' ? (
           /* ── Template grid ── */
           <div style={{ overflowY: 'auto', padding: 20 }}>
+            {/* NLP describe bar — alternative to template selection */}
+            <div style={{
+              marginBottom: 16, padding: '12px 14px', borderRadius: 10,
+              background: 'rgba(168,85,247,0.06)', border: '1px solid rgba(168,85,247,0.20)',
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+                <Sparkles size={14} color="#a855f7" />
+                <span style={{ fontSize: 12, fontWeight: 600, color: '#a855f7' }}>
+                  Describe your campaign in plain English
+                </span>
+                <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                  · or pick a template below
+                </span>
+              </div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <input
+                  value={nlpQuery}
+                  onChange={e => { setNlpQuery(e.target.value); if (nlpError) setNlpError(null) }}
+                  onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleNLPSubmit() } }}
+                  placeholder='e.g. "critical Windows servers with exploits in DMZ"'
+                  disabled={nlpLoading}
+                  style={{
+                    flex: 1, padding: '8px 12px', background: 'var(--bg-card)',
+                    border: '1px solid var(--border)', borderRadius: 8, fontSize: 13,
+                    color: 'var(--text-primary)', boxSizing: 'border-box',
+                  }}
+                />
+                <Button onClick={handleNLPSubmit} disabled={!nlpQuery.trim() || nlpLoading}>
+                  {nlpLoading ? 'Interpreting…' : 'Generate'}
+                </Button>
+              </div>
+              {nlpError && (
+                <div style={{ marginTop: 6, fontSize: 11, color: '#ef4444' }}>{nlpError}</div>
+              )}
+            </div>
+
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
               {CAMPAIGN_TEMPLATES.map(tpl => {
                 const Icon = tpl.icon
@@ -953,7 +1065,7 @@ function WorkflowCard({ workflow, onDelete }) {
 
 function CreateWorkflowModal({ onClose, onCreate }) {
   const { t } = useTranslation()
-  const [mode, setMode] = useState('template') // 'template' | 'custom'
+  const [mode, setMode] = useState('template') // 'template' | 'custom' | 'describe'
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
   const [saving, setSaving] = useState(false)
@@ -961,6 +1073,11 @@ function CreateWorkflowModal({ onClose, onCreate }) {
   const [categories, setCategories] = useState([])
   const [loadingTpl, setLoadingTpl] = useState(true)
   const [tplSearch, setTplSearch] = useState('')
+  // Describe mode (LLM generation)
+  const [nlPrompt, setNlPrompt] = useState('')
+  const [generating, setGenerating] = useState(false)
+  const [generated, setGenerated] = useState(null) // {name, description, nodes, edges, warnings, model}
+  const [genError, setGenError] = useState(null)
 
   useEffect(() => {
     getWorkflowTemplates().then(data => {
@@ -987,10 +1104,46 @@ function CreateWorkflowModal({ onClose, onCreate }) {
     } finally { setSaving(false) }
   }
 
+  const handleGenerate = async () => {
+    if (!nlPrompt.trim()) return
+    setGenerating(true)
+    setGenError(null)
+    try {
+      const result = await generateWorkflow(nlPrompt.trim())
+      setGenerated(result)
+      capture('workflow_nlp_generated', {
+        prompt_length: nlPrompt.length,
+        node_count: result.nodes?.length || 0,
+        warning_count: result.warnings?.length || 0,
+        model: result.model,
+      })
+    } catch (e) {
+      setGenError(e.message || 'Failed to generate workflow')
+    } finally {
+      setGenerating(false)
+    }
+  }
+
+  const handleAcceptGenerated = async () => {
+    if (!generated) return
+    setSaving(true)
+    try {
+      const wf = await createWorkflowFromGenerated({
+        name: generated.name,
+        description: generated.description,
+        nodes: generated.nodes,
+        edges: generated.edges,
+        original_prompt: generated.original_prompt,
+      })
+      onCreate(wf, { aiGenerated: true })
+    } finally { setSaving(false) }
+  }
+
   const CATEGORY_ICONS = { triage: GitBranch, patching: Settings, incident: Zap, integration: Settings }
 
   const modeTabs = [
     { key: 'template', label: t('campaigns.useTemplate') },
+    { key: 'describe', label: 'Describe' },
     { key: 'custom', label: t('campaigns.startFromScratch') },
   ]
 
@@ -1018,7 +1171,110 @@ function CreateWorkflowModal({ onClose, onCreate }) {
           ))}
         </div>
 
-        {mode === 'template' ? (
+        {mode === 'describe' ? (
+          <div>
+            {!generated ? (
+              <>
+                <div style={{
+                  marginBottom: 14, padding: '10px 12px', borderRadius: 8,
+                  background: 'rgba(168,85,247,0.06)', border: '1px solid rgba(168,85,247,0.20)',
+                  display: 'flex', alignItems: 'flex-start', gap: 8,
+                }}>
+                  <Sparkles size={14} color="#a855f7" style={{ marginTop: 2, flexShrink: 0 }} />
+                  <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                    Describe the automation in plain English — an AI will draft a workflow you can review.
+                    The result is saved as <strong>draft</strong> and won't run until you activate it.
+                  </div>
+                </div>
+                <textarea
+                  value={nlPrompt}
+                  onChange={e => { setNlPrompt(e.target.value); if (genError) setGenError(null) }}
+                  placeholder='e.g. "When a KEV finding lands on a domain controller, ticket the AD team in ServiceNow with priority Highest and notify #ad-security on Slack"'
+                  rows={4}
+                  disabled={generating}
+                  autoFocus
+                  style={{
+                    width: '100%', padding: '10px 12px', background: 'var(--bg-secondary)',
+                    border: '1px solid var(--border)', borderRadius: 8, fontSize: 13,
+                    color: 'var(--text-primary)', resize: 'vertical', boxSizing: 'border-box',
+                    fontFamily: 'inherit',
+                  }}
+                />
+                {genError && (
+                  <div style={{ marginTop: 8, fontSize: 12, color: '#ef4444' }}>{genError}</div>
+                )}
+                <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
+                  <Button variant='ghost' onClick={onClose} type='button'>{t('common.cancel')}</Button>
+                  <Button onClick={handleGenerate} disabled={!nlPrompt.trim() || generating}>
+                    {generating ? 'Generating…' : 'Generate Workflow'}
+                  </Button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div style={{
+                  marginBottom: 14, padding: '10px 12px', borderRadius: 8,
+                  background: 'rgba(168,85,247,0.06)', border: '1px solid rgba(168,85,247,0.20)',
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+                    <Sparkles size={14} color="#a855f7" />
+                    <span style={{ fontSize: 12, fontWeight: 600, color: '#a855f7' }}>
+                      Draft generated · {generated.model}
+                    </span>
+                  </div>
+                  <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 4 }}>{generated.name}</div>
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{generated.description}</div>
+                </div>
+
+                {/* Node list (compact) */}
+                <div style={{ marginBottom: 12, fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                  Nodes ({generated.nodes.length}) · Edges ({generated.edges.length})
+                </div>
+                <div style={{
+                  marginBottom: 16, padding: 10, borderRadius: 8,
+                  background: 'var(--bg-secondary)', border: '1px solid var(--border)',
+                  maxHeight: 220, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6,
+                }}>
+                  {generated.nodes.map(n => (
+                    <div key={n.node_id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
+                      <Pill color={n.node_type === 'trigger' ? '#818cf8' : n.node_type === 'filter' ? '#84cc16' : '#f87171'}>
+                        {n.node_type}
+                      </Pill>
+                      <code style={{ fontSize: 11, color: 'var(--text-muted)' }}>{n.node_subtype}</code>
+                      <span style={{ color: 'var(--text-primary)' }}>· {n.label}</span>
+                    </div>
+                  ))}
+                </div>
+
+                {generated.warnings && generated.warnings.length > 0 && (
+                  <div style={{
+                    marginBottom: 14, padding: '10px 12px', borderRadius: 8,
+                    background: 'rgba(245,158,11,0.06)', border: '1px solid rgba(245,158,11,0.25)',
+                  }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: '#f59e0b', marginBottom: 4 }}>
+                      ⚠ {generated.warnings.length} warning{generated.warnings.length !== 1 ? 's' : ''}
+                    </div>
+                    <ul style={{ margin: 0, paddingLeft: 18, fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.6 }}>
+                      {generated.warnings.slice(0, 5).map((w, i) => <li key={i}>{w}</li>)}
+                    </ul>
+                  </div>
+                )}
+
+                <div style={{ display: 'flex', gap: 8, justifyContent: 'space-between' }}>
+                  <Button variant='ghost' onClick={() => { setGenerated(null); setGenError(null) }} type='button'>
+                    ← Try Again
+                  </Button>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <Button variant='ghost' onClick={onClose} type='button'>{t('common.cancel')}</Button>
+                    <Button onClick={handleAcceptGenerated} disabled={saving}>
+                      {saving ? 'Saving…' : 'Save as Draft & Open'}
+                    </Button>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        ) : mode === 'template' ? (
           <div>
             {loadingTpl ? <Spinner /> : templates.length === 0 ? (
               <div style={{ textAlign: 'center', padding: 20, color: '#94a3b8' }}>{t('campaigns.noTemplatesAvailable')}</div>
@@ -1122,12 +1378,32 @@ export default function Campaigns() {
   const toast = useToast()
   const { activeScanId } = useScan()
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
   const [campaigns, setCampaigns] = useState([])
   const [workflows, setWorkflows] = useState([])
   const [loading, setLoading] = useState(true)
   const [fetchError, setFetchError] = useState(null)
   const [showCreate, setShowCreate] = useState(false)
+  const [createPrefill, setCreatePrefill] = useState(null)
   const [showCreateWf, setShowCreateWf] = useState(false)
+
+  // Auto-open create modal when navigated with ?create=1 (from threat intel etc.)
+  useEffect(() => {
+    if (searchParams.get('create') !== '1') return
+    let query = []
+    try { query = JSON.parse(searchParams.get('query') || '[]') } catch { query = [] }
+    setCreatePrefill({
+      name: searchParams.get('name') || '',
+      description: searchParams.get('description') || '',
+      query,
+      query_logic: searchParams.get('query_logic') || 'AND',
+    })
+    setShowCreate(true)
+    const next = new URLSearchParams(searchParams)
+    ;['create', 'name', 'description', 'query', 'query_logic'].forEach(k => next.delete(k))
+    setSearchParams(next, { replace: true })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
   const [tab, setTab] = useState('campaigns')
   const [wfSearch, setWfSearch] = useState('')
   const [campSearch, setCampSearch] = useState('')
@@ -1153,9 +1429,9 @@ export default function Campaigns() {
     navigate(`/campaigns/${c.id}`)
   }
 
-  const handleCreateWf = (wf) => {
+  const handleCreateWf = (wf, opts = {}) => {
     setShowCreateWf(false)
-    navigate(`/workflows/${wf.id}`)
+    navigate(`/workflows/${wf.id}`, opts.aiGenerated ? { state: { aiGenerated: true } } : undefined)
   }
 
   const handleDelete = async (id) => {
@@ -1171,6 +1447,7 @@ export default function Campaigns() {
 
   const handleRun = async (id) => {
     await runCampaign(id)
+    capture('campaign_executed', { campaign_id: id })
     load()
   }
 
@@ -1326,7 +1603,8 @@ export default function Campaigns() {
       {showCreate && (
         <CreateCampaignModal
           scanId={activeScanId}
-          onClose={() => setShowCreate(false)}
+          prefill={createPrefill}
+          onClose={() => { setShowCreate(false); setCreatePrefill(null) }}
           onCreate={handleCreate}
         />
       )}

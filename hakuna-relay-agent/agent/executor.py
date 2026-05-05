@@ -3,8 +3,22 @@
 import json
 import logging
 
-from .transport import LocalApiTransport
 from .config import AgentConfig
+from .method_registry import METHOD_HANDLERS, get_handler
+from .transport import LocalApiTransport
+
+from . import ldap_query  # noqa: F401
+from . import smb_query  # noqa: F401
+from . import snmp_query  # noqa: F401
+from . import ssh_query  # noqa: F401
+from . import wmi_query  # noqa: F401
+from . import datastore_probe  # noqa: F401
+from . import ai_service_probe  # noqa: F401
+from . import anon_protocol_probe  # noqa: F401
+from . import ipmi_probe  # noqa: F401
+from . import netbios_probe  # noqa: F401
+from . import ot_protocol_probe  # noqa: F401
+from . import ot_passive_probe  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -80,23 +94,24 @@ async def handle_task(task: dict, ws, config: AgentConfig):
                 "result": result,
             }))
 
-        elif method == "wmi_query":
-            from .wmi_query import run_wmi_queries
-            target = transport_config.get("target")
-            profiles = params.get("profiles") or []
-            timeout_s = int(params.get("timeout_s") or 120)
-            result = await run_wmi_queries(target, credentials, profiles, timeout_s)
+        else:
+            # Pluggable handlers — wmi_query and any future credentialed
+            # on-prem probes (ldap_query, kerberos_probe, smb_enum, …)
+            # self-register in method_registry.
+            handler = get_handler(method)
+            if handler is None:
+                await ws.send(json.dumps({
+                    "type": "task_error",
+                    "task_id": task_id,
+                    "error": f"Unknown method: {method}",
+                }))
+                return
+
+            result = await handler(ws, task, transport_config, credentials, params)
             await ws.send(json.dumps({
                 "type": "task_complete",
                 "task_id": task_id,
                 "result": result,
-            }))
-
-        else:
-            await ws.send(json.dumps({
-                "type": "task_error",
-                "task_id": task_id,
-                "error": f"Unknown method: {method}",
             }))
 
     except Exception as e:

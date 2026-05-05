@@ -3,6 +3,21 @@ import os
 
 from app.config import settings
 from app.runner.base import BaseRunner
+from app.runner.port_lists import NMAP_TOP_1000_TCP, merge_port_strings
+
+
+def _default_naabu_ports() -> str:
+    """Build naabu's effective port list from current settings.
+
+    Cached per process (settings are immutable after import). When
+    `naabu_use_top1000` is on, returns the union of nmap top-1000 TCP and
+    the specialty `naabu_ports` list. When off, returns just the specialty
+    list — the legacy fast-scan behavior.
+    """
+    if settings.naabu_use_top1000:
+        top1000 = ",".join(str(p) for p in NMAP_TOP_1000_TCP)
+        return merge_port_strings(top1000, settings.naabu_ports)
+    return settings.naabu_ports
 
 
 class SubfinderRunner(BaseRunner):
@@ -48,6 +63,20 @@ class DnsxRunner(BaseRunner):
 
 class NaabuRunner(BaseRunner):
     tool_name = "naabu"
+    # When every host in the batch fails DNS resolution, naabu emits this
+    # fatal and exits 1 within seconds — but it can also fire after several
+    # minutes of attempted resolution. Retrying re-runs the same lookups with
+    # the same outcome; skip the 2× retries and accept the empty result.
+    non_retryable_stderr_patterns = ("no valid ipv4 or ipv6 targets were found",)
+    # Naabu defaults to SYN scan, which needs CAP_NET_RAW. In Cloud Run /
+    # restricted sandboxes the raw socket open fails and naabu exits 0 with
+    # zero results — indistinguishable from a closed host. Treat those stderr
+    # signatures as failures so callers can mark the batch failed instead of
+    # silently empty.
+    silent_failure_stderr_patterns = (
+        "could not create raw socket",
+        "operation not permitted",
+    )
 
     def __init__(self, hosts: list[str], ports: str | None = None,
                  timeout_seconds: int | None = None, timeout: int | None = None):
@@ -69,8 +98,9 @@ class NaabuRunner(BaseRunner):
     def build_command(self) -> list[str]:
         path = self._write_hosts()
         cmd = ["naabu", "-l", path, "-json", "-silent",
+               "-s", "c",
                "-rate", str(settings.naabu_rate)]
-        ports = self.ports or settings.naabu_ports
+        ports = self.ports or _default_naabu_ports()
         cmd.extend(["-p", ports])
         if self.custom_timeout:
             cmd.extend(["--timeout", str(self.custom_timeout)])
@@ -110,6 +140,10 @@ class HttpxRunner(BaseRunner):
             "-cdn", "-follow-redirects",
             "-content-length", "-web-server", "-method",
             "-location", "-ip",
+            # Emit response headers in the JSON output. Consumed by the
+            # security-headers / cookie audit in ingest/http_header_audit.py.
+            # Flag is supported in httpx >= 1.3 (short form: -irh).
+            "-include-response-header",
             "-threads", str(settings.httpx_threads),
         ]
         if self.screenshots:

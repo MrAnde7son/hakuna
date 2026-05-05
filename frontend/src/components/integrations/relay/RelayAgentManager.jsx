@@ -3,7 +3,7 @@
  * Shows agent list, create dialog, setup guide, and status.
  */
 import { useState, useEffect, useCallback } from 'react'
-import { Plus, Trash2, RotateCcw, Copy, Check, Wifi, WifiOff, ChevronDown, ChevronRight, Server, Shield, Clock, ExternalLink, RefreshCw } from 'lucide-react'
+import { Plus, Trash2, RotateCcw, Copy, Check, Wifi, WifiOff, ChevronDown, ChevronRight, Server, Shield, Clock, ExternalLink, RefreshCw, Cloud } from 'lucide-react'
 import { Card, Button, useToast } from '../../shared/ui.jsx'
 import { getRelayAgents, createRelayAgent, deleteRelayAgent, rotateAgentToken, getAgentSetup } from '../../../api.js'
 import RelayAgentSetupGuide from './RelayAgentSetupGuide.jsx'
@@ -195,20 +195,61 @@ export default function RelayAgentManager() {
       {/* Agent list */}
       {loading && agents.length === 0 ? (
         <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>Loading...</div>
-      ) : agents.length === 0 ? (
-        <Card style={{ padding: 40, textAlign: 'center' }}>
-          <Server size={32} style={{ color: 'var(--text-muted)', margin: '0 auto 12px' }} />
-          <div style={{ fontSize: 15, fontWeight: 500, color: 'var(--text)', marginBottom: 4 }}>No relay agents yet</div>
-          <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 16 }}>
-            Deploy a relay agent in your network to connect on-prem tools like Jira Server, ServiceNow, or CrowdStrike.
-          </div>
-          <Button size="sm" onClick={() => setShowCreate(true)}>
-            <Plus size={14} /> Create Your First Agent
-          </Button>
-        </Card>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {agents.map(agent => {
+          {/* Managed cloud_scanner row(s) first — always present (auto-provisioned by backend). */}
+          {agents.filter(a => a.relay_type === 'cloud_scanner').map(agent => {
+            const isConnected = agent.status === 'connected'
+            return (
+              <Card key={agent.id} style={{ padding: 14, borderLeft: '3px solid #6366f1' }}>
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+                  <Cloud size={20} color="#6366f1" style={{ marginTop: 2, flexShrink: 0 }} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4, flexWrap: 'wrap' }}>
+                      <span style={{ fontSize: 14, fontWeight: 500, color: 'var(--text)' }}>{agent.name}</span>
+                      <span style={{
+                        fontSize: 10, fontWeight: 600, padding: '2px 6px', borderRadius: 4,
+                        background: 'rgba(99,102,241,0.12)', color: '#6366f1', letterSpacing: 0.3,
+                      }}>HAKUNA MANAGED</span>
+                      <span style={{
+                        display: 'inline-flex', alignItems: 'center', gap: 4,
+                        fontSize: 11, color: isConnected ? '#22c55e' : 'var(--text-muted)',
+                      }}>
+                        <span style={{
+                          width: 6, height: 6, borderRadius: '50%',
+                          background: isConnected ? '#22c55e' : 'var(--text-muted)',
+                        }} />
+                        {isConnected ? 'Connected' : 'Not deployed in this environment'}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.5 }}>
+                      {isConnected ? (
+                        <>Routes external (internet-facing) audits through Hakuna's managed scanner — no on-prem deployment needed.</>
+                      ) : (
+                        <>External-target audits route through this managed scanner. It isn't connected to this backend instance — run the cloud-relay container with <code style={{ fontSize: 11 }}>INTERNAL_SHARED_SECRET</code>, or deploy your own on-prem agent below for external scans.</>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </Card>
+            )
+          })}
+
+          {/* On-prem agents — empty state for this section is shown only when there are zero of them. */}
+          {agents.filter(a => a.relay_type !== 'cloud_scanner').length === 0 ? (
+            <Card style={{ padding: 40, textAlign: 'center' }}>
+              <Server size={32} style={{ color: 'var(--text-muted)', margin: '0 auto 12px' }} />
+              <div style={{ fontSize: 15, fontWeight: 500, color: 'var(--text)', marginBottom: 4 }}>No on-prem relay agents yet</div>
+              <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 16 }}>
+                Deploy a relay agent in your network to connect on-prem tools like Jira Server, ServiceNow, or CrowdStrike, and to scan internal targets.
+              </div>
+              <Button size="sm" onClick={() => setShowCreate(true)}>
+                <Plus size={14} /> Create Your First Agent
+              </Button>
+            </Card>
+          ) : null}
+
+          {agents.filter(a => a.relay_type !== 'cloud_scanner').map(agent => {
             const isConnected = agent.status === 'connected'
             const isExpanded = expandedAgent === agent.id
             return (

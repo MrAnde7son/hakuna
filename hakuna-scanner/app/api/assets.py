@@ -41,9 +41,20 @@ class AssetResponse(BaseModel):
     http_url: str | None = None
     tech_stack: dict | list | None = None
     cdn_provider: str | None = None
+    cloud_provider: str | None = None
+    # Tenant attribution from app.ingest.attribution. See migration 020.
+    attribution: dict | None = None
     waf: str | None = None
     tls_cert: dict | None = None
+    # Normalized HTTP-header + cookie audit (see ingest.http_header_audit).
+    security_audit: dict | None = None
+    # Deep TLS audit from ingest.tls_deep_audit (sslyze cipher enum + chain +
+    # OCSP + CAA). Aggregated from the primary TLS port (443 preferred).
+    tls_deep_audit: dict | None = None
     dns_records: dict | None = None
+    # Phase-2 EASM blob (banner_findings etc). Forwarded to the backend so
+    # services.cve_correlator._banner_components can read banner_findings.
+    easm_data: dict | None = None
     tags: list[str] | None = None
     first_seen: datetime | None = None
     last_seen: datetime | None = None
@@ -51,6 +62,7 @@ class AssetResponse(BaseModel):
     source: str | None = None
     nessus_asset_id: str | None = None
     liveness_state: str = "unconfirmed"
+    liveness_score: int = 100
     # CVE-matchable CPEs only (excludes CDNs, WAFs, analytics, policies).
     cpe_list: list[str] | None = None
     # All detected technologies including non-software (for UI display).
@@ -100,11 +112,20 @@ def _asset_to_response(asset: Asset) -> AssetResponse:
     asset endpoints but catastrophic for list endpoints (N+1).
     """
     raw_cpes: set[str] = set()
+    # Pick the deep TLS audit from the "primary" TLS port. Priority: 443, 8443,
+    # then any other port with audit data. This matches the one-cert-per-asset
+    # shape of ``tls_cert`` on the asset row.
+    deep_audit = None
+    best_port_rank = 99
+    _port_rank = {443: 0, 8443: 1, 993: 2, 995: 2, 465: 2, 587: 2}
     for port in (asset.ports or []):
-        if port.cpe_list:
-            # cpe_list is a JSONB list[str]; tolerate bad data
-            if isinstance(port.cpe_list, list):
-                raw_cpes.update(str(c) for c in port.cpe_list if c)
+        if port.cpe_list and isinstance(port.cpe_list, list):
+            raw_cpes.update(str(c) for c in port.cpe_list if c)
+        if getattr(port, "tls_deep_audit", None):
+            rank = _port_rank.get(port.port, 3)
+            if rank < best_port_rank:
+                deep_audit = port.tls_deep_audit
+                best_port_rank = rank
 
     # Filter out non-software CPEs (CDNs, WAFs, analytics, HTTP policies)
     # at read time so stale data written before the filtering logic is cleaned.
@@ -125,9 +146,14 @@ def _asset_to_response(asset: Asset) -> AssetResponse:
             "http_url": asset.http_url,
             "tech_stack": asset.tech_stack,
             "cdn_provider": asset.cdn_provider,
+            "cloud_provider": asset.cloud_provider,
+            "attribution": asset.attribution,
             "waf": asset.waf,
             "tls_cert": asset.tls_cert,
+            "security_audit": asset.security_audit,
+            "tls_deep_audit": deep_audit,
             "dns_records": asset.dns_records,
+            "easm_data": asset.easm_data,
             "tags": asset.tags,
             "first_seen": asset.first_seen,
             "last_seen": asset.last_seen,
@@ -135,6 +161,7 @@ def _asset_to_response(asset: Asset) -> AssetResponse:
             "source": asset.source,
             "nessus_asset_id": asset.nessus_asset_id,
             "liveness_state": asset.liveness_state,
+            "liveness_score": asset.liveness_score,
             "cpe_list": filtered.cpe_list if filtered else None,
             "detected_technologies": filtered.detected_technologies if filtered else None,
         }

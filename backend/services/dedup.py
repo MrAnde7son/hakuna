@@ -13,12 +13,56 @@ import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse, urlunparse
 
 from sqlalchemy import func, or_
 
 logger = logging.getLogger(__name__)
 
 CONFIG_PATH = Path(__file__).parent.parent / "config" / "dedup_config.json"
+
+
+def normalize_web_app_url(url: str | None) -> str | None:
+    """Canonicalize a web_app URL so the dedup engine matches URLs emitted
+    by different scanners. Nessus WAS writes a trailing slash
+    (``http://host:8080/``), VM scanner and EASM write the raw target
+    (``http://host:8080``) — without this they land as two distinct assets.
+
+    Rules (conservative — only collapse semantically-identical URLs):
+      - lowercase scheme and host
+      - drop default ports (80 for http, 443 for https)
+      - strip a trailing slash when the path is exactly "/"
+      - leave query, fragment, userinfo, and non-root paths untouched
+    """
+    if not url or not isinstance(url, str):
+        return url
+    s = url.strip()
+    if "://" not in s:
+        return s
+    try:
+        p = urlparse(s)
+    except Exception:
+        return s
+    scheme = (p.scheme or "").lower()
+    host = (p.hostname or "").lower()
+    if not scheme or not host:
+        return s
+    port = p.port
+    if (scheme == "http" and port == 80) or (scheme == "https" and port == 443):
+        netloc = host
+    elif port:
+        netloc = f"{host}:{port}"
+    else:
+        netloc = host
+    if p.username:
+        userinfo = p.username
+        if p.password:
+            userinfo = f"{userinfo}:{p.password}"
+        netloc = f"{userinfo}@{netloc}"
+    path = p.path or ""
+    if path == "/":
+        path = ""
+    return urlunparse((scheme, netloc, path, p.params or "", p.query or "", p.fragment or ""))
 
 
 def _unpack_entity_map(entry: tuple) -> tuple:
@@ -368,8 +412,9 @@ def _is_legacy_asset_config(assets_cfg: dict) -> bool:
 def get_asset_type_config(cfg: dict, asset_type: str) -> dict:
     """Get dedup config for a specific asset type, with fallback chain:
     1. cfg["assets"][asset_type]  (per-type config)
-    2. cfg["assets"]["host"]     (host fallback for unknown types)
-    3. Legacy flat cfg["assets"] (backward compat for old config files)
+    2. cfg["assets"]["_default"] (operator-defined default for custom types)
+    3. Integration-builder fallback: (source_system, source_id)
+    4. Legacy flat cfg["assets"] (backward compat for old config files)
     """
     assets_cfg = cfg.get("assets", {})
     # Legacy flat config (pre per-type migration)
@@ -378,10 +423,16 @@ def get_asset_type_config(cfg: dict, asset_type: str) -> dict:
     # Per-type lookup
     if asset_type in assets_cfg:
         return assets_cfg[asset_type]
-    # Unknown custom type — use reasonable defaults
+    # Operator-defined default (lets admins set their own fallback without code)
+    if "_default" in assets_cfg:
+        return assets_cfg["_default"]
+    # Unknown custom type (e.g. ai_agent, mcp_server ingested via the integration
+    # builder). Dedup by (source_system, source_id) — the provenance columns
+    # populated by the field mapper. These uniquely identify a record within a
+    # source, so this avoids both over-merging and per-scan duplicates.
     return {
         "enabled": True,
-        "key_fields": list((cfg.get("assets", {}).get(asset_type) or {}).get("key_fields", [])),
+        "key_fields": ["source_system", "source_id"],
         "key_mode": "and",
         "strategy": "merge",
         "scope": "cross_scan",
@@ -392,22 +443,27 @@ def _get_asset_field(asset_or_dict, field: str):
     """Resolve a field value from an asset: try model column first, then asset_identity dict.
     For host-type fields (ip, hostname, fqdn, netbios_name) the column is authoritative.
     For non-host type fields (url, instance_id, etc.) they live inside asset_identity.
+    ``url`` values are normalized so dedup ignores cosmetic differences
+    (trailing slash, default port, scheme/host casing).
     """
     if isinstance(asset_or_dict, dict):
         val = asset_or_dict.get(field)
         if val is None:
             val = (asset_or_dict.get("asset_identity") or {}).get(field)
-        return val
     else:
-        # SQLAlchemy model
         val = getattr(asset_or_dict, field, None)
         if val is None:
             identity = asset_or_dict.asset_identity or {}
             val = identity.get(field)
-        return val
+    if field == "url" and isinstance(val, str):
+        return normalize_web_app_url(val)
+    return val
 
 
 _HOST_COLUMN_FIELDS = {"ip", "hostname", "fqdn", "netbios_name", "mac_address", "os"}
+# Provenance columns also live on the Asset model and can serve as dedup keys
+# for custom asset_types ingested via the integration builder.
+_PROVENANCE_COLUMN_FIELDS = {"source_system", "source_id"}
 
 
 def resolve_asset_by_dedup_keys(db, asset_data: dict, org_id: int | None,
@@ -465,8 +521,10 @@ def resolve_asset_by_dedup_keys(db, asset_data: dict, org_id: int | None,
         """Build a SQLAlchemy filter for a single key field."""
         if field in _HOST_COLUMN_FIELDS and hasattr(Asset, field):
             return getattr(Asset, field) == value
-        # Non-host key field — lives in asset_identity JSON
-        # Use func.json_extract for SQLite, ->> for PostgreSQL (both work via SA)
+        if field in _PROVENANCE_COLUMN_FIELDS and hasattr(Asset, field):
+            return getattr(Asset, field) == value
+        # Non-host key field — lives in asset_identity JSON; SA maps `[]` to
+        # Postgres `->>`.
         return Asset.asset_identity[field].as_string() == value
 
     if key_mode == "or":
@@ -941,7 +999,10 @@ def run_cross_scan_finding_dedup(db, org_id, cfg: dict) -> dict:
     finalize_scan calls this after every ingest so the resolved per-org
     rule is enforced uniformly.
     """
-    from models.models import Finding, Scan
+    from models.models import (
+        Finding, Scan, FindingOwnership, CampaignFinding,
+        AutomateClick, ControlAssessment,
+    )
 
     findings_cfg = cfg.get("findings", {}) or {}
     if not findings_cfg.get("enabled", False):
@@ -1015,6 +1076,10 @@ def run_cross_scan_finding_dedup(db, org_id, cfg: dict) -> dict:
                 _merge_finding_lists(survivor, loser)
             merged += len(losers)
 
+        loser_ids = [l.id for l in losers if l.id is not None]
+        if loser_ids:
+            _reassign_finding_referrers(db, loser_ids, survivor.id)
+
         for loser in losers:
             db.delete(loser)
         removed += len(losers)
@@ -1023,6 +1088,43 @@ def run_cross_scan_finding_dedup(db, org_id, cfg: dict) -> dict:
         db.flush()
 
     return {"removed": removed, "merged": merged, "strategy": strategy, "key_fields": effective_fields}
+
+
+def _reassign_finding_referrers(db, loser_ids: list[int], survivor_id: int) -> None:
+    """Repoint FK rows from losers to the survivor before the losers are deleted.
+
+    Several tables have nullable=False FKs to findings.id without ondelete=CASCADE
+    (FindingOwnership, CampaignFinding, AutomateClick, ControlAssessment). The default
+    SQLAlchemy cascade would NULL them on parent delete, which violates NOT NULL.
+    """
+    from models.models import (
+        FindingOwnership, CampaignFinding, AutomateClick, ControlAssessment,
+    )
+
+    # FindingOwnership.finding_id is UNIQUE — if survivor already has one,
+    # drop the loser's row instead of repointing it.
+    survivor_has_owner = db.query(FindingOwnership.id).filter(
+        FindingOwnership.finding_id == survivor_id
+    ).first() is not None
+    if survivor_has_owner:
+        db.query(FindingOwnership).filter(
+            FindingOwnership.finding_id.in_(loser_ids)
+        ).delete(synchronize_session=False)
+    else:
+        # At most one loser can have an ownership row (column is unique). If two
+        # do across the group, keep the most recent and drop the rest.
+        owners = db.query(FindingOwnership).filter(
+            FindingOwnership.finding_id.in_(loser_ids)
+        ).order_by(FindingOwnership.updated_at.desc()).all()
+        for keeper in owners[:1]:
+            keeper.finding_id = survivor_id
+        for extra in owners[1:]:
+            db.delete(extra)
+
+    for model in (CampaignFinding, AutomateClick, ControlAssessment):
+        db.query(model).filter(model.finding_id.in_(loser_ids)).update(
+            {model.finding_id: survivor_id}, synchronize_session=False,
+        )
 
 
 def _merge_finding_lists(survivor, loser) -> None:
@@ -1074,10 +1176,8 @@ def run_cross_scan_asset_dedup(db, org_id, cfg: dict, ENTITY_MODEL_MAP: dict) ->
     # logic below. Tiebreakers (scan.id, asset.id) keep the ordering deterministic.
     #
     # NULL last_seen (legacy rows, never-run integration syncs) must sort FIRST
-    # so they get overwritten by anything with real data. SQLite and PostgreSQL
-    # disagree on the default NULL ordering with ASC, and SQLite rejects the
-    # explicit ``NULLS FIRST`` clause — so we use COALESCE to a constant epoch
-    # date, which is portable across both dialects.
+    # so they get overwritten by anything with real data. COALESCE to a constant
+    # epoch rather than ``NULLS FIRST`` so the ordering stays explicit in logs.
     _NULL_EPOCH = datetime(1970, 1, 1)
     last_seen_sort = func.coalesce(Asset.last_seen, _NULL_EPOCH)
     q = (

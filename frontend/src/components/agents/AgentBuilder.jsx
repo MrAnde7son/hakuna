@@ -6,7 +6,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Card, ErrorBanner, useToast, useConfirm } from '../shared/ui.jsx'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   Bot, Plus, Trash2, Play, ChevronDown, ChevronRight, Clock, CheckCircle,
   XCircle, Loader2, Settings2, MessageSquare, Wrench, Shield, Brain,
@@ -26,6 +26,7 @@ import {
   getBillingUsage,
 } from '../../api.js'
 import AgentApprovalQueue from './AgentApprovalQueue.jsx'
+import { capture } from '../../utils/analytics.js'
 
 const MODELS = [
   // Anthropic
@@ -38,10 +39,16 @@ const MODELS = [
   { value: 'gpt-4.1', label: 'GPT-4.1', group: 'OpenAI' },
   { value: 'gpt-4.1-mini', label: 'GPT-4.1 Mini', group: 'OpenAI' },
   { value: 'o3-mini', label: 'o3-mini', group: 'OpenAI' },
-  // Google Gemini
+  // Google Gemini (direct API key)
   { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash', group: 'Google' },
   { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro', group: 'Google' },
   { value: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash', group: 'Google' },
+  // Google Vertex AI (GCP-billed)
+  { value: 'vertex/gemini-2.5-pro', label: 'Gemini 2.5 Pro (Vertex)', group: 'Vertex AI' },
+  { value: 'vertex/gemini-2.5-flash', label: 'Gemini 2.5 Flash (Vertex)', group: 'Vertex AI' },
+  { value: 'vertex/gemini-2.0-flash', label: 'Gemini 2.0 Flash (Vertex)', group: 'Vertex AI' },
+  { value: 'vertex/claude-sonnet-4-5@20250929', label: 'Claude Sonnet 4.5 (Vertex)', group: 'Vertex AI' },
+  { value: 'vertex/claude-haiku-4-5@20251001', label: 'Claude Haiku 4.5 (Vertex)', group: 'Vertex AI' },
   // Groq
   { value: 'llama-3.3-70b-versatile', label: 'Llama 3.3 70B', group: 'Groq' },
   { value: 'llama-3.1-8b-instant', label: 'Llama 3.1 8B', group: 'Groq' },
@@ -84,6 +91,7 @@ function timeAgo(iso) {
 
 export default function AgentBuilder() {
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
   const toast = useToast()
   const confirm = useConfirm()
   const [agents, setAgents] = useState([])
@@ -102,6 +110,10 @@ export default function AgentBuilder() {
   const [showTemplates, setShowTemplates] = useState(false)
   const [showApprovals, setShowApprovals] = useState(false)
   const [pendingApprovalCount, setPendingApprovalCount] = useState(0)
+  // Deep-link from notification bell / scan rows: ?approvals=1[&run=<id>]
+  // opens the approval queue and (optionally) filters to a single agent run.
+  const approvalRunFilter = searchParams.get('run')
+  const approvalsFromQuery = searchParams.get('approvals') === '1'
   const [schedules, setSchedules] = useState([])
   const [documents, setDocuments] = useState([])
   const [agentSearch, setAgentSearch] = useState('')
@@ -128,6 +140,37 @@ export default function AgentBuilder() {
     refreshUsage()
   }, [])
 
+  // Keep the "Approval Queue" badge live without requiring a refresh. The
+  // panel-mounted AgentApprovalQueue already polls for itself, but when the
+  // user is on a different tab (config/runs/schedule) the count would only
+  // ever reflect the initial mount fetch above. Poll the same endpoint here
+  // so a freshly-queued approval surfaces in the badge within ~10s.
+  useEffect(() => {
+    const tick = () => {
+      if (document.visibilityState !== 'visible') return
+      // Skip while the panel is open — it owns the count via onPendingCount
+      // and refetching here would race with its silent reloads.
+      if (showApprovals) return
+      getAgentApprovals('pending')
+        .then(a => setPendingApprovalCount(a.length))
+        .catch(() => {})
+    }
+    const id = setInterval(tick, 10_000)
+    return () => clearInterval(id)
+  }, [showApprovals])
+
+  // Auto-open the approval queue when the user lands here via deep-link
+  // (notification bell / "Review action" button on a scan row). Runs once
+  // per query-param transition so the user can still close the panel.
+  useEffect(() => {
+    if (approvalsFromQuery) {
+      setShowApprovals(true)
+      setShowTemplates(false)
+      setSelected(null)
+      setEditing(null)
+    }
+  }, [approvalsFromQuery])
+
   const selectAgent = (agent) => {
     setSelected(agent)
     setEditing({ ...agent })
@@ -148,6 +191,7 @@ export default function AgentBuilder() {
       tools: [],
       guardrails: { max_steps: 10, read_only: true },
     })
+    capture('agent_created', { agent_id: agent.id, from_template: false })
     await refresh()
     selectAgent(agent)
   }
@@ -155,6 +199,12 @@ export default function AgentBuilder() {
   const handleFromTemplate = async (template) => {
     setShowTemplates(false)
     const agent = await createAgentFromTemplate({ template_id: template.id })
+    capture('agent_created', {
+      agent_id: agent.id,
+      from_template: true,
+      template_id: template.id,
+      template_name: template.name,
+    })
     await refresh()
     selectAgent(agent)
   }
@@ -241,6 +291,13 @@ export default function AgentBuilder() {
 
     const input = rawInput.trim()
     setRunInput('')
+
+    capture('agent_executed', {
+      agent_id: agent.id,
+      agent_name: agent.name,
+      model: agent.model,
+      input_length: input.length,
+    })
 
     try {
       // Try streaming first
@@ -584,7 +641,14 @@ export default function AgentBuilder() {
         <div style={{ flex: 1, overflow: 'auto', padding: '0 4px' }}>
           <AgentApprovalQueue
             panel
+            runFilter={approvalRunFilter ? Number(approvalRunFilter) : null}
             onPendingCount={setPendingApprovalCount}
+            onClearRunFilter={() => {
+              const next = new URLSearchParams(searchParams)
+              next.delete('run')
+              next.delete('approvals')
+              setSearchParams(next, { replace: true })
+            }}
           />
         </div>
       ) : selected && editing ? (
@@ -1203,7 +1267,7 @@ function ConfigPanel({ editing, setEditing, toolCatalog, toggleTool, updateGuard
         ) : (
           <>
             <select
-              value={editing.model || availableModels?.default_model || 'claude-sonnet-4-6'}
+              value={editing.model || availableModels?.default_model || 'vertex/gemini-2.5-pro'}
               onChange={e => setEditing({ ...editing, model: e.target.value })}
               style={{
                 padding: '6px 10px', borderRadius: 6, border: '1px solid var(--border)',
@@ -1555,6 +1619,10 @@ function SchedulePanel({ agentId, agent, templates, schedules, onRefresh }) {
         agent_id: agentId,
         cron_expression: cronExpr,
         input: schedInput.trim(),
+      })
+      capture('agent_scheduled', {
+        agent_id: agentId,
+        cron_expression: cronExpr,
       })
       onRefresh()
       toast.success('Schedule created')

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Settings as SettingsIcon, Play, Save, RotateCcw, ChevronDown, ChevronRight, ShieldAlert, Upload, Tag, Clock, Plug, Blocks, ShieldOff, ClipboardList, UserCheck, Users, ShieldCheck, Building2, KeyRound, Plus, X, GripVertical, Layers } from 'lucide-react'
+import { Settings as SettingsIcon, Play, Save, RotateCcw, ChevronDown, ChevronRight, ShieldAlert, Upload, Tag, Clock, Plug, Blocks, ShieldOff, ClipboardList, UserCheck, Users, ShieldCheck, Building2, KeyRound, Plus, X, GripVertical, Layers, Antenna } from 'lucide-react'
 import { getDedupConfig, saveDedupConfig, deleteDedupOrgOverride, runDedup, exportConfig, getAvailableSources, runRollup } from '../../api.js'
 import { Card, ExportImportButtons } from '../shared/ui.jsx'
 import { useAuth } from '../../contexts/AuthContext.jsx'
@@ -19,6 +19,7 @@ import UsersPanel from './UsersPanel.jsx'
 import OrgsPanel from './OrgsPanel.jsx'
 import IntegrationBuilderTab from './IntegrationBuilderTab.jsx'
 import SSOSettings from './SSOSettings.jsx'
+import RelayAgentManager from '../integrations/relay/RelayAgentManager.jsx'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -544,11 +545,21 @@ export default function Settings() {
 
   const NAV_GROUPS = [
     {
-      label: 'Data Management',
+      label: 'Data Ingestion',
       items: [
-        { id: 'upload',         label: 'Scans',         icon: <Upload size={14} /> },
-        { id: 'auth-profiles',  label: 'Auth Profiles', icon: <KeyRound size={14} /> },
-        { id: 'dedup',          label: 'Deduplication', icon: <SettingsIcon size={14} /> },
+        { id: 'upload',              label: 'Scans',               icon: <Upload size={14} /> },
+        { id: 'auth-profiles',       label: 'Credentials',         icon: <KeyRound size={14} /> },
+        { id: 'relay-agents',        label: 'Relay Agents',        icon: <Antenna size={14} /> },
+        { id: 'integration-builder', label: 'Integration Builder', icon: <Blocks size={14} /> },
+      ],
+    },
+    {
+      label: 'Data Quality',
+      items: [
+        { id: 'dedup',         label: 'Deduplication', icon: <SettingsIcon size={14} /> },
+        { id: 'tags',          label: 'Tags',          icon: <Tag size={14} /> },
+        { id: 'custom-fields', label: 'Custom Fields', icon: <Layers size={14} /> },
+        { id: 'ownership',     label: 'Ownership',     icon: <UserCheck size={14} /> },
       ],
     },
     {
@@ -559,23 +570,14 @@ export default function Settings() {
         { id: 'exceptions', label: 'Exceptions',  icon: <ShieldOff size={14} /> },
       ],
     },
-    {
-      label: 'Organization',
-      items: [
-        { id: 'tags',          label: 'Tags',          icon: <Tag size={14} /> },
-        { id: 'custom-fields', label: 'Custom Fields', icon: <Layers size={14} /> },
-        { id: 'ownership',     label: 'Ownership',     icon: <UserCheck size={14} /> },
-      ],
-    },
     ...(accessControlItems.length > 0 ? [{
       label: 'Access Control',
       items: accessControlItems,
     }] : []),
     {
-      label: 'System',
+      label: 'Platform',
       items: [
         { id: 'integrations', label: 'Integrations', icon: <Plug size={14} /> },
-        { id: 'integration-builder', label: 'Integration Builder', icon: <Blocks size={14} /> },
         { id: 'audit-log',    label: 'Audit Log',    icon: <ClipboardList size={14} /> },
       ],
     },
@@ -622,7 +624,7 @@ export default function Settings() {
       </div>
 
       {/* Content */}
-      <div style={{ flex: 1, padding: 24, maxWidth: ['integration-builder', 'users'].includes(activeTab) ? 1200 : 760 }}>
+      <div style={{ flex: 1, padding: 24, maxWidth: ['integration-builder', 'users', 'relay-agents', 'upload'].includes(activeTab) ? 1200 : 760 }}>
 
       {/* Scans tab */}
       {activeTab === 'upload' && <ScanManagement />}
@@ -651,6 +653,9 @@ export default function Settings() {
       {/* Integration Builder tab */}
       {activeTab === 'integration-builder' && <IntegrationBuilderTab />}
 
+      {/* Relay Agents tab */}
+      {activeTab === 'relay-agents' && <RelayAgentManager />}
+
 {/* Audit Log tab */}
       {activeTab === 'audit-log' && <AuditLog />}
 
@@ -673,17 +678,17 @@ export default function Settings() {
       {activeTab === 'dedup' && <>
 
       {/* Dedup Header */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', marginBottom: 24 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
           <SettingsIcon size={16} color="var(--accent)" />
-          <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)' }}>Deduplication</span>
+          <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)', whiteSpace: 'nowrap' }}>Deduplication</span>
           {cfg.is_org_override ? (
             <span
               title="This organization has customized the dedup rules. Global defaults still apply for any fields left unchanged."
               style={{
                 fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 10,
                 background: 'rgba(99,102,241,0.14)', color: 'var(--accent)',
-                border: '1px solid rgba(99,102,241,0.3)',
+                border: '1px solid rgba(99,102,241,0.3)', whiteSpace: 'nowrap',
               }}
             >
               Org override
@@ -694,14 +699,14 @@ export default function Settings() {
               style={{
                 fontSize: 11, fontWeight: 500, padding: '2px 8px', borderRadius: 10,
                 background: 'transparent', color: 'var(--text-muted)',
-                border: '1px solid var(--border)',
+                border: '1px solid var(--border)', whiteSpace: 'nowrap',
               }}
             >
               Inherited from global
             </span>
           )}
         </div>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
           <ExportImportButtons
             configType="dedup_config"
             exportFn={() => exportConfig('dedup_config')}
@@ -715,9 +720,10 @@ export default function Settings() {
               disabled={saving}
               title="Remove this org's override and use the platform-wide global defaults"
               style={{
-                display: 'flex', alignItems: 'center', gap: 6, padding: '7px 14px',
+                display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 14px',
                 borderRadius: 6, fontSize: 13, cursor: saving ? 'not-allowed' : 'pointer',
                 border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-muted)',
+                whiteSpace: 'nowrap',
               }}
             >
               <RotateCcw size={13} /> Revert to global
@@ -726,9 +732,10 @@ export default function Settings() {
           <button
             onClick={handleReset}
             style={{
-              display: 'flex', alignItems: 'center', gap: 6, padding: '7px 14px',
+              display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 14px',
               borderRadius: 6, fontSize: 13, cursor: 'pointer',
               border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-muted)',
+              whiteSpace: 'nowrap',
             }}
           >
             <RotateCcw size={13} /> Discard changes
@@ -737,10 +744,10 @@ export default function Settings() {
             onClick={handleSave}
             disabled={saving}
             style={{
-              display: 'flex', alignItems: 'center', gap: 6, padding: '7px 16px',
+              display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 16px',
               borderRadius: 6, fontSize: 13, cursor: saving ? 'not-allowed' : 'pointer',
               border: '1px solid var(--accent)', background: 'var(--accent)', color: '#fff',
-              opacity: saving ? 0.7 : 1,
+              opacity: saving ? 0.7 : 1, whiteSpace: 'nowrap',
             }}
           >
             <Save size={13} />

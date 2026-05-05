@@ -13,6 +13,7 @@ import {
 import RuleBuilder from '../campaigns/RuleBuilder.jsx'
 import { filtersToConditions } from '../../utils/filtersToConditions.js'
 import NLPSearchBar from '../shared/NLPSearchBar.jsx'
+import { capture } from '../../utils/analytics.js'
 import NewSinceBanner from '../notifications/NewSinceBanner.jsx'
 import { getFindingAssetDisplay, getAssetDisplayName } from '../../utils/assetDisplay.js'
 
@@ -306,16 +307,16 @@ function BulkFindingCampaignModal({ selectedFindings, scanId, onClose, onCreated
 // and disappears silently as soon as the scan flips terminal.
 function LiveScanBanner({ status, progress, total }) {
   if (!progress) return null
-  const totalJobs = progress.total_jobs || 0
-  const completedJobs = progress.completed_jobs || 0
+  const totalTargets = progress.total_targets || 0
+  const completedTargets = progress.completed_targets || 0
   const currentStage = progress.current_stage
   const stageIndex = progress.stage_index || 0
   const totalStages = progress.total_stages || 0
   const incrementalAssets = progress.incremental_asset_count || 0
 
   let summary
-  if (totalJobs > 0) {
-    summary = `${completedJobs} / ${totalJobs} targets scanned`
+  if (totalTargets > 0) {
+    summary = `${completedTargets} / ${totalTargets} target${totalTargets === 1 ? '' : 's'} scanned`
   } else if (totalStages > 0) {
     const stageLabel = currentStage ? ` · ${currentStage}` : ''
     const assetsSummary = incrementalAssets > 0 ? ` · ${incrementalAssets} assets discovered` : ''
@@ -840,6 +841,48 @@ export default function FindingExplorer() {
       }
     },
     {
+      key: 'cves', label: t('findings.cve'), width: '160px',
+      render: (v) => {
+        const list = Array.isArray(v) ? v.filter(Boolean) : []
+        if (list.length === 0) return <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
+        const shown = list.slice(0, 2)
+        const more = list.length - shown.length
+        return (
+          <span title={list.join(', ')} style={{ display: 'inline-flex', gap: 4, flexWrap: 'wrap' }}>
+            {shown.map(c => (
+              <span key={c} style={{ fontFamily: 'monospace', fontSize: 11, color: 'var(--text-secondary)', background: 'var(--bg-subtle)', padding: '1px 6px', borderRadius: 4 }}>{c}</span>
+            ))}
+            {more > 0 && (
+              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>+{more}</span>
+            )}
+          </span>
+        )
+      }
+    },
+    {
+      key: 'cwe_ids', label: t('findings.cwe'), width: '160px',
+      render: (v, row) => {
+        const list = Array.isArray(v) ? v.filter(Boolean) : []
+        if (list.length === 0) return <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
+        const names = Array.isArray(row.cwe_names) ? row.cwe_names : []
+        const shown = list.slice(0, 2)
+        const more = list.length - shown.length
+        const tooltip = names.length === list.length
+          ? list.map((id, i) => `${id}: ${names[i]}`).join('\n')
+          : list.join(', ')
+        return (
+          <span title={tooltip} style={{ display: 'inline-flex', gap: 4, flexWrap: 'wrap' }}>
+            {shown.map(c => (
+              <span key={c} style={{ fontFamily: 'monospace', fontSize: 11, color: 'var(--text-secondary)', background: 'var(--bg-subtle)', padding: '1px 6px', borderRadius: 4 }}>{c}</span>
+            ))}
+            {more > 0 && (
+              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>+{more}</span>
+            )}
+          </span>
+        )
+      }
+    },
+    {
       key: 'effort_level', label: t('findings.effort'),
       render: (v) => <EffortBadge effort={v} />
     },
@@ -1044,7 +1087,7 @@ export default function FindingExplorer() {
   ]
 
   // Filter columns by visibility (all visible by default, KEV/EPSS/Ransomware/Trending hidden by default)
-  const defaultHidden = new Set(['cvss2_score', 'cvss4_score', 'is_kev', 'epss_score', 'ransomware_linked', 'trending_in_news', 'first_seen', 'last_seen', 'vulnerability_state', 'vpr_score', 'risk_factor', 'port', 'workflow_status', 'workflow_assigned_to', 'exploit_maturity', 'ssvc_decision', 'exploit_count', 'exploit_maturity_level', 'source_systems', 'has_ticket'])
+  const defaultHidden = new Set(['cvss2_score', 'cvss4_score', 'cves', 'cwe_ids', 'is_kev', 'epss_score', 'ransomware_linked', 'trending_in_news', 'first_seen', 'last_seen', 'vulnerability_state', 'vpr_score', 'risk_factor', 'port', 'workflow_status', 'workflow_assigned_to', 'exploit_maturity', 'ssvc_decision', 'exploit_count', 'exploit_maturity_level', 'source_systems', 'has_ticket'])
   const visibleColumns = allColumns.filter(c => {
     if (c.key === '_select') return true
     if (c._isCustomField) {
@@ -1066,15 +1109,29 @@ export default function FindingExplorer() {
           <div style={{ display: 'flex', gap: 8 }}>
             {selectedIds.size > 0 && (
               <>
-                <Button size="sm" variant="ghost" onClick={() => setShowBulkTag(true)}>
+                <Button size="sm" variant="ghost" onClick={() => {
+                  capture('findings_bulk_action', { action: 'tag', count: selectedIds.size })
+                  setShowBulkTag(true)
+                }}>
                   <Tag size={14} /> {t('findings.tagSelected', { count: selectedIds.size })}
                 </Button>
-                <Button size="sm" variant="ghost" onClick={() => setShowBulkCampaign(true)}>
+                <Button size="sm" variant="ghost" onClick={() => {
+                  capture('findings_bulk_action', { action: 'campaign', count: selectedIds.size })
+                  setShowBulkCampaign(true)
+                }}>
                   <Zap size={14} /> Campaign
                 </Button>
               </>
             )}
-            <Button variant="ghost" size="sm" onClick={() => exportDownload('findings', { scan_id: activeScanId, severity, plugin_family: family, has_exploit: hasExploit, is_kev: isKev, effort_level: effortLevel, search })}>
+            <Button variant="ghost" size="sm" onClick={() => {
+              capture('findings_exported', {
+                format: 'csv',
+                scan_id: activeScanId,
+                total,
+                has_filters: !!(severity || family || hasExploit || isKev || effortLevel || search),
+              })
+              exportDownload('findings', { scan_id: activeScanId, severity, plugin_family: family, has_exploit: hasExploit, is_kev: isKev, effort_level: effortLevel, search })
+            }}>
               <Download size={14} /> {t('findings.exportCsv')}
             </Button>
           </div>

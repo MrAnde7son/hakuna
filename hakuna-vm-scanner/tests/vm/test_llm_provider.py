@@ -36,8 +36,9 @@ from scanner.vm.llm_provider import (
 
 
 class TestResolvePriority:
-    def test_anthropic_wins_when_all_keys_present(self):
-        """Same order as backend — Anthropic is priority 1."""
+    def test_vertex_wins_when_all_keys_present(self):
+        """Same order as backend — Vertex AI is priority 1 so usage
+        draws from the GCP credit pool."""
         info = resolve_provider(
             integration_configs={},
             env={
@@ -49,10 +50,18 @@ class TestResolvePriority:
             },
         )
         assert info is not None
+        assert info.provider == "vertex_ai"
+        assert info.model == "vertex/gemini-2.5-pro"
+
+    def test_anthropic_selected_when_no_google_creds(self):
+        info = resolve_provider(
+            integration_configs={},
+            env={"ANTHROPIC_API_KEY": "a", "OPENAI_API_KEY": "o"},
+        )
         assert info.provider == "anthropic"
         assert info.model == "claude-sonnet-4-6"
 
-    def test_openai_selected_when_anthropic_missing(self):
+    def test_openai_selected_when_only_openai_key(self):
         info = resolve_provider(
             integration_configs={},
             env={"OPENAI_API_KEY": "o", "GROQ_API_KEY": "r"},
@@ -69,7 +78,7 @@ class TestResolvePriority:
             env={"GOOGLE_CLOUD_PROJECT": "p", "GOOGLE_API_KEY": "g"},
         )
         assert info.provider == "vertex_ai"
-        assert info.model == "vertex/gemini-2.5-flash"
+        assert info.model == "vertex/gemini-2.5-pro"
         assert info.config["project_id"] == "p"
 
     def test_gemini_selected_when_only_api_key_present(self):
@@ -357,3 +366,118 @@ class TestBuildAdapter:
         info = LLMProviderInfo(provider="fictional", model="x", config={})
         with pytest.raises(LLMProviderError):
             build_adapter(info)
+
+
+class TestIsClaudeModel:
+    """The model-based dispatch inside ``build_adapter`` for the
+    vertex_ai provider hangs off this helper — if it mis-classifies,
+    the wrong SDK gets instantiated and both Gemini and Claude paths
+    break with obscure errors. Pin the known shapes down explicitly.
+    """
+
+    def test_plain_claude_id_matches(self):
+        from scanner.vm.llm_provider import _is_claude_model
+        assert _is_claude_model("claude-sonnet-4-6") is True
+
+    def test_vertex_versioned_claude_id_matches(self):
+        """Vertex IDs are dated: claude-sonnet-4-5@20250929."""
+        from scanner.vm.llm_provider import _is_claude_model
+        assert _is_claude_model("claude-sonnet-4-5@20250929") is True
+
+    def test_vertex_prefixed_claude_id_matches(self):
+        """Some upstream configs prepend 'vertex/' — strip before match."""
+        from scanner.vm.llm_provider import _is_claude_model
+        assert _is_claude_model("vertex/claude-opus-4-1@20250805") is True
+
+    def test_gemini_id_does_not_match(self):
+        """Negative cases are just as important — misclassifying a
+        Gemini id as Claude would route it through AnthropicVertex,
+        which then fails with a model-not-found from Vertex."""
+        from scanner.vm.llm_provider import _is_claude_model
+        assert _is_claude_model("gemini-2.5-flash") is False
+        assert _is_claude_model("vertex/gemini-2.5-flash") is False
+
+    def test_empty_does_not_match(self):
+        from scanner.vm.llm_provider import _is_claude_model
+        assert _is_claude_model("") is False
+        assert _is_claude_model(None) is False  # type: ignore[arg-type]
+
+    def test_case_insensitive(self):
+        from scanner.vm.llm_provider import _is_claude_model
+        assert _is_claude_model("Claude-Sonnet-4-6") is True
+
+
+class TestVertexClaudeDispatch:
+    """Ensure build_adapter routes vertex_ai+claude to the Anthropic
+    adapter rather than the google-genai adapter. Uses constructor-
+    level monkeypatching since we don't want a real SDK init in tests.
+    """
+
+    def test_vertex_claude_instantiates_anthropic_vertex(self, monkeypatch):
+        """vertex_ai + claude-* model → AnthropicVertexAdapter.
+
+        Covers the hot path: the user configured Vertex for Gemini and
+        declared authn's preferred_model as a Claude id. build_adapter
+        must dispatch by model, not by provider. Previously routed to
+        GoogleGenAIAdapter and died on first API call with 'model not
+        found' because Gemini SDK doesn't know about Claude ids.
+        """
+        from scanner.vm import llm_provider
+
+        # Clear adapter cache so our stubbed build gets invoked fresh.
+        llm_provider._adapter_cache.clear()
+
+        calls = {"anthropic_vertex": 0, "google_genai": 0}
+
+        class _FakeAnthropicVertex:
+            def __init__(self, info):
+                calls["anthropic_vertex"] += 1
+
+        class _FakeGoogleGenAI:
+            def __init__(self, info):
+                calls["google_genai"] += 1
+
+        monkeypatch.setattr(
+            llm_provider, "AnthropicVertexAdapter", _FakeAnthropicVertex,
+        )
+        monkeypatch.setattr(
+            llm_provider, "GoogleGenAIAdapter", _FakeGoogleGenAI,
+        )
+
+        info = LLMProviderInfo(
+            provider="vertex_ai", model="claude-sonnet-4-5@20250929",
+            config={"project_id": "p", "location": "us-central1"},
+        )
+        llm_provider.build_adapter(info)
+        assert calls == {"anthropic_vertex": 1, "google_genai": 0}
+
+    def test_vertex_gemini_still_goes_to_google_genai(self, monkeypatch):
+        """Regression guard — must not accidentally route Gemini through
+        AnthropicVertex. Symmetric to the Claude dispatch test."""
+        from scanner.vm import llm_provider
+
+        llm_provider._adapter_cache.clear()
+
+        calls = {"anthropic_vertex": 0, "google_genai": 0}
+
+        class _FakeAnthropicVertex:
+            def __init__(self, info):
+                calls["anthropic_vertex"] += 1
+
+        class _FakeGoogleGenAI:
+            def __init__(self, info):
+                calls["google_genai"] += 1
+
+        monkeypatch.setattr(
+            llm_provider, "AnthropicVertexAdapter", _FakeAnthropicVertex,
+        )
+        monkeypatch.setattr(
+            llm_provider, "GoogleGenAIAdapter", _FakeGoogleGenAI,
+        )
+
+        info = LLMProviderInfo(
+            provider="vertex_ai", model="gemini-2.5-flash",
+            config={"project_id": "p", "location": "us-central1"},
+        )
+        llm_provider.build_adapter(info)
+        assert calls == {"anthropic_vertex": 0, "google_genai": 1}

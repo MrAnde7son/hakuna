@@ -83,21 +83,27 @@ def record_observation(
     scan_id: Optional[int] = None,
     org_id: Optional[int] = None,
 ) -> None:
-    """Upsert an AssetObservation row for (asset_id, source_system)."""
+    """Upsert an AssetObservation row for (asset_id, source_system).
+
+    The session is configured with ``autoflush=False`` (see
+    ``core.database.SessionLocal``), so a plain ``.query(...).first()``
+    won't see rows added earlier in the same transaction. When multiple
+    job results for the same asset flow through one scan refresh (VM
+    scanner dispatches nuclei + content-discovery + agent per target),
+    the second call would otherwise miss the first call's pending row,
+    ``db.add()`` a duplicate, and violate ``UniqueConstraint(asset_id,
+    source_system)`` at commit time — rolling back the whole scan.
+
+    We therefore check ``db.new`` for a matching pending row before
+    falling through to the DB query.
+    """
     if not source_system:
         return
 
-    existing = (
-        db.query(AssetObservation)
-        .filter(
-            AssetObservation.asset_id == asset_id,
-            AssetObservation.source_system == source_system,
-        )
-        .first()
-    )
+    existing = _find_pending_or_persisted_asset_obs(db, asset_id, source_system)
 
     now = datetime.utcnow()
-    if existing:
+    if existing is not None:
         existing.raw_fields = raw_fields
         existing.last_seen = now
         existing.times_seen = (existing.times_seen or 1) + 1
@@ -116,6 +122,32 @@ def record_observation(
         ))
 
 
+def _find_pending_or_persisted_asset_obs(
+    db: Session, asset_id: int, source_system: str,
+) -> Optional[AssetObservation]:
+    """Return an AssetObservation matching the unique key, if any.
+
+    Checks ``db.new`` first (rows added earlier in the same transaction
+    that autoflush=False has not yet pushed to the DB), then falls back
+    to a DB query for persisted rows.
+    """
+    for obj in db.new:
+        if (
+            isinstance(obj, AssetObservation)
+            and obj.asset_id == asset_id
+            and obj.source_system == source_system
+        ):
+            return obj
+    return (
+        db.query(AssetObservation)
+        .filter(
+            AssetObservation.asset_id == asset_id,
+            AssetObservation.source_system == source_system,
+        )
+        .first()
+    )
+
+
 def reassign_observations(db: Session, old_asset_id: int, new_asset_id: int) -> None:
     """Move asset observations from a duplicate to the survivor during dedup merge."""
     _reassign(db, AssetObservation, "asset_id", old_asset_id, new_asset_id)
@@ -132,21 +164,37 @@ def record_finding_observation(
     scan_id: Optional[int] = None,
     org_id: Optional[int] = None,
 ) -> None:
-    """Upsert a FindingObservation row for (finding_id, source_system)."""
+    """Upsert a FindingObservation row for (finding_id, source_system).
+
+    See ``record_observation`` for why we also scan ``db.new``: the
+    session has autoflush disabled, so concurrent inserts for the same
+    (finding_id, source_system) within one transaction would otherwise
+    collide at commit time on ``UniqueConstraint``.
+    """
     if not source_system:
         return
 
-    existing = (
-        db.query(FindingObservation)
-        .filter(
-            FindingObservation.finding_id == finding_id,
-            FindingObservation.source_system == source_system,
+    existing = None
+    for obj in db.new:
+        if (
+            isinstance(obj, FindingObservation)
+            and obj.finding_id == finding_id
+            and obj.source_system == source_system
+        ):
+            existing = obj
+            break
+    if existing is None:
+        existing = (
+            db.query(FindingObservation)
+            .filter(
+                FindingObservation.finding_id == finding_id,
+                FindingObservation.source_system == source_system,
+            )
+            .first()
         )
-        .first()
-    )
 
     now = datetime.utcnow()
-    if existing:
+    if existing is not None:
         existing.raw_fields = raw_fields
         existing.last_seen = now
         existing.times_seen = (existing.times_seen or 1) + 1

@@ -16,6 +16,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ingest.cpe_infer import infer_cpes
+from app.ingest.http_header_audit import audit_response
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,32 @@ AUTH_INDICATORS = re.compile(
 )
 
 
+# Map from legacy nmap-flavoured ``service_name`` strings to the normalized
+# ``service_type`` identifier introduced in migration 017. Kept in sync with
+# the backfill mapping in alembic 017_add_service_type so an existing row's
+# computed service_type matches what a fresh nmap pass would write.
+NMAP_SERVICE_TYPE_MAP: dict[str, str] = {
+    "ssh": "ssh",
+    "mysql": "mysql",
+    "postgresql": "postgres",
+    "postgres": "postgres",
+    "http": "http",
+    "https": "https",
+    "ms-wbt-server": "rdp",
+    "rdp": "rdp",
+    "ipp": "ipp",
+    "ajp13": "ajp",
+    "ajp": "ajp",
+}
+
+
+def normalize_nmap_service_type(service_name: str | None) -> str | None:
+    """Return the normalized service_type for an nmap service_name, or None."""
+    if not service_name:
+        return None
+    return NMAP_SERVICE_TYPE_MAP.get(service_name.strip().lower())
+
+
 async def upsert_asset_port(
     db: AsyncSession,
     asset_id: uuid.UUID,
@@ -42,17 +69,33 @@ async def upsert_asset_port(
     cpe_list: list | None = None,
     tls_cert: dict | None = None,
     nmap_scripts: dict | None = None,
+    service_type: str | None = None,
+    service_product: str | None = None,
+    service_confidence: int | None = None,
 ) -> uuid.UUID:
-    """Upsert a port record for an asset."""
+    """Upsert a port record for an asset.
+
+    ``service_type`` / ``service_product`` / ``service_confidence`` are the
+    normalized service-identity columns introduced in migration 017. They
+    use higher-confidence-wins semantics (vs. the COALESCE-on-conflict used
+    by the rest of the columns): if the existing row already has a
+    confidence >= the incoming value, the existing identity is preserved.
+    This is what lets a banner-grab probe (confidence 90) overwrite an
+    httpx scheme guess (confidence 70) but not vice versa.
+    """
     now = datetime.now(timezone.utc)
     port_id = uuid.uuid4()
 
     result = await db.execute(
         text("""
             INSERT INTO asset_ports (id, asset_id, port, protocol, service_name, service_version,
-                                     banner, cpe_list, tls_cert, nmap_scripts, updated_at)
+                                     banner, cpe_list, tls_cert, nmap_scripts,
+                                     service_type, service_product, service_confidence,
+                                     updated_at)
             VALUES (:id, :asset_id, :port, :proto, :svc_name, :svc_ver, :banner,
-                    cast(:cpe as jsonb), cast(:tls as jsonb), cast(:nmap as jsonb), :now)
+                    cast(:cpe as jsonb), cast(:tls as jsonb), cast(:nmap as jsonb),
+                    :svc_type, :svc_product, :svc_conf,
+                    :now)
             ON CONFLICT (asset_id, port, protocol) DO UPDATE SET
                 service_name = COALESCE(EXCLUDED.service_name, asset_ports.service_name),
                 service_version = COALESCE(EXCLUDED.service_version, asset_ports.service_version),
@@ -60,6 +103,30 @@ async def upsert_asset_port(
                 cpe_list = COALESCE(EXCLUDED.cpe_list, asset_ports.cpe_list),
                 tls_cert = COALESCE(EXCLUDED.tls_cert, asset_ports.tls_cert),
                 nmap_scripts = COALESCE(EXCLUDED.nmap_scripts, asset_ports.nmap_scripts),
+                service_type = CASE
+                    WHEN EXCLUDED.service_type IS NULL THEN asset_ports.service_type
+                    WHEN asset_ports.service_confidence IS NULL
+                         OR EXCLUDED.service_confidence IS NULL THEN
+                        COALESCE(EXCLUDED.service_type, asset_ports.service_type)
+                    WHEN EXCLUDED.service_confidence >= asset_ports.service_confidence
+                        THEN EXCLUDED.service_type
+                    ELSE asset_ports.service_type
+                END,
+                service_product = CASE
+                    WHEN EXCLUDED.service_type IS NULL THEN asset_ports.service_product
+                    WHEN asset_ports.service_confidence IS NULL
+                         OR EXCLUDED.service_confidence IS NULL THEN
+                        COALESCE(EXCLUDED.service_product, asset_ports.service_product)
+                    WHEN EXCLUDED.service_confidence >= asset_ports.service_confidence
+                        THEN COALESCE(EXCLUDED.service_product, asset_ports.service_product)
+                    ELSE asset_ports.service_product
+                END,
+                service_confidence = CASE
+                    WHEN EXCLUDED.service_type IS NULL THEN asset_ports.service_confidence
+                    WHEN asset_ports.service_confidence IS NULL THEN EXCLUDED.service_confidence
+                    WHEN EXCLUDED.service_confidence IS NULL THEN asset_ports.service_confidence
+                    ELSE GREATEST(asset_ports.service_confidence, EXCLUDED.service_confidence)
+                END,
                 updated_at = EXCLUDED.updated_at
             RETURNING id
         """),
@@ -74,11 +141,115 @@ async def upsert_asset_port(
             "cpe": json.dumps(cpe_list) if cpe_list else None,
             "tls": json.dumps(tls_cert) if tls_cert else None,
             "nmap": json.dumps(nmap_scripts) if nmap_scripts else None,
+            "svc_type": service_type,
+            "svc_product": service_product,
+            "svc_conf": service_confidence,
             "now": now,
         },
     )
     row = result.fetchone()
     return row.id if row else port_id
+
+
+async def upsert_asset_port_http(
+    db: AsyncSession,
+    asset_id: uuid.UUID,
+    port: int,
+    *,
+    http_status: int | None = None,
+    http_title: str | None = None,
+    http_url: str | None = None,
+    http_webserver: str | None = None,
+    http_tech_stack: list | dict | None = None,
+    protocol: str = "tcp",
+    service_type: str | None = None,
+    service_product: str | None = None,
+    service_confidence: int | None = None,
+) -> None:
+    """Write the per-port httpx fingerprint to asset_ports.
+
+    UPSERT (not UPDATE) because tlsx and httpx run in the same parallel
+    enrichment group — the port row may not yet exist when httpx finishes
+    on a non-TLS port (e.g. an admin UI on 8088). Uses COALESCE-on-conflict
+    so a follow-up tlsx write doesn't blow away the HTTP fingerprint and
+    vice versa.
+
+    ``service_type`` / ``service_product`` / ``service_confidence`` use the
+    same higher-confidence-wins semantics as :func:`upsert_asset_port`: a
+    banner-grab probe (confidence 90) writing later won't be clobbered by
+    a stale httpx scheme guess (confidence 70) on the next enrichment run.
+    """
+    now = datetime.now(timezone.utc)
+    tech_json = (
+        json.dumps(http_tech_stack)
+        if http_tech_stack not in (None, "", [], {})
+        else None
+    )
+    await db.execute(
+        text("""
+            INSERT INTO asset_ports (
+                id, asset_id, port, protocol,
+                http_status, http_title, http_url, http_webserver,
+                http_tech_stack, last_http_probed_at,
+                service_type, service_product, service_confidence,
+                updated_at
+            )
+            VALUES (
+                :id, :asset_id, :port, :proto,
+                :status, :title, :url, :webserver,
+                cast(:tech as jsonb), :now,
+                :svc_type, :svc_product, :svc_conf,
+                :now
+            )
+            ON CONFLICT (asset_id, port, protocol) DO UPDATE SET
+                http_status = COALESCE(EXCLUDED.http_status, asset_ports.http_status),
+                http_title = COALESCE(EXCLUDED.http_title, asset_ports.http_title),
+                http_url = COALESCE(EXCLUDED.http_url, asset_ports.http_url),
+                http_webserver = COALESCE(EXCLUDED.http_webserver, asset_ports.http_webserver),
+                http_tech_stack = COALESCE(EXCLUDED.http_tech_stack, asset_ports.http_tech_stack),
+                last_http_probed_at = EXCLUDED.last_http_probed_at,
+                service_type = CASE
+                    WHEN EXCLUDED.service_type IS NULL THEN asset_ports.service_type
+                    WHEN asset_ports.service_confidence IS NULL
+                         OR EXCLUDED.service_confidence IS NULL THEN
+                        COALESCE(EXCLUDED.service_type, asset_ports.service_type)
+                    WHEN EXCLUDED.service_confidence >= asset_ports.service_confidence
+                        THEN EXCLUDED.service_type
+                    ELSE asset_ports.service_type
+                END,
+                service_product = CASE
+                    WHEN EXCLUDED.service_type IS NULL THEN asset_ports.service_product
+                    WHEN asset_ports.service_confidence IS NULL
+                         OR EXCLUDED.service_confidence IS NULL THEN
+                        COALESCE(EXCLUDED.service_product, asset_ports.service_product)
+                    WHEN EXCLUDED.service_confidence >= asset_ports.service_confidence
+                        THEN COALESCE(EXCLUDED.service_product, asset_ports.service_product)
+                    ELSE asset_ports.service_product
+                END,
+                service_confidence = CASE
+                    WHEN EXCLUDED.service_type IS NULL THEN asset_ports.service_confidence
+                    WHEN asset_ports.service_confidence IS NULL THEN EXCLUDED.service_confidence
+                    WHEN EXCLUDED.service_confidence IS NULL THEN asset_ports.service_confidence
+                    ELSE GREATEST(asset_ports.service_confidence, EXCLUDED.service_confidence)
+                END,
+                updated_at = EXCLUDED.updated_at
+        """),
+        {
+            "id": uuid.uuid4(),
+            "asset_id": asset_id,
+            "port": port,
+            "proto": protocol,
+            "status": http_status,
+            "title": http_title,
+            "url": http_url,
+            "webserver": http_webserver,
+            "tech": tech_json,
+            "svc_type": service_type,
+            "svc_product": service_product,
+            "svc_conf": service_confidence,
+            "now": now,
+        },
+    )
 
 
 async def upsert_asset_port_cpes(
@@ -238,6 +409,17 @@ async def store_httpx_enrichment(
 
     # httpx stores screenshot path in the JSON output when -screenshot is used
     screenshot_path = httpx_entry.get("screenshot_path") or httpx_entry.get("screenshot")
+
+    # Header / cookie audit — embedded in httpx_full under `security_audit` so
+    # the backend can read posture without a schema change. Never raise:
+    # enrichment must not fail on a malformed header dict.
+    try:
+        httpx_entry = {**httpx_entry, "security_audit": audit_response(httpx_entry)}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "header_audit failed for asset=%s url=%s: %s",
+            asset_id, httpx_entry.get("url"), exc,
+        )
 
     await db.execute(
         text("""
@@ -418,16 +600,45 @@ async def store_nmap_results(
 
     nmap_status = "timeout" if timed_out else "complete"
 
-    await db.execute(
-        text("""
-            UPDATE assets SET
-                os_fingerprint = COALESCE(:os_fp, os_fingerprint),
-                nmap_status = :status,
-                nmap_last_run = :now
-            WHERE id = :id
-        """),
-        {"os_fp": os_fp, "status": nmap_status, "now": now, "id": asset_id},
-    )
+    # Collect UDP open ports for the assets.open_udp_ports denormalization.
+    # Populated only when the nmap run included UDP services — a TCP-only
+    # run leaves the column untouched (NULL or whatever it was before).
+    udp_open: set[int] = set()
+    has_udp_results = False
+    for svc in nmap_host.services:
+        if (svc.protocol or "tcp") == "udp":
+            has_udp_results = True
+            # nmap UDP marks ports "open|filtered" for the closed default —
+            # only count actually-open ones.
+            if (svc.state or "").startswith("open") and not svc.state.startswith("open|filtered"):
+                udp_open.add(svc.port)
+
+    if has_udp_results:
+        await db.execute(
+            text("""
+                UPDATE assets SET
+                    os_fingerprint = COALESCE(:os_fp, os_fingerprint),
+                    nmap_status = :status,
+                    nmap_last_run = :now,
+                    open_udp_ports = :udp_ports
+                WHERE id = :id
+            """),
+            {
+                "os_fp": os_fp, "status": nmap_status, "now": now, "id": asset_id,
+                "udp_ports": sorted(udp_open),
+            },
+        )
+    else:
+        await db.execute(
+            text("""
+                UPDATE assets SET
+                    os_fingerprint = COALESCE(:os_fp, os_fingerprint),
+                    nmap_status = :status,
+                    nmap_last_run = :now
+                WHERE id = :id
+            """),
+            {"os_fp": os_fp, "status": nmap_status, "now": now, "id": asset_id},
+        )
 
     # Per-port results
     for svc in nmap_host.services:
@@ -454,6 +665,12 @@ async def store_nmap_results(
         if ssl_cert_output:
             tls_cert = {"raw": ssl_cert_output}
 
+        # Normalize the nmap service_name into the new service_type column
+        # so PR #2 gates can match on identity (e.g. "ssh") rather than port
+        # number. Confidence 80 — nmap's service detection is more
+        # authoritative than an httpx scheme guess (70) but less than a
+        # hand-rolled banner parser (85-90).
+        svc_type = normalize_nmap_service_type(service_name)
         await upsert_asset_port(
             db, asset_id, port, protocol,
             service_name=service_name,
@@ -462,6 +679,9 @@ async def store_nmap_results(
             cpe_list=cpe_list,
             tls_cert=tls_cert,
             nmap_scripts=scripts if scripts else None,
+            service_type=svc_type,
+            service_product=service_version if svc_type else None,
+            service_confidence=80 if svc_type else None,
         )
         ports_updated += 1
 

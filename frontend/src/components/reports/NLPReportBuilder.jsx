@@ -10,22 +10,29 @@ import { SeverityBadge, Card, ScoreBar } from '../shared/ui.jsx'
 import { getAssetDisplayName, getAssetSecondaryInfo } from '../../utils/assetDisplay.js'
 
 const EXAMPLE_QUERIES = [
+  'funnel of critical vulnerabilities',
+  'risk grade with improvement tips',
+  'MTTR by severity over time',
+  'remediation velocity trend',
+  'heatmap of family vs severity',
+  'top risky assets',
+  'top remediation actions by owner',
+  'AI tools and ML attack surface',
+  'OS family distribution',
+  'expired certificates and expiring soon',
+  'domain admins and kerberoastable accounts',
+  'writeable shares and lateral movement paths',
+  'assessment coverage and credentialed assets',
+  'zombie vulnerabilities',
+  'finding age distribution',
   'show me all critical findings on Windows assets',
   'critical and high findings with known exploits',
   'quick wins in production environment',
   'SLA breached findings sorted by priority',
-  'findings with CVSS above 9',
-  'ransomware-linked vulnerabilities',
   'KEV findings on Linux hosts',
-  'critical assets with more than 5 critical findings',
   'zero-day vulnerabilities on internet-facing assets',
   'regression findings that came back',
   'findings with MITRE ATT&CK lateral movement tactics',
-  'false positives and accepted risk findings',
-  'findings on port 443 with VPR above 7',
-  'stale assets not recently scanned',
-  'high-value assets with critical findings in DMZ',
-  'findings tagged with PCI',
 ]
 
 const SEV_COLORS = {
@@ -232,23 +239,79 @@ function uid() {
   return Math.random().toString(36).slice(2, 10)
 }
 
+// Inventory intent → widget spec mapping. Values are arrays so a single
+// intent can fan out to multiple widgets (e.g. a card + a table).
+const INVENTORY_WIDGET_MAP = {
+  domain_admins:      [{ type: 'card',    width: 'quarter', title: 'Domain Admins',          preset: 'inv_domain_admins' }],
+  local_admins:       [{ type: 'card',    width: 'quarter', title: 'Local Admins',           preset: 'inv_local_admins' }],
+  kerberoastable:     [{ type: 'card',    width: 'quarter', title: 'Kerberoastable',         preset: 'inv_kerberoastable' }],
+  pw_never_expires:   [{ type: 'card',    width: 'quarter', title: 'Password Never Expires', preset: 'inv_pw_never_expires' }],
+  pw_never_changed:   [{ type: 'card',    width: 'quarter', title: 'Never Changed Password', preset: 'inv_pw_never_changed' }],
+  weak_pw_policies:   [{ type: 'card',    width: 'quarter', title: 'Weak Password Policies', preset: 'inv_weak_pw_policies' },
+                       { type: 'table',   width: 'full',    title: 'Password Policies',      preset: 'inv_pw_policies_table' }],
+  domain_controllers: [{ type: 'card',    width: 'quarter', title: 'Domain Controllers',     preset: 'inv_domain_controllers' }],
+  privileged:         [{ type: 'table',   width: 'full',    title: 'Privileged Users',       preset: 'inv_users_table', filters: { is_privileged: 'true' } },
+                       { type: 'table',   width: 'full',    title: 'Privileged Groups',      preset: 'inv_groups_table', filters: { is_privileged: 'true' } }],
+  expired_certs:      [{ type: 'card',    width: 'quarter', title: 'Expired Certificates',   preset: 'inv_expired_certs' }],
+  expiring_certs:     [{ type: 'card',    width: 'quarter', title: 'Expiring Soon',          preset: 'inv_expiring_certs' }],
+  self_signed_certs:  [{ type: 'card',    width: 'quarter', title: 'Self-Signed Certs',      preset: 'inv_self_signed_certs' }],
+  certificates:       [{ type: 'pie_chart', width: 'half',  title: 'Certificate Status',     preset: 'inv_cert_status', donut: true },
+                       { type: 'table',   width: 'full',    title: 'Certificates',           preset: 'inv_certificates_table' }],
+  writeable_shares:   [{ type: 'card',    width: 'quarter', title: 'Writeable Shares',       preset: 'inv_writeable_shares' }],
+  shares:             [{ type: 'table',   width: 'full',    title: 'Network Shares',         preset: 'inv_shares_table' }],
+  lateral_paths:      [{ type: 'card',    width: 'quarter', title: 'Lateral Movement Paths', preset: 'inv_lateral_paths' }],
+  av_coverage:        [{ type: 'card',    width: 'quarter', title: 'Hosts with AV',          preset: 'inv_hosts_with_av' }],
+  missing_patches:    [{ type: 'table',   width: 'full',    title: 'Missing Patches',        preset: 'inv_patches_table' }],
+  software_inventory: [{ type: 'bar_chart', width: 'half',  title: 'Top Software Vendors',   preset: 'inv_software_vendors' }],
+  os_distribution:    [{ type: 'pie_chart', width: 'half',  title: 'OS Family Distribution', preset: 'os_family_breakdown', donut: true },
+                       { type: 'bar_chart', width: 'full',  title: 'OS Versions',            preset: 'os_detail_breakdown' },
+                       { type: 'table',   width: 'full',    title: 'OS Version Details',     preset: 'os_detail_table' }],
+  device_types:       [{ type: 'pie_chart', width: 'half',  title: 'Device Types',           preset: 'device_type_breakdown', donut: true }],
+  ai_ml:              [{ type: 'card',    width: 'quarter', title: 'AI Tools Detected',      preset: 'inv_total_ai_tools' },
+                       { type: 'pie_chart', width: 'half',  title: 'AI Tool Categories',     preset: 'inv_ai_tool_categories', donut: true },
+                       { type: 'table',   width: 'full',    title: 'Detected AI Tools',      preset: 'inv_ai_tools_table', limit: 50 }],
+}
+
+function specToWidget(spec) {
+  const { type, width, title, preset, donut, limit, filters, ...rest } = spec
+  const config = { preset, ...rest }
+  if (donut !== undefined) config.donut = donut
+  if (limit !== undefined) config.limit = limit
+  if (filters) config.filters = filters
+  return { id: uid(), type, title, width, config }
+}
+
 /** Build a set of report widgets from an NLP query result. */
 function buildWidgetsFromResult(result) {
   const ff = result.parsed_filters?.finding_filters || {}
   const af = result.parsed_filters?.asset_filters || {}
   const hasAssetFilters = Object.keys(af).length > 0
   const hasFindingFilters = Object.keys(ff).length > 0
+  const widgetHints = result.widget_hints || []
+  const metricIntents = result.metric_intents || []
+  const inventoryIntents = result.inventory_intents || []
+  const wantWidget = (h) => widgetHints.includes(h)
+  const wantMetric = (m) => metricIntents.includes(m)
+  const wantInventory = (i) => inventoryIntents.includes(i)
   const chipText = result.explanation?.map(c => `${c.label}: ${c.value}`).join(' · ') || ''
 
   const widgets = []
 
-  // Section header
+  // ── Section header ──
   widgets.push({
     id: uid(), type: 'header', title: '', width: 'full',
     config: { title: result.original_query, subtitle: chipText || 'Generated by AI Query' },
   })
 
-  // Stat cards row
+  // ── Risk grade (explicit intent) ──
+  if (wantWidget('risk_grade')) {
+    widgets.push({
+      id: uid(), type: 'risk_grade', title: 'Organization Risk Grade', width: 'half',
+      config: { preset: 'risk_grade', show_tips: true, show_benchmark: true },
+    })
+  }
+
+  // ── Stat cards row ──
   widgets.push({
     id: uid(), type: 'card', title: 'Matching Findings', width: 'quarter',
     config: { preset: 'finding_count_filtered', filters: hasFindingFilters ? ff : {} },
@@ -257,7 +320,6 @@ function buildWidgetsFromResult(result) {
     id: uid(), type: 'card', title: 'Matching Assets', width: 'quarter',
     config: { preset: 'asset_count_filtered', filters: hasAssetFilters ? af : {} },
   })
-  // Show critical/high stat cards if relevant
   if (!ff.severity || ff.severity >= 3) {
     widgets.push({
       id: uid(), type: 'card', title: 'Critical Findings', width: 'quarter',
@@ -268,8 +330,6 @@ function buildWidgetsFromResult(result) {
       config: { preset: 'high_count' },
     })
   }
-
-  // Contextual stat cards based on query type
   if (ff.has_exploit || ff.is_kev) {
     widgets.push({
       id: uid(), type: 'card', title: 'Known Exploits', width: 'quarter',
@@ -292,30 +352,107 @@ function buildWidgetsFromResult(result) {
       config: { preset: 'quick_wins' },
     })
   }
-  if (ff.is_regression) {
+  if (ff.is_regression || wantMetric('zombie')) {
     widgets.push({
-      id: uid(), type: 'card', title: 'Regressions', width: 'quarter',
-      config: { preset: 'regression_count' },
+      id: uid(), type: 'card', title: ff.is_regression ? 'Regressions' : 'Zombie Vulns', width: 'quarter',
+      config: { preset: wantMetric('zombie') ? 'zombie_count' : 'regression_count' },
+    })
+  }
+  if (wantMetric('mttr')) {
+    widgets.push({
+      id: uid(), type: 'card', title: 'Mean Time to Remediate', width: 'quarter',
+      config: { preset: 'mttr_overall', label: 'days', show_benchmark: true },
+    })
+  }
+  if (wantMetric('credentialed')) {
+    widgets.push({
+      id: uid(), type: 'card', title: 'Credentialed Assets', width: 'quarter',
+      config: { preset: 'credentialed_count' },
     })
   }
 
-  // Severity breakdown pie (shows severity mix in results)
-  widgets.push({
-    id: uid(), type: 'pie_chart', title: 'Severity Distribution', width: 'half',
-    config: { preset: 'severity_breakdown', donut: true, filters: hasFindingFilters ? ff : {} },
-  })
-
-  // Contextual charts based on query type
-  if (ff.sla_status || ff.sla_status === undefined) {
-    // If SLA-related query, add SLA breakdown
-    if (ff.sla_status) {
-      widgets.push({
-        id: uid(), type: 'pie_chart', title: 'SLA Status', width: 'half',
-        config: { preset: 'sla_status', donut: true },
-      })
-    }
+  // ── Funnel (explicit intent) ──
+  if (wantWidget('funnel')) {
+    // Build a sensible funnel based on what was filtered. If user said
+    // "funnel of critical vulnerabilities", keep severity in every step and
+    // narrow further. Otherwise default to the prioritization funnel.
+    const baseFilters = hasFindingFilters ? { ...ff } : {}
+    const stepFilter = (extra) => ({ ...baseFilters, ...extra })
+    widgets.push({
+      id: uid(), type: 'funnel', title: 'Prioritization Funnel', width: 'full',
+      config: {
+        base_entity: 'findings',
+        steps: [
+          { label: 'Matching findings', filters: baseFilters },
+          { label: 'CVSS ≥ 7.0', filters: stepFilter({ min_cvss3: 7.0 }) },
+          { label: 'Has exploit', filters: stepFilter({ has_exploit: true }) },
+          { label: 'In CISA KEV', filters: stepFilter({ is_kev: true }) },
+          { label: 'On critical assets', filters: stepFilter({ on_critical_assets: true }) },
+        ],
+      },
+    })
   }
 
+  // ── Coverage (gauge + breakdown) ──
+  if (wantMetric('coverage')) {
+    widgets.push({
+      id: uid(), type: 'card', title: 'Assessment Coverage', width: 'quarter',
+      config: { preset: 'coverage_pct', show_benchmark: true },
+    })
+    widgets.push({
+      id: uid(), type: 'pie_chart', title: 'Scan Coverage', width: 'half',
+      config: { preset: 'coverage_breakdown', donut: true },
+    })
+  }
+
+  // ── Gauge (explicit intent, default to SLA compliance) ──
+  if (wantWidget('gauge') && !wantMetric('coverage')) {
+    widgets.push({
+      id: uid(), type: 'gauge', title: 'SLA Compliance', width: 'quarter',
+      config: { preset: 'gauge_sla_compliance' },
+    })
+  }
+
+  // ── Severity breakdown — pie or bar based on hints ──
+  if (wantWidget('breakdown') || (!metricIntents.length && !inventoryIntents.length)) {
+    const useBar = wantWidget('bar') && !wantWidget('pie')
+    widgets.push({
+      id: uid(), type: useBar ? 'bar_chart' : 'pie_chart', title: 'Severity Distribution', width: 'half',
+      config: { preset: 'severity_breakdown', donut: !useBar, filters: hasFindingFilters ? ff : {} },
+    })
+  }
+
+  // ── Heatmap (explicit intent) ──
+  if (wantWidget('heatmap')) {
+    widgets.push({
+      id: uid(), type: 'heatmap', title: wantMetric('by_owner') ? 'Owner × SLA Status' : 'Severity by Family', width: 'full',
+      config: { preset: wantMetric('by_owner') ? 'heatmap_owner_sla' : 'heatmap_family_severity' },
+    })
+  }
+
+  // ── Treemap (explicit intent) ──
+  if (wantWidget('treemap')) {
+    widgets.push({
+      id: uid(), type: 'treemap', title: 'Family × Severity', width: 'half',
+      config: { preset: 'treemap_family_severity' },
+    })
+  }
+
+  // ── Radar (explicit intent) ──
+  if (wantWidget('radar')) {
+    widgets.push({
+      id: uid(), type: 'radar', title: 'Risk Dimensions', width: 'half',
+      config: { preset: 'radar_risk_dimensions' },
+    })
+  }
+
+  // ── SLA breakdown (when SLA filter present) ──
+  if (ff.sla_status) {
+    widgets.push({
+      id: uid(), type: 'pie_chart', title: 'SLA Status', width: 'half',
+      config: { preset: 'sla_status', donut: true },
+    })
+  }
   if (ff.effort_level) {
     widgets.push({
       id: uid(), type: 'pie_chart', title: 'Effort Distribution', width: 'half',
@@ -323,39 +460,117 @@ function buildWidgetsFromResult(result) {
     })
   }
 
-  if (ff.has_ttps || ff.tactic || ff.technique_id) {
-    // Show severity trend for ATT&CK related queries
+  // ── MTTR detail (when intent present) ──
+  if (wantMetric('mttr')) {
     widgets.push({
-      id: uid(), type: 'bar_chart', title: 'Severity Breakdown', width: 'half',
+      id: uid(), type: 'bar_chart', title: 'MTTR by Severity', width: 'half',
+      config: { preset: 'mttr_by_severity' },
+    })
+    widgets.push({
+      id: uid(), type: 'line_chart', title: 'MTTR Trend', width: 'half',
+      config: { preset: 'mttr_trend' },
+    })
+  }
+
+  // ── Velocity ──
+  if (wantMetric('velocity')) {
+    widgets.push({
+      id: uid(), type: 'bar_chart', title: 'Remediation Velocity', width: 'full',
+      config: { preset: 'velocity_trend', stacked: true },
+    })
+  }
+
+  // ── By business unit / tag ──
+  if (wantMetric('by_business_unit')) {
+    widgets.push({
+      id: uid(), type: 'bar_chart', title: 'Risk by Business Unit', width: 'full',
+      config: { preset: 'risk_by_tags', horizontal: true },
+    })
+    widgets.push({
+      id: uid(), type: 'table', title: 'Business Unit Benchmark', width: 'full',
+      config: { preset: 'tag_benchmark' },
+    })
+  }
+
+  // ── Finding age ──
+  if (wantMetric('age')) {
+    widgets.push({
+      id: uid(), type: 'bar_chart', title: 'Finding Age', width: 'full',
+      config: { preset: 'age_distribution' },
+    })
+  }
+
+  // ── Severity trend (line) — included for trend intent or broad queries ──
+  const narrowFilters = ['cve', 'port', 'search']
+  const isNarrow = narrowFilters.some(k => ff[k]) && Object.keys(ff).length <= 2
+  if (wantWidget('trend') || (!isNarrow && !inventoryIntents.length && !metricIntents.length)) {
+    widgets.push({
+      id: uid(), type: 'line_chart', title: 'Severity Trend', width: 'full',
+      config: { preset: 'severity_trend', trending_mode: 'cumulative' },
+    })
+  }
+
+  // ── ATT&CK contextual chart ──
+  if (ff.has_ttps || ff.tactic || ff.technique_id) {
+    widgets.push({
+      id: uid(), type: 'bar_chart', title: 'Severity by Tactic', width: 'half',
       config: { preset: 'severity_breakdown' },
     })
   }
 
-  // Add trend line for broader queries (no narrow single-filter)
-  const narrowFilters = ['cve', 'port', 'search']
-  const isNarrow = narrowFilters.some(k => ff[k]) && Object.keys(ff).length <= 2
-  if (!isNarrow) {
+  // ── Top assets (intent) ──
+  if (wantMetric('top_assets')) {
     widgets.push({
-      id: uid(), type: 'line_chart', title: 'Severity Trend', width: 'full',
-      config: { preset: 'severity_trend' },
+      id: uid(), type: 'table', title: 'Top Risky Assets', width: 'full',
+      config: { preset: 'top_assets', limit: 10 },
     })
   }
 
-  // Findings table with NLP filters applied
-  widgets.push({
-    id: uid(), type: 'table', title: 'Findings', width: 'full',
-    config: { preset: 'findings_list', filters: hasFindingFilters ? { ...ff, page_size: 25 } : { page_size: 25 } },
-  })
-
-  // Quick wins table if effort-related
-  if (ff.effort_level === 'quick_win') {
+  // ── Remediation actions / queue / quick wins ──
+  if (wantMetric('remediation_actions')) {
     widgets.push({
-      id: uid(), type: 'table', title: 'Quick Wins', width: 'full',
-      config: { preset: 'quick_wins_table' },
+      id: uid(), type: 'table', title: 'Top Remediation Actions', width: 'full',
+      config: { preset: 'aggregated_solutions_table', limit: 10 },
+    })
+  }
+  if (wantMetric('quick_win_actions') || ff.effort_level === 'quick_win') {
+    widgets.push({
+      id: uid(), type: 'table', title: 'Quick Win Actions', width: 'full',
+      config: { preset: 'quick_wins_actions', limit: 10 },
+    })
+  }
+  if (wantMetric('remediation_queue')) {
+    widgets.push({
+      id: uid(), type: 'table', title: 'Remediation Queue', width: 'full',
+      config: { preset: 'remediation_queue_data', limit: 15 },
+    })
+  }
+  if (wantMetric('by_owner')) {
+    widgets.push({
+      id: uid(), type: 'table', title: 'Actions by Owner', width: 'half',
+      config: { preset: 'solutions_by_owner', limit: 10 },
     })
   }
 
-  // Assets table if asset filters were used
+  // ── Inventory drill-downs ──
+  for (const intent of inventoryIntents) {
+    const specs = INVENTORY_WIDGET_MAP[intent]
+    if (specs) {
+      for (const spec of specs) widgets.push(specToWidget(spec))
+    }
+  }
+
+  // ── Findings table (default closer) ──
+  // Skip when the query is purely an inventory drill-down with no finding filters.
+  const inventoryOnly = inventoryIntents.length > 0 && !hasFindingFilters && !metricIntents.length
+  if (!inventoryOnly) {
+    widgets.push({
+      id: uid(), type: 'table', title: 'Findings', width: 'full',
+      config: { preset: 'findings_list', filters: hasFindingFilters ? { ...ff, page_size: 25 } : { page_size: 25 } },
+    })
+  }
+
+  // ── Assets table if asset filters were used ──
   if (hasAssetFilters) {
     widgets.push({
       id: uid(), type: 'table', title: 'Matching Assets', width: 'full',

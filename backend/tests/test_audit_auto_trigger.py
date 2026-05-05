@@ -1,0 +1,685 @@
+"""Tests for services.audit_auto_trigger — the out-of-the-box wiring that
+turns a scanner port_change event into an unauthenticated SMB / SNMP audit
+run when the org has opted in."""
+
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
+
+import pytest
+
+from models.models import Asset, RelayAgent, Scan
+
+# Side-effect import populates AUDITS so dispatch_audit_run can resolve
+# protocol="smb" / "snmp". Mirrors test_audit_runner.py.
+import agents.agent_tools  # noqa: F401
+
+
+@pytest.fixture
+def connected_relay(db_session, test_org):
+    relay = RelayAgent(
+        org_id=test_org.id,
+        name="test-relay",
+        token_hash="x",
+        status="connected",
+        last_seen_at=datetime.utcnow(),
+    )
+    db_session.add(relay)
+    db_session.flush()
+    return relay
+
+
+@pytest.fixture
+def linked_asset(db_session, test_org):
+    """Asset with the scanner-side UUID stamped in easm_data so the bridge
+    can map a scanner event back to it."""
+    scan = Scan(
+        filename="placeholder", scan_type="manual", source_type="manual",
+        org_id=test_org.id,
+    )
+    db_session.add(scan)
+    db_session.flush()
+    asset = Asset(
+        scan_id=scan.id, hostname="winhost-1", ip="10.0.0.5",
+        os="Windows Server 2022",
+        easm_data={"easm_asset_id": "scanner-uuid-1"},
+    )
+    db_session.add(asset)
+    db_session.flush()
+    return asset
+
+
+def _port_change_event(
+    scanner_asset_id: str,
+    new_ports: list[int],
+    hostname: str = "winhost-1",
+    transport: str = "tcp",
+):
+    """Build a scanner port_change event. Phase 4.0 added the ``transport``
+    field; defaults to TCP for the legacy SMB/datastore/anon-protocol tests."""
+    return {
+        "id": "evt-1",
+        "asset_id": scanner_asset_id,
+        "event_type": "port_change",
+        "created_at": "2026-04-25T00:00:00+00:00",
+        "payload": {
+            "hostname": hostname,
+            "transport": transport,
+            "new_ports": new_ports,
+            "removed_ports": [],
+        },
+    }
+
+
+def test_disabled_when_org_setting_off(db_session, test_org, linked_asset, connected_relay):
+    """Explicit opt-out: setting auto_audit_anon=False suppresses dispatch.
+
+    Defaults flipped to ON for credential-less audit families, so checking
+    "missing setting → no dispatch" is no longer the right invariant — that
+    case now fires. The opt-out path is the explicit ``False`` value.
+    """
+    from services.audit_auto_trigger import maybe_auto_trigger_anon_audits
+
+    test_org.settings = {"auto_audit_anon": False}
+    db_session.flush()
+
+    with patch("services.audit_auto_trigger.dispatch_audit_run") as mock_dispatch:
+        n = maybe_auto_trigger_anon_audits(
+            db_session, test_org,
+            _port_change_event("scanner-uuid-1", [445]),
+        )
+
+    assert n == 0
+    mock_dispatch.assert_not_called()
+
+
+def test_default_on_for_anon_families(db_session, test_org, linked_asset, connected_relay):
+    """Newly-onboarded orgs (no auto_audit_* settings written) auto-fire the
+    SMB rule on a 445 port_change. Confirms the default-ON behavior for
+    credential-less audit families."""
+    from services.audit_auto_trigger import maybe_auto_trigger_anon_audits
+
+    assert (test_org.settings or {}).get("auto_audit_anon") is None
+
+    with patch("services.audit_runner._dispatch_background_run", return_value="task-1"):
+        n = maybe_auto_trigger_anon_audits(
+            db_session, test_org,
+            _port_change_event("scanner-uuid-1", [445]),
+        )
+
+    assert n == 1
+
+
+def test_per_scan_suppress_auto_followup(db_session, test_org, linked_asset, connected_relay):
+    """When the EASM scan was started with ``suppress_auto_followup=True`` on
+    raw_metadata, no audits fire for assets discovered by that scan even
+    though the org-level default is ON. Same flag also blocks the post-ingest
+    VM scan — see test_auto_vm_scan.py."""
+    from services.audit_auto_trigger import maybe_auto_trigger_anon_audits
+
+    scan = db_session.query(Scan).filter_by(id=linked_asset.scan_id).first()
+    scan.raw_metadata = {**(scan.raw_metadata or {}), "suppress_auto_followup": True}
+    db_session.flush()
+
+    with patch("services.audit_auto_trigger.dispatch_audit_run") as mock_dispatch:
+        n = maybe_auto_trigger_anon_audits(
+            db_session, test_org,
+            _port_change_event("scanner-uuid-1", [445]),
+        )
+
+    assert n == 0
+    mock_dispatch.assert_not_called()
+
+
+def test_smb_dispatched_on_445(db_session, test_org, linked_asset, connected_relay):
+    """445 added → SMB null_session audit dispatched anonymously."""
+    from services.audit_auto_trigger import maybe_auto_trigger_anon_audits
+
+    test_org.settings = {"auto_audit_anon": True}
+    db_session.flush()
+
+    with patch("services.audit_runner._dispatch_background_run", return_value="task-1"):
+        n = maybe_auto_trigger_anon_audits(
+            db_session, test_org,
+            _port_change_event("scanner-uuid-1", [445, 80]),
+        )
+
+    assert n == 1
+
+    scan = db_session.query(Scan).filter_by(scan_type="smb_audit").first()
+    assert scan is not None
+    md = scan.raw_metadata or {}
+    assert md["protocol"] == "smb"
+    assert md["mission"] == "exposure_audit"
+    assert md["credential_id"] is None
+    assert md["relay_agent_id"] == connected_relay.id
+    assert md["asset_ids"] == [linked_asset.id]
+
+
+def test_shodan_synthesized_event_dispatches_smb(
+    db_session, test_org, linked_asset, connected_relay,
+):
+    """Port_change events synthesized by hakuna-scanner's Shodan ingest path
+    carry an extra ``payload.source = 'shodan'`` tag. The dispatcher must
+    treat them identically to naabu-derived events — same matching, same
+    cooldown, same dispatch — otherwise orphan IPs that Shodan finds with
+    exposed SMB never get triaged.
+    """
+    from services.audit_auto_trigger import maybe_auto_trigger_anon_audits
+
+    test_org.settings = {"auto_audit_anon": True}
+    db_session.flush()
+
+    event = _port_change_event("scanner-uuid-1", [445])
+    event["payload"]["source"] = "shodan"
+
+    with patch("services.audit_runner._dispatch_background_run", return_value="task-1"):
+        n = maybe_auto_trigger_anon_audits(db_session, test_org, event)
+
+    assert n == 1
+    scan = db_session.query(Scan).filter_by(scan_type="smb_audit").first()
+    assert scan is not None
+    assert scan.raw_metadata["protocol"] == "smb"
+
+
+def test_snmp_dispatched_on_161(db_session, test_org, linked_asset, connected_relay):
+    """SNMP rule declares ``transport='udp'``; the auto-trigger only fires
+    when the scanner emits a UDP-tagged port_change event (Phase 4.0)."""
+    from services.audit_auto_trigger import maybe_auto_trigger_anon_audits
+
+    test_org.settings = {"auto_audit_anon": True}
+    db_session.flush()
+
+    with patch("services.audit_runner._dispatch_background_run", return_value="task-1"):
+        n = maybe_auto_trigger_anon_audits(
+            db_session, test_org,
+            _port_change_event("scanner-uuid-1", [161], transport="udp"),
+        )
+
+    assert n == 1
+    scan = db_session.query(Scan).filter_by(scan_type="snmp_audit").first()
+    assert scan is not None
+    assert scan.raw_metadata["protocol"] == "snmp"
+    assert scan.raw_metadata["mission"] == "exposure_audit"
+    assert scan.raw_metadata["credential_id"] is None
+
+
+def test_snmp_does_not_fire_on_tcp_event_for_port_161(
+    db_session, test_org, linked_asset, connected_relay,
+):
+    """Phase 4.0 transport filter: a TCP port_change for port 161 (which
+    would be unusual but shouldn't crash) must NOT fire the SNMP audit —
+    SNMP is declared transport='udp' on the rule."""
+    from services.audit_auto_trigger import maybe_auto_trigger_anon_audits
+
+    test_org.settings = {"auto_audit_anon": True}
+    db_session.flush()
+
+    with patch("services.audit_auto_trigger.dispatch_audit_run") as mock_dispatch:
+        n = maybe_auto_trigger_anon_audits(
+            db_session, test_org,
+            _port_change_event("scanner-uuid-1", [161], transport="tcp"),
+        )
+
+    assert n == 0
+    mock_dispatch.assert_not_called()
+
+
+def test_smb_does_not_fire_on_udp_event_for_port_445(
+    db_session, test_org, linked_asset, connected_relay,
+):
+    """Mirror of the SNMP case: SMB rule is TCP; a UDP-tagged event with
+    port 445 must not fire it. Confirms the matcher is symmetric."""
+    from services.audit_auto_trigger import maybe_auto_trigger_anon_audits
+
+    test_org.settings = {"auto_audit_anon": True}
+    db_session.flush()
+
+    with patch("services.audit_auto_trigger.dispatch_audit_run") as mock_dispatch:
+        n = maybe_auto_trigger_anon_audits(
+            db_session, test_org,
+            _port_change_event("scanner-uuid-1", [445], transport="udp"),
+        )
+
+    assert n == 0
+    mock_dispatch.assert_not_called()
+
+
+def test_legacy_event_without_transport_field_defaults_to_tcp(
+    db_session, test_org, linked_asset, connected_relay,
+):
+    """Phase 4.0 backwards-compat: a port_change event with no ``transport``
+    field (pre-4.0 scanner emit) must be treated as TCP — preserving the
+    historical behavior where SMB on 445 would fire."""
+    from services.audit_auto_trigger import maybe_auto_trigger_anon_audits
+
+    test_org.settings = {"auto_audit_anon": True}
+    db_session.flush()
+
+    legacy_event = {
+        "id": "evt-legacy",
+        "asset_id": "scanner-uuid-1",
+        "event_type": "port_change",
+        "created_at": "2026-04-25T00:00:00+00:00",
+        "payload": {
+            "hostname": "winhost-1",
+            "new_ports": [445],
+            "removed_ports": [],
+            # No ``transport`` field — pre-Phase-4.0 scanner emit shape.
+        },
+    }
+    with patch("services.audit_runner._dispatch_background_run", return_value="task-1"):
+        n = maybe_auto_trigger_anon_audits(db_session, test_org, legacy_event)
+
+    assert n == 1
+
+
+def test_no_match_for_unrelated_ports(db_session, test_org, linked_asset, connected_relay):
+    from services.audit_auto_trigger import maybe_auto_trigger_anon_audits
+
+    test_org.settings = {"auto_audit_anon": True}
+    db_session.flush()
+
+    with patch("services.audit_auto_trigger.dispatch_audit_run") as mock_dispatch:
+        n = maybe_auto_trigger_anon_audits(
+            db_session, test_org,
+            _port_change_event("scanner-uuid-1", [80, 443, 22]),
+        )
+
+    assert n == 0
+    mock_dispatch.assert_not_called()
+
+
+def test_no_relay_skips_dispatch(db_session, test_org, linked_asset):
+    """Without a connected relay there's no path to the target — skip
+    cleanly instead of erroring."""
+    from services.audit_auto_trigger import maybe_auto_trigger_anon_audits
+
+    test_org.settings = {"auto_audit_anon": True}
+    db_session.flush()
+
+    with patch("services.audit_auto_trigger.dispatch_audit_run") as mock_dispatch:
+        n = maybe_auto_trigger_anon_audits(
+            db_session, test_org,
+            _port_change_event("scanner-uuid-1", [445]),
+        )
+
+    assert n == 0
+    mock_dispatch.assert_not_called()
+
+
+def test_unknown_scanner_asset_id_no_op(db_session, test_org, linked_asset, connected_relay):
+    """Scanner emits an event for an asset the backend hasn't ingested yet —
+    silently skip rather than raise."""
+    from services.audit_auto_trigger import maybe_auto_trigger_anon_audits
+
+    test_org.settings = {"auto_audit_anon": True}
+    db_session.flush()
+
+    with patch("services.audit_auto_trigger.dispatch_audit_run") as mock_dispatch:
+        n = maybe_auto_trigger_anon_audits(
+            db_session, test_org,
+            _port_change_event("unknown-uuid", [445]),
+        )
+
+    assert n == 0
+    mock_dispatch.assert_not_called()
+
+
+def test_cooldown_suppresses_repeat_within_24h(db_session, test_org, linked_asset, connected_relay):
+    """A second port_change for the same protocol within the cooldown
+    window must not produce a second audit run."""
+    from services.audit_auto_trigger import maybe_auto_trigger_anon_audits
+
+    test_org.settings = {"auto_audit_anon": True}
+    db_session.flush()
+
+    with patch("services.audit_runner._dispatch_background_run", return_value="task-1"):
+        first = maybe_auto_trigger_anon_audits(
+            db_session, test_org,
+            _port_change_event("scanner-uuid-1", [445]),
+        )
+        second = maybe_auto_trigger_anon_audits(
+            db_session, test_org,
+            _port_change_event("scanner-uuid-1", [445]),
+        )
+
+    assert first == 1
+    assert second == 0
+    smb_scans = db_session.query(Scan).filter_by(scan_type="smb_audit").count()
+    assert smb_scans == 1
+
+
+def test_cooldown_expired_allows_redispatch(db_session, test_org, linked_asset, connected_relay):
+    """Past the 24h window the same (asset, protocol) is re-eligible."""
+    from services.audit_auto_trigger import maybe_auto_trigger_anon_audits
+
+    test_org.settings = {"auto_audit_anon": True}
+    db_session.flush()
+
+    # Pre-stamp an old cooldown so the next call falls outside the window.
+    stale = (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat()
+    linked_asset.easm_data = {
+        **(linked_asset.easm_data or {}),
+        "_auto_audit_last": {"smb": stale},
+    }
+    db_session.flush()
+
+    with patch("services.audit_runner._dispatch_background_run", return_value="task-1"):
+        n = maybe_auto_trigger_anon_audits(
+            db_session, test_org,
+            _port_change_event("scanner-uuid-1", [445]),
+        )
+
+    assert n == 1
+
+
+def test_445_and_139_collapse_to_single_smb_run(db_session, test_org, linked_asset, connected_relay):
+    """Both 445 and 139 map to the smb null_session mission — one event
+    that adds both ports must produce exactly one SMB audit, not two."""
+    from services.audit_auto_trigger import maybe_auto_trigger_anon_audits
+
+    test_org.settings = {"auto_audit_anon": True}
+    db_session.flush()
+
+    with patch("services.audit_runner._dispatch_background_run", return_value="task-1"):
+        n = maybe_auto_trigger_anon_audits(
+            db_session, test_org,
+            _port_change_event("scanner-uuid-1", [445, 139]),
+        )
+
+    assert n == 1
+    smb_scans = db_session.query(Scan).filter_by(scan_type="smb_audit").count()
+    assert smb_scans == 1
+
+
+def test_non_port_change_event_ignored(db_session, test_org, linked_asset, connected_relay):
+    """Defense-in-depth: even if the bridge mistakenly forwards a
+    non-port_change event, the trigger function must no-op."""
+    from services.audit_auto_trigger import maybe_auto_trigger_anon_audits
+
+    test_org.settings = {"auto_audit_anon": True}
+    db_session.flush()
+
+    event = {
+        "id": "evt-2",
+        "asset_id": "scanner-uuid-1",
+        "event_type": "tech_change",
+        "payload": {"hostname": "winhost-1", "new_tech": {"nginx": "1.20"}},
+    }
+
+    with patch("services.audit_auto_trigger.dispatch_audit_run") as mock_dispatch:
+        n = maybe_auto_trigger_anon_audits(db_session, test_org, event)
+
+    assert n == 0
+    mock_dispatch.assert_not_called()
+
+
+# ── AutoTriggerRule registry & per-rule gating ───────────────────────
+
+
+def test_auto_trigger_rules_registry_seeded_with_smb_and_snmp():
+    """The Phase 0 refactor must keep the existing SMB/SNMP behavior — both
+    rules must be present in the registry, with the right port mappings,
+    and gated by the existing ``auto_audit_anon`` setting key so today's
+    customers don't experience a behavior change."""
+    from services.audit_auto_trigger import AUTO_TRIGGER_RULES
+
+    by_protocol = {r.protocol: r for r in AUTO_TRIGGER_RULES}
+    assert {"smb", "snmp"}.issubset(by_protocol.keys())
+
+    smb = by_protocol["smb"]
+    assert set(smb.ports) == {445, 139}
+    assert smb.mission == "exposure_audit"
+    assert smb.enabled_setting_key == "auto_audit_anon"
+    assert smb.requires_per_asset_consent is False
+
+    snmp = by_protocol["snmp"]
+    assert set(snmp.ports) == {161,}
+    assert snmp.mission == "exposure_audit"
+    assert snmp.transport == "udp"
+
+
+def test_per_rule_setting_key_isolates_families(db_session, test_org, linked_asset, connected_relay):
+    """Each family's switch is independent: explicitly turning off
+    ``auto_audit_datastore`` must suppress that family even with the legacy
+    ``auto_audit_anon`` switch on. Verifies the per-family gating refactor
+    actually isolates (in either direction now that defaults are ON)."""
+    from datetime import timedelta
+    from services.audit_auto_trigger import AUTO_TRIGGER_RULES, AutoTriggerRule
+
+    fake_rule = AutoTriggerRule(
+        protocol="smb",  # reuse existing protocol so dispatch resolves
+        mission="exposure_audit",
+        ports=(8888,),  # not in any other rule
+        cooldown=timedelta(hours=24),
+        enabled_setting_key="auto_audit_datastore",  # new family key
+    )
+    AUTO_TRIGGER_RULES.append(fake_rule)
+    try:
+        from services.audit_auto_trigger import maybe_auto_trigger_anon_audits
+
+        # Legacy switch on, datastore family explicitly off — the datastore
+        # rule must not fire even though defaults are otherwise ON.
+        test_org.settings = {"auto_audit_anon": True, "auto_audit_datastore": False}
+        db_session.flush()
+
+        with patch("services.audit_auto_trigger.dispatch_audit_run") as mock_dispatch:
+            n = maybe_auto_trigger_anon_audits(
+                db_session, test_org,
+                _port_change_event("scanner-uuid-1", [8888]),
+            )
+
+        assert n == 0
+        mock_dispatch.assert_not_called()
+    finally:
+        AUTO_TRIGGER_RULES.remove(fake_rule)
+
+
+def test_per_asset_consent_gate_blocks_dispatch_when_missing(
+    db_session, test_org, linked_asset, connected_relay,
+):
+    """OT-class rules with ``requires_per_asset_consent=True`` must refuse
+    to dispatch even when the org-level switch is on, unless the asset
+    carries a fresh consent record."""
+    from datetime import timedelta
+    from services.audit_auto_trigger import AUTO_TRIGGER_RULES, AutoTriggerRule
+
+    consent_rule = AutoTriggerRule(
+        protocol="smb",
+        mission="exposure_audit",
+        ports=(9999,),
+        cooldown=timedelta(hours=24),
+        enabled_setting_key="auto_audit_ot",
+        requires_per_asset_consent=True,
+    )
+    AUTO_TRIGGER_RULES.append(consent_rule)
+    try:
+        from services.audit_auto_trigger import maybe_auto_trigger_anon_audits
+
+        test_org.settings = {"auto_audit_ot": True}  # org switch ON
+        # No consent on the asset.
+        db_session.flush()
+
+        with patch("services.audit_auto_trigger.dispatch_audit_run") as mock_dispatch:
+            n = maybe_auto_trigger_anon_audits(
+                db_session, test_org,
+                _port_change_event("scanner-uuid-1", [9999]),
+            )
+        assert n == 0
+        mock_dispatch.assert_not_called()
+    finally:
+        AUTO_TRIGGER_RULES.remove(consent_rule)
+
+
+def test_per_asset_consent_gate_allows_dispatch_when_fresh(
+    db_session, test_org, linked_asset, connected_relay,
+):
+    """With a fresh consent record the consent-gated rule fires normally."""
+    from datetime import timedelta
+    from services.audit_auto_trigger import AUTO_TRIGGER_RULES, AutoTriggerRule
+
+    consent_rule = AutoTriggerRule(
+        protocol="smb",
+        mission="exposure_audit",
+        ports=(9999,),
+        cooldown=timedelta(hours=24),
+        enabled_setting_key="auto_audit_ot",
+        requires_per_asset_consent=True,
+    )
+    AUTO_TRIGGER_RULES.append(consent_rule)
+    try:
+        from services.audit_auto_trigger import maybe_auto_trigger_anon_audits
+
+        test_org.settings = {"auto_audit_ot": True}
+        # Stamp a fresh consent record for protocol=smb.
+        linked_asset.easm_data = {
+            **(linked_asset.easm_data or {}),
+            "ot_audit_consent": {
+                "smb": {
+                    "granted_by": 1,
+                    "granted_at": datetime.now(timezone.utc).isoformat(),
+                },
+            },
+        }
+        db_session.flush()
+
+        with patch("services.audit_runner._dispatch_background_run", return_value="task-1"):
+            n = maybe_auto_trigger_anon_audits(
+                db_session, test_org,
+                _port_change_event("scanner-uuid-1", [9999]),
+            )
+
+        assert n == 1
+    finally:
+        AUTO_TRIGGER_RULES.remove(consent_rule)
+
+
+# ── ProtocolAudit safety_class / capability predicates ────────────────
+
+
+def test_smb_and_snmp_marked_anon_capable():
+    """The Phase 0 refactor moved anon-capability from a hardcoded set in
+    audit_runner to a per-audit ``safety_class`` field. SMB/SNMP must
+    keep ``is_anonymous_capable() == True`` so today's no-credential
+    dispatches keep working."""
+    import agents.agent_tools  # noqa: F401
+    from agents.audit_registry import get_audit
+
+    assert get_audit("smb").is_anonymous_capable() is True
+    assert get_audit("smb").safety_class == "anon_standard"
+    assert get_audit("smb").auto_trigger_policy == "auto_org_opt_in"
+
+    assert get_audit("snmp").is_anonymous_capable() is True
+    assert get_audit("snmp").safety_class == "anon_standard"
+
+
+def test_credentialed_audits_remain_credentialed():
+    """WMI / LDAP / SSH must NOT be anon-capable — they require creds."""
+    import agents.agent_tools  # noqa: F401
+    from agents.audit_registry import get_audit
+
+    for proto in ("wmi", "ldap", "ssh"):
+        audit = get_audit(proto)
+        assert audit.safety_class == "credentialed", (
+            f"{proto} must default to credentialed safety_class"
+        )
+        assert audit.is_anonymous_capable() is False
+        assert audit.requires_per_asset_consent() is False
+
+
+def test_dispatch_rejects_credentialed_audit_without_cred(db_session, test_org):
+    """Audit-runner now derives the cred requirement from the audit's
+    ``safety_class``. A credentialed audit (WMI) without ``credential_id``
+    must still raise the same error message."""
+    import agents.agent_tools  # noqa: F401
+    from services.audit_runner import dispatch_audit_run, AuditDispatchError
+
+    scan = Scan(
+        filename="placeholder", scan_type="manual", source_type="manual",
+        org_id=test_org.id,
+    )
+    db_session.add(scan)
+    db_session.flush()
+    asset = Asset(scan_id=scan.id, hostname="winhost-2", ip="10.0.0.6")
+    db_session.add(asset)
+    db_session.flush()
+
+    with pytest.raises(AuditDispatchError, match="credential_id is required"):
+        dispatch_audit_run(
+            db=db_session,
+            org=test_org,
+            protocol="wmi",
+            mission="exposure_audit",
+            asset_ids=[asset.id],
+            relay_agent_id="relay-x",
+            credential_id=None,
+        )
+
+
+# ─────────────────────────────────────────────────────────────────
+# _pick_relay — cloud_scanner vs agent selection
+# ─────────────────────────────────────────────────────────────────
+
+def _make_relay(db_session, org_id, *, relay_type, name, last_seen=None):
+    relay = RelayAgent(
+        org_id=org_id,
+        name=name,
+        token_hash="x",
+        status="connected",
+        last_seen_at=last_seen or datetime.utcnow(),
+        relay_type=relay_type,
+    )
+    db_session.add(relay)
+    db_session.flush()
+    return relay
+
+
+def test_pick_relay_prefers_cloud_for_internet_facing_asset(db_session, test_org):
+    """Internet-facing assets should route to the cloud_scanner even when an
+    on-prem agent was seen more recently. This is the whole point of the
+    cloud scanner — public scans don't need a customer-deployed relay."""
+    from services.audit_auto_trigger import _pick_relay
+
+    older = datetime.utcnow() - timedelta(minutes=5)
+    cloud = _make_relay(db_session, test_org.id, relay_type="cloud_scanner",
+                        name="cloud", last_seen=older)
+    _make_relay(db_session, test_org.id, relay_type="agent", name="onprem",
+                last_seen=datetime.utcnow())
+
+    asset = Asset(scan_id=None, hostname="public", ip="93.184.216.34",
+                  is_internet_facing=True)
+    picked = _pick_relay(db_session, test_org.id, asset=asset)
+    assert picked.id == cloud.id
+
+
+def test_pick_relay_prefers_onprem_for_private_asset(db_session, test_org):
+    """Private/internal assets must route through the customer's on-prem
+    relay — the cloud scanner can't reach 10.x networks."""
+    from services.audit_auto_trigger import _pick_relay
+
+    _make_relay(db_session, test_org.id, relay_type="cloud_scanner",
+                name="cloud", last_seen=datetime.utcnow())
+    onprem = _make_relay(db_session, test_org.id, relay_type="agent",
+                         name="onprem",
+                         last_seen=datetime.utcnow() - timedelta(minutes=5))
+
+    asset = Asset(scan_id=None, hostname="internal", ip="10.0.0.5",
+                  is_internet_facing=False)
+    picked = _pick_relay(db_session, test_org.id, asset=asset)
+    assert picked.id == onprem.id
+
+
+def test_pick_relay_falls_back_when_preferred_type_missing(db_session, test_org):
+    """If the preferred relay type isn't connected, fall back to whatever is
+    — better to dispatch through a non-ideal relay than skip the audit."""
+    from services.audit_auto_trigger import _pick_relay
+
+    onprem = _make_relay(db_session, test_org.id, relay_type="agent",
+                         name="onprem")
+
+    public_asset = Asset(scan_id=None, hostname="public", ip="1.1.1.1",
+                         is_internet_facing=True)
+    picked = _pick_relay(db_session, test_org.id, asset=public_asset)
+    assert picked.id == onprem.id  # fell back to on-prem since no cloud relay

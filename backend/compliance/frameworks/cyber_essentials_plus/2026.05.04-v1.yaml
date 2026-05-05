@@ -1,0 +1,151 @@
+# Cyber Essentials Plus (UK NCSC) — initial mapping pack.
+#
+# Scope: the five technical controls of the UK Cyber Essentials scheme.
+# Cyber Essentials Plus adds independent verification (vulnerability scan
+# + authenticated test); the controls themselves are unchanged from
+# Cyber Essentials. Each control here is automatable from Hakuna's surface.
+
+framework:
+  slug: cyber_essentials_plus
+  name: Cyber Essentials Plus
+  version: "v3.2"
+  authority: NCSC / IASME
+  published_at: 2025-04-28
+  description: |
+    UK government-backed scheme certifying basic cyber hygiene. Plus tier
+    requires independent technical verification. Mandatory for many UK
+    public-sector contracts. Five technical controls: firewalls, secure
+    configuration, user access control, malware protection, security
+    update management.
+  categories: [UK, Hygiene Baseline]
+  mapping_schema_version: 1
+
+release:
+  tag: "2026.05.04-v1"
+  notes: |
+    Initial Cyber Essentials Plus pack covering the five technical
+    controls. All five are automated against Hakuna's detection surface.
+
+controls:
+
+  - ref: "CE.1"
+    title: Firewalls
+    domain: Network Security
+    testability: automated
+    canonical_guidance: |
+      Boundary firewalls/internet gateways must protect every device.
+      EASM-discovered exposed services on internet-facing assets fail.
+    mappings:
+      - key: cyber_essentials_plus_ce_1_easm_exposed
+        when:
+          logic: AND
+          conditions:
+            - field: finding.plugin_family
+              op: eq
+              value: "EASM: Exposed Service"
+            - field: inventory.is_internet_facing
+              op: is_true
+            - field: finding.workflow_status
+              op: neq
+              value: resolved
+      - key: cyber_essentials_plus_ce_1_no_firewall
+        when:
+          logic: AND
+          conditions:
+            - field: inventory.no_firewall
+              op: is_true
+
+  - ref: "CE.2"
+    title: Secure Configuration
+    domain: Configuration Management
+    testability: automated
+    canonical_guidance: |
+      Devices must be configured to reduce vulnerabilities. Hardcoded
+      credentials (CWE-798), missing authentication (CWE-306), and
+      authorization weaknesses (CWE-862, CWE-863) fail this control.
+    mappings:
+      - key: cyber_essentials_plus_ce_2_default_or_missing_auth
+        when:
+          logic: AND
+          conditions:
+            - field: finding.cwe
+              op: contains_any
+              value: ["CWE-306", "CWE-798", "CWE-862", "CWE-863"]
+            - field: finding.workflow_status
+              op: neq
+              value: resolved
+
+  - ref: "CE.3"
+    title: User Access Control
+    domain: Access Control
+    testability: automated
+    canonical_guidance: |
+      Access to data and services must be controlled. Exposed remote-
+      admin services on internet-facing assets indicate access control
+      is not enforced at the boundary.
+    mappings:
+      - key: cyber_essentials_plus_ce_3_remote_admin_exposed
+        when:
+          logic: AND
+          conditions:
+            - field: finding.plugin_family
+              op: eq
+              value: "EASM: Exposed Service"
+            - field: inventory.is_internet_facing
+              op: is_true
+            - field: finding.workflow_status
+              op: neq
+              value: resolved
+
+  - ref: "CE.4"
+    title: Malware Protection
+    domain: Endpoint Protection
+    testability: automated
+    canonical_guidance: |
+      Devices must be protected against malware. Assets without AV or
+      EDR fail this control.
+    mappings:
+      - key: cyber_essentials_plus_ce_4_no_av_or_edr
+        when:
+          logic: OR
+          conditions:
+            - field: inventory.no_av
+              op: is_true
+            - field: inventory.no_edr
+              op: is_true
+
+  - ref: "CE.5"
+    title: Security Update Management
+    domain: Patch Management
+    testability: automated
+    canonical_guidance: |
+      Devices and software must be kept up to date. Cyber Essentials
+      requires High/Critical patches applied within 14 days. Patch
+      Management findings at High+ severity past SLA, or unresolved
+      KEV-listed CVEs, fail this control.
+    mappings:
+      - key: cyber_essentials_plus_ce_5_patch_breached
+        when:
+          logic: AND
+          conditions:
+            - field: finding.plugin_family
+              op: eq
+              value: "Patch Management"
+            - field: finding.severity
+              op: gte
+              value: 3
+            - field: finding.sla_status
+              op: in
+              value: [breached, at_risk]
+            - field: finding.workflow_status
+              op: neq
+              value: resolved
+      - key: cyber_essentials_plus_ce_5_unresolved_kev
+        when:
+          logic: AND
+          conditions:
+            - field: finding.is_kev
+              op: is_true
+            - field: finding.workflow_status
+              op: not_in
+              value: [resolved, false_positive, accepted_risk]

@@ -48,14 +48,37 @@ def test_nested_values():
     assert decrypt(encrypt(values)) == values
 
 
-def test_missing_key_auto_generates(monkeypatch):
+def test_missing_key_auto_generates(monkeypatch, tmp_path):
     monkeypatch.delenv("INTEGRATION_SECRET_KEY")
+    monkeypatch.setenv("HAKUNA_DEV_KEY_FILE", str(tmp_path / "dev_key"))
     import services.credential_vault as vault
     vault._dev_key = None  # reset cached dev key
+    monkeypatch.setattr(vault, "_DEV_KEY_PATH", tmp_path / "dev_key")
     from services.credential_vault import encrypt, decrypt
     # Should auto-generate a key and work (dev mode)
     encrypted = encrypt({"key": "val"})
     assert decrypt(encrypted) == {"key": "val"}
+
+
+def test_dev_key_persists_across_resets(monkeypatch, tmp_path):
+    """Dev key must survive process restarts so previously-encrypted
+    credentials remain decryptable when INTEGRATION_SECRET_KEY is unset."""
+    monkeypatch.delenv("INTEGRATION_SECRET_KEY")
+    import services.credential_vault as vault
+    monkeypatch.setattr(vault, "_DEV_KEY_PATH", tmp_path / "dev_key")
+    vault._dev_key = None
+    encrypted = vault.encrypt({"key": "val"})
+    # Simulate a restart — clear in-memory key, re-read from disk.
+    vault._dev_key = None
+    assert vault.decrypt(encrypted) == {"key": "val"}
+
+
+def test_wrong_key_raises_credential_decrypt_error(monkeypatch):
+    from services.credential_vault import encrypt, decrypt, CredentialDecryptError
+    encrypted = encrypt({"key": "val"})
+    monkeypatch.setenv("INTEGRATION_SECRET_KEY", secrets.token_hex(32))
+    with pytest.raises(CredentialDecryptError):
+        decrypt(encrypted)
 
 
 def test_bad_key_length_raises(monkeypatch):

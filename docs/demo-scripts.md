@@ -114,7 +114,7 @@ Three tailored walkthroughs for different buyer personas. Each demo is designed 
    - "Hakuna runs wherever you need it — Docker Compose for a quick POC, GCP Cloud Run for production with auto-scaling, or your own infrastructure with Terraform"
    - Show Swagger UI (`/docs`): "300+ API endpoints, fully documented, ready to integrate from day one"
    - Show the config export/import (`/api/config/export`): "Set up risk scoring, auto-tag rules, report templates for one client — then export and import into the next client in seconds. Cookie-cutter onboarding."
-   - "Database is tenant-isolated by design. SQLite for eval, PostgreSQL for production — flip a single env var"
+   - "Database is tenant-isolated by design — PostgreSQL end-to-end, from the compose stack in dev to Cloud SQL in production"
 
 ### Act 5 — Delivering VMaaS & EMaaS (5 min)
 

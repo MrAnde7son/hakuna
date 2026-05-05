@@ -1,0 +1,54 @@
+{
+  "id": "azure_openai_deployments",
+  "name": "Azure — OpenAI Deployments (per account)",
+  "description": "List model deployments for one Azure OpenAI / Cognitive Services account. Used by the managed_ai mission to enumerate which models are exposed under each account and audit deployment-level rate limits / sku.",
+  "category": "AI Governance",
+  "logo": "/logos/vendors/azure.svg",
+  "direction": "pull",
+  "entity": "audit_only",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://management.azure.com",
+    "method": "GET",
+    "path": "/subscriptions/{{params.subscription_id}}/resourceGroups/{{params.resource_group}}/providers/Microsoft.CognitiveServices/accounts/{{params.account_name}}/deployments",
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "query_params": {
+      "api-version": "2023-05-01"
+    },
+    "pagination": {
+      "strategy": "cursor",
+      "cursor_field": "nextLink",
+      "cursor_param": "_next_link_url",
+      "page_size": 100
+    }
+  },
+  "records_path": "value",
+  "credential_acquisition": {
+    "pattern": "client_credentials",
+    "token_url": "https://login.microsoftonline.com/{{credentials.tenant_id}}/oauth2/v2.0/token",
+    "grant_type": "client_credentials",
+    "scopes": ["https://management.azure.com/.default"],
+    "fields": [
+      {"field": "client_id", "label": "Application (Client) ID", "type": "text"},
+      {"field": "client_secret", "label": "Client Secret", "type": "password"},
+      {"field": "tenant_id", "label": "Directory (Tenant) ID", "type": "text"}
+    ]
+  },
+  "default_field_map": [],
+  "dedup_key": ["source_system", "source_id"],
+  "params_schema": {
+    "subscription_id": {"type": "string", "required": true},
+    "resource_group": {
+      "type": "string",
+      "required": true,
+      "description": "Resource group containing the Cognitive Services account (read from the account's id field after listing accounts)."
+    },
+    "account_name": {
+      "type": "string",
+      "required": true,
+      "description": "Cognitive Services account name (the leaf of the resource id — kind=OpenAI for Azure OpenAI)."
+    }
+  }
+}

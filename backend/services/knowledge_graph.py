@@ -396,19 +396,44 @@ async def _upsert_edge(
     weight: float = 1.0,
     properties: dict | None = None,
 ):
-    """Insert or update a relationship edge."""
+    """Insert or update a relationship edge.
+
+    Uses the post-migration-054 unique index `uq_asset_edge` (which
+    includes `properties_hash`) so two `shares_certificate` edges
+    between the same asset pair with different cert fingerprints
+    don't collide.
+    """
     import json as _json
+    from services.asset_edges import compute_properties_hash
+
+    props = properties or {}
+    props_hash = compute_properties_hash(props)
     await db.execute(
         text("""
-            INSERT INTO asset_relationships (org_id, source_asset_id, target_asset_id,
-                                             relationship_type, confidence, weight, properties, created_at, updated_at)
-            VALUES (:org_id, :src, :tgt, :rel, :conf, :w, :props, NOW(), NOW())
-            ON CONFLICT ON CONSTRAINT uq_asset_relationship
-            DO UPDATE SET confidence = :conf, weight = :w, properties = :props, updated_at = NOW()
+            INSERT INTO asset_relationships (
+                org_id, source_asset_id, target_asset_id,
+                relationship_type, confidence, weight, properties,
+                properties_hash, source_system,
+                created_at, updated_at, last_seen_at
+            )
+            VALUES (
+                :org_id, :src, :tgt, :rel, :conf, :w, :props,
+                :props_hash, 'knowledge_graph',
+                NOW(), NOW(), NOW()
+            )
+            ON CONFLICT (org_id, COALESCE(source_asset_id, 0),
+                         COALESCE(target_asset_id, 0),
+                         relationship_type, properties_hash)
+            DO UPDATE SET
+                confidence = EXCLUDED.confidence,
+                weight = EXCLUDED.weight,
+                properties = EXCLUDED.properties,
+                updated_at = NOW(),
+                last_seen_at = NOW()
         """),
         {
             "org_id": org_id, "src": source_id, "tgt": target_id,
             "rel": rel_type, "conf": confidence, "w": weight,
-            "props": _json.dumps(properties or {}),
+            "props": _json.dumps(props), "props_hash": props_hash,
         },
     )

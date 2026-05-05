@@ -9,6 +9,7 @@ __pycache__/
 *.db-wal
 *.db-shm
 .env
+.dev_secret_key
 .claude/settings.local.json
 .claude/worktrees/
 backend/uploads/

@@ -3,13 +3,17 @@ EASM (External Attack Surface Management) routes.
 Prefix: /api/easm
 """
 import logging
+from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from core.database import get_db
 from core.auth import get_current_user, require_auth, get_accessible_org_ids
+from core.time_utils import iso_utc
 from core.subscription import check_scan_limit
 from models.models import Asset, Organization, Scan, User
 from services.easm import (
@@ -35,8 +39,24 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/easm", tags=["easm"])
 
 
-def _get_org(db: Session, user: User) -> Organization:
-    org = db.query(Organization).filter(Organization.id == user.org_id).first()
+async def get_active_org(
+    user: User = Depends(require_auth),
+    db: Session = Depends(get_db),
+    org_ids: Optional[list] = Depends(get_accessible_org_ids),
+) -> Organization:
+    """Resolve the org targeted by the current request.
+
+    Honors the X-Org-Context sidebar selector (validated by
+    ``get_accessible_org_ids``) so a superadmin or MSSP user viewing a child
+    org sees that org's EASM data instead of their home org's. Falls back to
+    the user's home org when no context is set or the caller has access to
+    multiple orgs (e.g. unscoped MSSP view).
+    """
+    if org_ids and len(org_ids) == 1:
+        target_id = org_ids[0]
+    else:
+        target_id = user.org_id
+    org = db.query(Organization).filter(Organization.id == target_id).first()
     if not org:
         raise HTTPException(404, "Organization not found")
     return org
@@ -98,10 +118,8 @@ def _require_easm_org_id(db: Session, org: Organization) -> str:
 
 
 @router.get("/status")
-async def easm_status(db: Session = Depends(get_db), user: User = Depends(require_auth)):
+async def easm_status(org: Organization = Depends(get_active_org)):
     """Get EASM integration status for the current org."""
-    org = _get_org(db, user)
-
     if not org.easm_org_id:
         return {
             "enabled": False,
@@ -122,11 +140,9 @@ async def easm_status(db: Session = Depends(get_db), user: User = Depends(requir
 async def setup_easm(
     domain: str = Query(..., min_length=3),
     db: Session = Depends(get_db),
-    user: User = Depends(require_auth),
+    org: Organization = Depends(get_active_org),
 ):
     """Set up EASM for the current org: create hakuna org, add domain, trigger scan."""
-    org = _get_org(db, user)
-
     if org.easm_org_id:
         raise HTTPException(400, "EASM is already configured for this organization")
 
@@ -166,14 +182,14 @@ async def setup_easm(
 async def scan_domain_endpoint(
     domain: str = Query(..., min_length=3),
     scan_type: str = Query("full", regex="^(full|discovery|enrichment)$"),
+    suppress_auto_followup: bool = Query(False),
     db: Session = Depends(get_db),
-    user: User = Depends(require_auth),
+    org: Organization = Depends(get_active_org),
 ):
     """Add a domain (if new), trigger scan, and create a per-domain scan record."""
-    org = _get_org(db, user)
     _require_easm_org_id(db, org)
 
-    result = await scan_domain(db, org, domain, scan_type)
+    result = await scan_domain(db, org, domain, scan_type, suppress_auto_followup=suppress_auto_followup)
     if result is None:
         raise HTTPException(502, "Failed to scan domain — hakuna-scanner may be unavailable")
     return result
@@ -205,10 +221,89 @@ async def rescan_by_scan_id(
     if not domain:
         raise HTTPException(400, "No domain associated with this scan")
 
-    result = await scan_domain(db, org, domain, scan_type)
+    # Preserve the original opt-out: if the user unchecked "Run automated
+    # follow-up scans" on the first run, a rescan keeps that posture instead
+    # of silently re-enabling it.
+    suppress = bool((scan.raw_metadata or {}).get("suppress_auto_followup"))
+    result = await scan_domain(db, org, domain, scan_type, suppress_auto_followup=suppress)
     if result is None:
         raise HTTPException(502, "Failed to trigger scan — hakuna-scanner may be unavailable")
     return result
+
+
+class EasmScanUpdate(BaseModel):
+    domain: Optional[str] = Field(None, min_length=3)
+    scan_type: Optional[str] = Field(None, pattern="^(full|discovery|enrichment)$")
+    suppress_auto_followup: Optional[bool] = None
+
+
+@router.patch("/scans/{scan_id}")
+async def update_easm_scan(
+    scan_id: int,
+    patch: EasmScanUpdate = Body(...),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_auth),
+):
+    """Update an EASM scan's configuration (target domain, scan type, follow-up flag).
+
+    Edits raw_metadata only — does not auto-rerun. Use POST /rescan/{scan_id}
+    afterward to re-run with the updated config. Allowed in any scan state.
+    """
+    scan = db.query(Scan).filter(Scan.id == scan_id, Scan.source_type == "easm").first()
+    if not scan:
+        raise HTTPException(404, "EASM scan not found")
+    if user.role != "superadmin" and scan.org_id != user.org_id:
+        raise HTTPException(403, "Access denied")
+
+    metadata = dict(scan.raw_metadata or {})
+    before = {
+        "domain": metadata.get("domain"),
+        "scan_type": metadata.get("scan_type"),
+        "suppress_auto_followup": bool(metadata.get("suppress_auto_followup")),
+    }
+
+    if patch.domain is not None:
+        metadata["domain"] = patch.domain
+    if patch.scan_type is not None:
+        metadata["scan_type"] = patch.scan_type
+        scan.scan_type = f"easm_{patch.scan_type}"
+    if patch.suppress_auto_followup is not None:
+        metadata["suppress_auto_followup"] = patch.suppress_auto_followup
+
+    # Keep the human-readable scan_name and filename in sync so the scan list
+    # reflects edits without waiting for a rerun.
+    new_domain = metadata.get("domain")
+    new_type = metadata.get("scan_type") or "full"
+    if patch.domain is not None or patch.scan_type is not None:
+        label = new_type.replace("_", " ").title()
+        if new_domain:
+            scan.scan_name = f"EASM {label} — {new_domain}"
+        ts = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+        scan.filename = f"easm-{new_type}-{new_domain or 'unknown'}-{ts}"
+
+    scan.raw_metadata = metadata
+    flag_modified(scan, "raw_metadata")
+
+    from core.audit import log_audit
+    log_audit(
+        db, "update", "scan", entity_id=scan.id,
+        entity_name=scan.scan_name,
+        changes={"before": before, "after": {
+            "domain": metadata.get("domain"),
+            "scan_type": metadata.get("scan_type"),
+            "suppress_auto_followup": bool(metadata.get("suppress_auto_followup")),
+        }},
+        actor=user,
+    )
+    db.commit()
+
+    return {
+        "scan_id": scan.id,
+        "domain": metadata.get("domain"),
+        "scan_type": metadata.get("scan_type"),
+        "suppress_auto_followup": bool(metadata.get("suppress_auto_followup")),
+        "scan_name": scan.scan_name,
+    }
 
 
 @router.post("/refresh/{scan_id}")
@@ -242,14 +337,27 @@ async def trigger_scan(
     scan_type: str = Query("full", regex="^(full|discovery|enrichment)$"),
     db: Session = Depends(get_db),
     user: User = Depends(require_auth),
+    org: Organization = Depends(get_active_org),
 ):
     """Manually trigger an EASM scan (all domains)."""
-    org = _get_org(db, user)
     easm_org_id = _require_easm_org_id(db, org)
 
     scan_id = await trigger_easm_scan(easm_org_id, scan_type)
     if not scan_id:
         raise HTTPException(502, "Failed to trigger EASM scan — hakuna-scanner may be unavailable")
+
+    from core.audit import log_audit
+    log_audit(
+        db, "start", "scan", entity_id=None,
+        entity_name=f"EASM {scan_type} scan",
+        changes={
+            "source_type": "easm",
+            "scan_type": scan_type,
+            "easm_run_id": scan_id,
+        },
+        actor=user,
+    )
+    db.commit()
 
     return {"scan_id": scan_id, "scan_type": scan_type, "status": "queued"}
 
@@ -258,10 +366,9 @@ async def trigger_scan(
 async def scan_status(
     scan_id: str,
     db: Session = Depends(get_db),
-    user: User = Depends(require_auth),
+    org: Organization = Depends(get_active_org),
 ):
     """Get status of a specific EASM scan."""
-    org = _get_org(db, user)
     easm_org_id = _require_easm_org_id(db, org)
 
     status = await get_easm_scan_status(easm_org_id, scan_id)
@@ -306,7 +413,7 @@ def list_easm_assets(
             "easm_asset_id": d.get("easm_asset_id"),
             "hostname": a.fqdn or a.hostname,
             "ip": a.ip,
-            "last_seen": a.last_seen.isoformat() if a.last_seen else None,
+            "last_seen": iso_utc(a.last_seen),
             "tech_stack": d.get("tech_stack"),
             "open_ports": d.get("open_ports"),
             "services": d.get("services"),
@@ -396,10 +503,9 @@ async def sync_assets(
     domain: Optional[str] = Query(None, min_length=3),
     scan_type: str = Query("full", regex="^(full|discovery|enrichment)$"),
     db: Session = Depends(get_db),
-    user: User = Depends(require_auth),
+    org: Organization = Depends(get_active_org),
 ):
     """Import EASM-discovered assets. If domain is omitted, sync all configured domains."""
-    org = _get_org(db, user)
     easm_org_id = _require_easm_org_id(db, org)
 
     if domain:
@@ -432,10 +538,9 @@ async def list_events(
     since: Optional[str] = None,
     limit: int = Query(100, le=1000),
     db: Session = Depends(get_db),
-    user: User = Depends(require_auth),
+    org: Organization = Depends(get_active_org),
 ):
     """Get recent EASM change events (new assets, IP changes, cert expirations, etc.)."""
-    org = _get_org(db, user)
     easm_org_id = _require_easm_org_id(db, org)
 
     events = await get_easm_events(easm_org_id, since=since, limit=limit)
@@ -447,10 +552,9 @@ async def list_events(
 @router.get("/domains")
 async def list_domains(
     db: Session = Depends(get_db),
-    user: User = Depends(require_auth),
+    org: Organization = Depends(get_active_org),
 ):
     """List all target domains for the current org."""
-    org = _get_org(db, user)
     easm_org_id = _require_easm_org_id(db, org)
 
     domains = await get_easm_domains(easm_org_id)
@@ -463,13 +567,34 @@ async def list_domains(
 async def list_scan_runs(
     limit: int = Query(10, le=50),
     domain: str = Query(None),
+    scan_id: Optional[int] = Query(None),
     db: Session = Depends(get_db),
-    user: User = Depends(require_auth),
+    org: Organization = Depends(get_active_org),
+    org_ids: Optional[list] = Depends(get_accessible_org_ids),
 ):
-    """List recent EASM scan runs with status, optionally filtered by domain."""
-    org = _get_org(db, user)
+    """List recent EASM scan runs with status, optionally filtered by domain.
+
+    When ``scan_id`` is provided, resolve the scan's owning org instead of the
+    active org. The unified scans list is rendered cross-org via
+    ``get_accessible_org_ids`` (an MSSP/superadmin sees scans from all child
+    orgs), but ``get_active_org`` falls back to the user's home org when the
+    request isn't pinned by ``X-Org-Context``. Without scan_id, expanding the
+    history under a child-org scan would call the upstream scanner with the
+    home org's ``easm_org_id`` and return an empty list.
+    """
+    target_org = org
+    if scan_id is not None:
+        scan = db.query(Scan).filter(Scan.id == scan_id).first()
+        if not scan:
+            raise HTTPException(404, "Scan not found")
+        if org_ids and scan.org_id not in org_ids:
+            raise HTTPException(403, "Not allowed to view this scan")
+        scan_org = db.query(Organization).filter(Organization.id == scan.org_id).first()
+        if scan_org:
+            target_org = scan_org
+
     try:
-        easm_org_id = _require_easm_org_id(db, org)
+        easm_org_id = _require_easm_org_id(db, target_org)
     except HTTPException:
         return []
 
@@ -483,10 +608,9 @@ async def list_scan_runs(
 async def add_domain(
     domain: str = Query(..., min_length=3),
     db: Session = Depends(get_db),
-    user: User = Depends(require_auth),
+    org: Organization = Depends(get_active_org),
 ):
     """Add an additional target domain for EASM scanning."""
-    org = _get_org(db, user)
     easm_org_id = _require_easm_org_id(db, org)
 
     success = await add_easm_domain(easm_org_id, domain)
@@ -513,11 +637,10 @@ def sync_breaches(
 def check_domain_breaches_endpoint(
     domain: str = Query(..., min_length=3),
     db: Session = Depends(get_db),
-    user: User = Depends(require_auth),
+    org: Organization = Depends(get_active_org),
 ):
     """Check which breaches in the catalog affect a specific domain."""
     from threat_intel.hibp_sync import check_domain_breaches
-    org = _get_org(db, user)
     result = check_domain_breaches(db, org.id, domain)
     return result
 
@@ -528,11 +651,10 @@ def list_domain_breaches(
     asset_id: Optional[int] = Query(None),
     scan_id: Optional[int] = Query(None),
     db: Session = Depends(get_db),
-    user: User = Depends(require_auth),
+    org: Organization = Depends(get_active_org),
 ):
     """List known breaches affecting the org's domains."""
     from models.threat_intel_models import DomainBreach, BreachRecord
-    org = _get_org(db, user)
 
     query = db.query(DomainBreach).filter(DomainBreach.org_id == org.id)
     if domain:
@@ -563,7 +685,7 @@ def list_domain_breaches(
             "domain": db_entry.domain,
             "breach_name": db_entry.breach_name,
             "exposed_count": db_entry.exposed_count,
-            "checked_at": db_entry.checked_at.isoformat() if db_entry.checked_at else None,
+            "checked_at": iso_utc(db_entry.checked_at),
             "breach_date": breach_detail.breach_date if breach_detail else None,
             "title": breach_detail.title if breach_detail else db_entry.breach_name,
             "description": breach_detail.description if breach_detail else None,
@@ -582,11 +704,10 @@ def list_domain_breaches(
 def sync_corporate_structure(
     company_name: str = Query(..., min_length=2),
     db: Session = Depends(get_db),
-    user: User = Depends(require_auth),
+    org: Organization = Depends(get_active_org),
 ):
     """Search Wikidata + SEC EDGAR for a company and import its corporate tree."""
     from threat_intel.wikidata_sync import sync_corporate_tree_to_db
-    org = _get_org(db, user)
     result = sync_corporate_tree_to_db(db, company_name, org_id=org.id)
 
     # Fallback: SEC EDGAR for US public companies
@@ -623,7 +744,7 @@ async def scan_subsidiary_domains(
         description="Scanner profile: 'discovery' (light), 'full', or 'enrichment'.",
     ),
     db: Session = Depends(get_db),
-    user: User = Depends(require_auth),
+    org: Organization = Depends(get_active_org),
 ):
     """Manually trigger EASM scans for known subsidiary domains.
 
@@ -632,7 +753,6 @@ async def scan_subsidiary_domains(
     opt in to low-confidence (DNS-probe) domains with
     ``include_low_confidence=true`` after verifying they're authorized targets.
     """
-    org = _get_org(db, user)
     if not org.easm_org_id:
         raise HTTPException(400, "EASM is not configured for this organization")
 
@@ -650,11 +770,10 @@ def list_subsidiaries(
     asset_id: Optional[int] = Query(None),
     scan_id: Optional[int] = Query(None),
     db: Session = Depends(get_db),
-    user: User = Depends(require_auth),
+    org: Organization = Depends(get_active_org),
 ):
     """List known subsidiaries for the current org."""
     from threat_intel.gleif_sync import get_subsidiaries_for_org
-    org = _get_org(db, user)
     results = get_subsidiaries_for_org(db, org.id)
     if scan_id:
         scan_domains = set(_get_easm_domains_for_scan(db, scan_id))

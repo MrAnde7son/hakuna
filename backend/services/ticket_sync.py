@@ -289,6 +289,9 @@ def _maybe_update_finding_status(db: Session, ft: FindingTicket):
 
     finding.workflow_status = ft.mapped_status
     finding.status_changed_at = datetime.utcnow()
+    if ft.mapped_status == "resolved" and not finding.resolved_at:
+        finding.resolved_at = datetime.utcnow()
+        finding.sla_status = "resolved"
     logger.info("Finding %d status updated to '%s' from %s ticket %s",
                 finding.id, ft.mapped_status, ft.ticket_system, ft.ticket_key)
 

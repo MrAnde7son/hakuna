@@ -31,7 +31,7 @@ MSSPs face compounding complexity as they scale their vulnerability management p
 |-------|-----------|
 | Backend | Python, FastAPI, SQLAlchemy |
 | Frontend | React SPA with dark/light theme and 12-language i18n (including Japanese) |
-| Database | PostgreSQL (production), SQLite (development) |
+| Database | PostgreSQL (Cloud SQL in production, docker-compose `postgres` service in development) |
 | Auth | JWT + RBAC with 30+ granular permissions, SAML 2.0 SSO |
 | AI | Multi-provider (Claude, GPT, Gemini, Llama) with graceful fallback |
 | Deployment | Docker Compose (on-prem), GCP Cloud Run (cloud), Relay Agent (hybrid) |

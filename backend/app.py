@@ -81,8 +81,13 @@ from routes.benchmark_routes import router as benchmark_router
 from routes.easm_routes import router as easm_router
 from routes.sbom_routes import router as sbom_router
 from routes.vm_routes import router as vm_router
-from routes.wmi_scan_routes import router as wmi_scan_router
 from routes.auth_profile_routes import router as auth_profile_router
+from routes.audit_routes import router as audit_router
+from routes.ot_posture_routes import router as ot_posture_router
+from routes.internal_relay_routes import (
+    router as internal_relay_router,
+    cloud_ws_router as cloud_relay_ws_router,
+)
 from routes.integration_builder_routes import router as integration_builder_router
 from routes.discovery_routes import router as discovery_router
 from routes.billing_routes import router as billing_router
@@ -90,10 +95,12 @@ from routes.copilot_routes import router as copilot_router
 from routes.workflow_routes import router as workflow_router
 from routes.notification_routes import router as notification_router
 from routes.control_assessment_routes import router as control_assessment_router
+from routes.compliance_routes import router as compliance_router
 from routes.onboarding_routes import router as onboarding_router
 from routes.saml_routes import router as saml_router
 from routes.relay_routes import router as relay_router, ws_router as relay_ws_router
 from routes.blast_radius_routes import router as blast_radius_router
+from routes.chain_coordinator_routes import router as chain_coordinator_router
 from routes.asset_routes import router as asset_router
 from routes.finding_routes import router as finding_router, _finding_to_dict
 from routes.report_routes import router as report_router
@@ -311,19 +318,24 @@ app.include_router(benchmark_router)
 app.include_router(easm_router)
 app.include_router(sbom_router)
 app.include_router(vm_router)
-app.include_router(wmi_scan_router)
 app.include_router(auth_profile_router)
+app.include_router(audit_router)
+app.include_router(ot_posture_router)
+app.include_router(internal_relay_router)
+app.include_router(cloud_relay_ws_router)
 app.include_router(integration_builder_router)
 app.include_router(discovery_router)
 app.include_router(billing_router)
 app.include_router(workflow_router)
 app.include_router(notification_router)
 app.include_router(control_assessment_router)
+app.include_router(compliance_router)
 app.include_router(onboarding_router)
 app.include_router(saml_router)
 app.include_router(relay_router)
 app.include_router(relay_ws_router)
 app.include_router(blast_radius_router)
+app.include_router(chain_coordinator_router)
 app.include_router(asset_router)
 app.include_router(finding_router)
 app.include_router(report_router)
@@ -357,11 +369,53 @@ app.include_router(validation_router)
 from models.entity_registry import ENTITY_MODEL_MAP
 
 
+# Postgres advisory lock that gates in-process scheduler startup. With
+# `uvicorn --workers N`, every worker would otherwise fork its own copy of
+# every APScheduler in `_deferred_startup`, firing each cron job N times in
+# parallel. The first worker to grab this lock owns the schedulers; the
+# others skip them. The lock is session-scoped and pinned to a dedicated
+# psycopg2 connection held in a module global — Postgres releases it
+# automatically when that connection closes, so a respawned worker can
+# take over after a crash.
+_SCHEDULER_LOCK_CONN = None
+_SCHEDULER_ADVISORY_LOCK_ID = 0x484B5343484544  # "HKSCHED" — stable arbitrary constant
+
+
+def _try_acquire_scheduler_leadership() -> bool:
+    from core.database import DATABASE_URL, _IS_SQLITE
+    global _SCHEDULER_LOCK_CONN
+    if _IS_SQLITE:
+        return True
+    try:
+        import psycopg2
+        url = DATABASE_URL
+        if url.startswith("postgresql+"):
+            url = "postgresql://" + url.split("://", 1)[1]
+        conn = psycopg2.connect(url)
+        conn.autocommit = True
+        cur = conn.cursor()
+        cur.execute("SELECT pg_try_advisory_lock(%s)", (_SCHEDULER_ADVISORY_LOCK_ID,))
+        acquired = cur.fetchone()[0]
+        cur.close()
+        if acquired:
+            _SCHEDULER_LOCK_CONN = conn
+            return True
+        conn.close()
+        return False
+    except Exception as exc:
+        logger.warning("Scheduler advisory-lock check failed (%s); running schedulers in this worker", exc)
+        return True
+
+
 def _deferred_startup():
     """Heavy startup tasks that run in a background thread so the server
     can bind the port and pass Render's port-scan check immediately."""
-    import threading
+    import threading, os
     logger.info("Deferred startup running in background thread: %s", threading.current_thread().name)
+    if not _try_acquire_scheduler_leadership():
+        logger.info("Scheduler leadership held by another worker (pid=%d) — skipping scheduler startup", os.getpid())
+        return
+    logger.info("Scheduler leadership acquired (pid=%d) — starting schedulers", os.getpid())
     # Start workflow scheduler for cron-based triggers
     from core.database import SessionLocal
     workflow_engine.start_scheduler(SessionLocal)
@@ -385,6 +439,14 @@ def _deferred_startup():
     from services.easm_scheduler import start_scheduler as start_easm_scheduler
     start_easm_scheduler()
     logger.info("EASM scan scheduler started")
+    # Start Protocol Audit scheduler for cron-based audit runs (snmp/ldap/ssh/wmi/smb).
+    # Independent of EASM/VM so one scheduler's failure mode can't cascade.
+    try:
+        from services.audit_scheduler import start_scheduler as start_audit_scheduler
+        start_audit_scheduler()
+        logger.info("Audit scan scheduler started")
+    except Exception as exc:
+        logger.error("Audit scan scheduler failed to start: %s", exc)
     # Start report scheduler for scheduled email delivery of report PDFs
     from services.report_scheduler import start_scheduler as start_report_scheduler
     start_report_scheduler()
@@ -417,6 +479,54 @@ def _deferred_startup():
         logger.info("VM scan reaper scheduled (every 5 minutes)")
     except Exception as exc:
         logger.error("VM scan reaper failed to start: %s", exc)
+    # Poll in-flight VM scans so results land without a user watching the
+    # scan page. refresh_vm_scan only runs on user-driven GETs otherwise,
+    # so a scan completing while no one is looking would sit at
+    # status=running until the 3h reaper marks it failed — even though
+    # the scanner already has the results. Runs every 60s.
+    try:
+        from apscheduler.schedulers.background import BackgroundScheduler as _VMPollBG
+        from apscheduler.triggers.interval import IntervalTrigger as _VMPollInterval
+        from services.vm_scanner import poll_running_vm_scans
+        _vm_poll_scheduler = _VMPollBG()
+        _vm_poll_scheduler.add_job(
+            poll_running_vm_scans,
+            _VMPollInterval(seconds=60),
+            id="vm_scan_poller",
+            replace_existing=True,
+            misfire_grace_time=60,
+            coalesce=True,
+            max_instances=1,
+        )
+        _vm_poll_scheduler.start()
+        logger.info("VM scan poller scheduled (every 60 seconds)")
+    except Exception as exc:
+        logger.error("VM scan poller failed to start: %s", exc)
+    # Drain EASM scans flagged for follow-up VM scanning. Persisted handoff
+    # replaces an earlier `loop.create_task` path that fire-and-forgot the
+    # dispatch on the request loop — that died on every Cloud Run liveness
+    # shutdown, leaving EASM scans without their VM follow-up. Runs every 60s.
+    try:
+        from apscheduler.schedulers.background import BackgroundScheduler as _EasmVmBG
+        from apscheduler.triggers.interval import IntervalTrigger as _EasmVmInterval
+        from services.vm_scanner import process_pending_easm_vm_triggers
+        _easm_vm_scheduler = _EasmVmBG()
+        _easm_vm_scheduler.add_job(
+            process_pending_easm_vm_triggers,
+            _EasmVmInterval(seconds=60),
+            id="easm_vm_trigger_sweep",
+            replace_existing=True,
+            misfire_grace_time=60,
+            coalesce=True,
+            max_instances=1,
+        )
+        _easm_vm_scheduler.start()
+        # Drain once at startup so a scan flagged just before a restart doesn't
+        # have to wait the full 60s for the first sweep.
+        process_pending_easm_vm_triggers()
+        logger.info("EASM→VM trigger sweeper scheduled (every 60 seconds)")
+    except Exception as exc:
+        logger.error("EASM→VM trigger sweeper failed to start: %s", exc)
     # Replan stale Adaptive Scan Plans (every 6 hours).
     # Plans are normally refreshed at the tail of the enrichment pipeline,
     # but assets that haven't been re-enriched in a while still benefit
@@ -470,6 +580,11 @@ def _deferred_startup():
         start_maintenance_scheduler()
     except Exception as exc:
         logger.error("Lake maintenance scheduler failed to start: %s", exc)
+    try:
+        from services.inventory_edge_scheduler import start_scheduler as start_inv_edge_scheduler
+        start_inv_edge_scheduler()
+    except Exception as exc:
+        logger.error("Inventory edge scheduler failed to start: %s", exc)
     # Schedule threat intel auto-update every 24 hours
     from threat_intel.intel_updater import update_intel
     from apscheduler.schedulers.background import BackgroundScheduler as _BGScheduler
@@ -498,6 +613,52 @@ def _deferred_startup():
     _audit_scheduler.start()
     purge_expired_audit_logs()  # run once at startup
     logger.info("Audit log retention purge scheduled (every 24h, 90-day TTL)")
+
+    # Approval lifecycle: expire stale HITL approvals + escalate overdue
+    # ones to Slack. Both run on intervals; thresholds come from env so
+    # ops can tune without redeploying the scheduler config.
+    _approval_expiry_hours = int(os.getenv("APPROVAL_EXPIRY_HOURS", "24"))
+    _approval_escalate_minutes = int(os.getenv("APPROVAL_ESCALATE_MINUTES", "60"))
+    from services.approval_lifecycle import (
+        expire_stale_approvals as _expire_stale_approvals,
+        escalate_overdue_approvals as _escalate_overdue_approvals,
+    )
+
+    def _run_expire_stale_approvals():
+        from core.database import SessionLocal as _SL
+        _db = _SL()
+        try:
+            _expire_stale_approvals(_db, _approval_expiry_hours)
+        except Exception as _exc:
+            logger.warning("Approval expiry sweep failed: %s", _exc)
+        finally:
+            _db.close()
+
+    def _run_escalate_overdue_approvals():
+        from core.database import SessionLocal as _SL
+        _db = _SL()
+        try:
+            _escalate_overdue_approvals(_db, _approval_escalate_minutes)
+        except Exception as _exc:
+            logger.warning("Approval escalation sweep failed: %s", _exc)
+        finally:
+            _db.close()
+
+    _approval_scheduler = _BGScheduler()
+    _approval_scheduler.add_job(
+        _run_expire_stale_approvals, _IntervalTrigger(hours=1),
+        id="approval_expiry_sweep", replace_existing=True,
+    )
+    _approval_scheduler.add_job(
+        _run_escalate_overdue_approvals, _IntervalTrigger(minutes=15),
+        id="approval_escalation_sweep", replace_existing=True,
+    )
+    _approval_scheduler.start()
+    logger.info(
+        "Approval lifecycle scheduled: expiry sweep hourly (TTL=%dh), "
+        "escalation sweep every 15m (delay=%dm)",
+        _approval_expiry_hours, _approval_escalate_minutes,
+    )
     # Seed SLA defaults and backfill any scans that have no SLA due dates yet
     try:
         from core.database import SessionLocal as _SL
@@ -524,13 +685,53 @@ def _deferred_startup():
             _db.close()
     except Exception as _e:
         logger.warning(f"SLA startup seeding failed (non-fatal): {_e}")
+    # Compliance frameworks — load shipped YAML mappings (sha256-gated, idempotent)
+    try:
+        from core.database import SessionLocal as _SL
+        from services.compliance_loader import load_all_frameworks
+        _db = _SL()
+        try:
+            results = load_all_frameworks(_db)
+            for r in results:
+                if r.get("status") in ("loaded", "updated"):
+                    logger.info(
+                        "Compliance framework %s %s (%d controls)",
+                        r.get("framework_slug"), r["status"], r.get("controls_loaded", 0),
+                    )
+                elif r.get("status") in ("validation_error", "parse_error", "schema_error", "error"):
+                    logger.warning(
+                        "Compliance framework load failed (%s): %s — %s",
+                        r["status"], r.get("path"), r.get("error"),
+                    )
+        finally:
+            _db.close()
+    except Exception as _e:
+        logger.warning(f"Compliance framework loading failed (non-fatal): {_e}")
     logger.info("Deferred startup complete")
 
 
 @app.on_event("startup")
-def startup():
+async def startup():
+    # async so we can resize anyio's threadpool — `current_default_thread_limiter`
+    # only resolves inside a running event loop.
+    from core.event_loop import capture_main_loop
+    # Worker threads (job_manager resume, agent runs) need to dispatch
+    # coroutines back onto this loop — futures owned by the in-process
+    # RelayBroker can only be woken up from the loop that created them.
+    capture_main_loop()
     init_db()
     init_parsers()
+    # Bump anyio's default threadpool from 40 → 100. FastAPI dispatches every
+    # sync `def` handler through this pool, so under load (heavy finalize_scan,
+    # httpx polls, LLM calls), trivial endpoints like /api/health were queuing
+    # behind it and Cloud Run's 1s probe timeout was firing. 100 leaves plenty
+    # of headroom above the DB pool ceiling (10+20 in core/database.py) — most
+    # blocked threads are on httpx / LLM I/O, not DB.
+    try:
+        import anyio
+        anyio.to_thread.current_default_thread_limiter().total_tokens = 100
+    except Exception:
+        logger.exception("Failed to resize anyio threadpool (non-fatal)")
     logger.info("Database initialized, parsers registered")
     # ENTITY_MODEL_MAP is now populated at import time via models.entity_registry
     # Run heavy tasks (schedulers, SLA backfill) in background so the port
@@ -538,6 +739,15 @@ def startup():
     import threading
     threading.Thread(target=_deferred_startup, name="deferred-startup", daemon=True).start()
     logger.info("Startup complete — deferred tasks running in background")
+
+
+@app.on_event("shutdown")
+def shutdown():
+    try:
+        from services import posthog_client as analytics
+        analytics.shutdown()
+    except Exception:
+        pass
 
 
 # ─────────────────────────────────────────────
@@ -1496,8 +1706,40 @@ def _run_scan_ingest(
                 metadata={"count": new_assets, "scan_name": scan.scan_name or filename})
 
         scan.status = "completed"
+
+        # ── Activation milestone ──
+        # Fire `activated` exactly once per org, the first time a scan with
+        # ≥1 finding completes. Set activated_at in the same transaction so
+        # concurrent scans can't double-fire.
+        org_activated_now = False
+        if total_findings > 0:
+            org = db.query(Organization).filter(Organization.id == effective_org_id).first()
+            if org and org.activated_at is None:
+                org.activated_at = datetime.utcnow()
+                org_activated_now = True
+
         db.commit()
         _endpoint_cache.clear()
+
+        # Analytics — fire after commit so we don't emit if the txn rolls back.
+        try:
+            from services import posthog_client as analytics
+            analytics.capture(user_id, "scan_ingested", {
+                "scan_id": scan.id,
+                "source_type": source_parser.source_type,
+                "assets": total_assets,
+                "findings": total_findings,
+                "critical_high": crit_high,
+            }, org_id=effective_org_id)
+            if org_activated_now:
+                analytics.capture(user_id, "activated", {
+                    "scan_id": scan.id,
+                    "source_type": source_parser.source_type,
+                    "assets": total_assets,
+                    "findings": total_findings,
+                }, org_id=effective_org_id)
+        except Exception:
+            pass
 
     except Exception as e:
         logger.exception(f"Background scan processing failed for scan {scan_id}: {e}")
@@ -1596,6 +1838,17 @@ async def upload_scan(
         user.email,
         getattr(user, "display_name", None),
     )
+
+    try:
+        from services import posthog_client as analytics
+        analytics.capture(user.id, "scan_started", {
+            "scan_id": scan_id,
+            "source_type": source_parser.source_type,
+            "file_size_bytes": total,
+            "filename": file.filename,
+        }, org_id=effective_org_id)
+    except Exception:
+        pass
 
     return {
         "scan_id": scan_id,

@@ -1,0 +1,43 @@
+{
+  "id": "gcp_vertex_endpoints",
+  "name": "GCP Vertex AI — Endpoints",
+  "description": "List Vertex AI inference endpoints in a project + location. Used by the managed_ai mission to enumerate deployed model endpoints and surface ones with public allUsers IAM bindings.",
+  "category": "AI Governance",
+  "logo": "/logos/vendors/gcp.svg",
+  "direction": "pull",
+  "entity": "audit_only",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://{{params.location}}-aiplatform.googleapis.com",
+    "method": "GET",
+    "path": "/v1/projects/{{params.project_id}}/locations/{{params.location}}/endpoints",
+    "headers": {"Accept": "application/json"},
+    "auth_strategy": "gcp_service_account",
+    "gcp_scopes": [
+      "https://www.googleapis.com/auth/cloud-platform.read-only"
+    ],
+    "pagination": {
+      "strategy": "cursor",
+      "cursor_field": "nextPageToken",
+      "cursor_param": "pageToken",
+      "page_size": 100,
+      "page_size_param": "pageSize"
+    }
+  },
+  "records_path": "endpoints",
+  "credential_acquisition": {
+    "pattern": "shared_credential",
+    "shared_with": "gcp_iam_service_accounts"
+  },
+  "default_field_map": [],
+  "dedup_key": ["source_system", "source_id"],
+  "params_schema": {
+    "project_id": {"type": "string", "required": true, "description": "GCP Project ID (e.g., my-project-123456)."},
+    "location": {
+      "type": "string",
+      "required": true,
+      "default": "us-central1",
+      "description": "Vertex AI region. The base URL is regional — repeat the call per active location."
+    }
+  }
+}

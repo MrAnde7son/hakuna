@@ -4,6 +4,7 @@ import * as Sentry from '@sentry/react'
 import App from './App.jsx'
 import './i18n/index.js'
 import './i18n/rtl.css'
+import { initAnalytics } from './utils/analytics.js'
 
 if (import.meta.env.VITE_SENTRY_DSN) {
   Sentry.init({
@@ -18,6 +19,8 @@ if (import.meta.env.VITE_SENTRY_DSN) {
     replaysOnErrorSampleRate: 1.0,
   })
 }
+
+initAnalytics()
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>

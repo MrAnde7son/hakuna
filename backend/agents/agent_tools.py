@@ -25,6 +25,10 @@ from models.models import (
     Workflow, WorkflowNode, WorkflowEdge, WorkflowExecution, WorkflowExecutionLog,
     Agent, AgentRun, AgentSchedule,
     CustomRole, ExternalTagSource,
+    AuditLog, CopilotAttachment, CustomFieldDefinition,
+    RelayAgent, ComplianceFramework, ComplianceControl,
+    ComplianceControlStatus, ComplianceControlMapping,
+    OrgFrameworkSubscription,
 )
 from services.ownership_inference import resolve_finding_owner
 from models.threat_intel_models import (
@@ -34,6 +38,26 @@ from models.threat_intel_models import (
 logger = logging.getLogger(__name__)
 
 TOOL_REGISTRY = {}
+
+
+class NeedsApproval(Exception):
+    """Raised by a tool body when its specific arguments require user approval.
+
+    Lets a single generic tool decide at runtime whether *this particular call*
+    should pause for review — e.g. `ssh_run_command` permitting read-only
+    commands but requiring approval for writes/network/privileged ones.
+
+    The agent engine catches this around each tool execution, persists an
+    AgentApproval record, and pauses the run as `awaiting_approval`. On
+    approval the tool re-runs with `_approved=True` injected; the classifier
+    sees that flag and skips the per-call check.
+    """
+    def __init__(self, reason: str, category: str = "per_call",
+                 details: dict | None = None):
+        self.reason = reason
+        self.category = category
+        self.details = details or {}
+        super().__init__(reason)
 
 
 def agent_tool(name: str, description: str, parameters: dict):
@@ -644,6 +668,38 @@ def get_missing_patches(db: Session, params: dict):
 
 
 @agent_tool(
+    "correlate_software_to_cves",
+    "Correlate the asset's InventorySoftware + InventoryPatch rows against the "
+    "threat-intel CVE database and return a ranked candidate CVE list. This is "
+    "the deterministic coverage pass — version-range matching against ThreatCVE, "
+    "plus MSRC KB→CVE mapping to tag candidates as already-mitigated vs missing. "
+    "Use this at the start of a CVE-hunting mission, then pair with your "
+    "protocol's audit tools (wmi_query for Defender/firewall posture, "
+    "ssh_run_command for sysctl/firewall/listeners) to triage which "
+    "candidates are actually exploitable on this host. "
+    "Candidates are sorted by KEV → EPSS → CVSS, capped at `top_n` (default 40). "
+    "The summary counts (`total_candidate_cves`, `kev_candidates`, etc.) are "
+    "authoritative; the sampled list is for your reasoning. "
+    "Also returns end-of-life components (ProductLifecycle hits) — an EOL OS "
+    "or package is a finding regardless of CVE status.",
+    {
+        "asset_id": {"type": "integer", "description": "Target asset"},
+        "top_n": {"type": "integer", "description": "Max candidates in the sampled list (default 40, max 100)"},
+        "include_eol": {"type": "boolean", "description": "Include EOL lifecycle check (default true)"},
+    },
+)
+def correlate_software_to_cves(db: Session, params: dict):
+    from services.cve_correlator import correlate_asset
+
+    asset_id = params.get("asset_id")
+    if not asset_id:
+        return {"error": "asset_id is required"}
+    top_n = min(int(params.get("top_n") or 40), 100)
+    include_eol = params.get("include_eol", True)
+    return correlate_asset(db, int(asset_id), top_n=top_n, include_eol=bool(include_eol))
+
+
+@agent_tool(
     "tag_assets",
     "Apply a tag to a list of assets by ID. Requires write permission (read_only guardrail must be off).",
     {
@@ -975,6 +1031,8 @@ def get_finding_detail(db: Session, params: dict):
         "cvss2": f.cvss2_score, "cvss3": f.cvss3_score, "vpr": f.vpr_score,
         "epss": f.epss_score, "is_kev": f.is_kev,
         "exploit_available": f.exploit_available, "exploit_maturity": f.exploit_maturity,
+        "ransomware_linked": getattr(f, "ransomware_linked", None),
+        "zero_day": getattr(f, "zero_day", None),
         "cves": f.cves, "synopsis": f.synopsis,
         "description": (f.description or "")[:2000],
         "solution": f.solution,
@@ -989,6 +1047,11 @@ def get_finding_detail(db: Session, params: dict):
         "first_seen": f.first_seen.isoformat() if f.first_seen else None,
         "times_seen": f.times_seen,
         "is_regression": f.is_regression,
+        "ctx_reachability": f.ctx_reachability,
+        "ctx_exploitability": f.ctx_exploitability,
+        "ctx_accessibility": f.ctx_accessibility,
+        "ctx_compensating_control": f.ctx_compensating_control,
+        "llm_validation": f.llm_validation,
         "asset_ip": asset.ip if asset else None,
         "asset_hostname": asset.hostname if asset else None,
         "asset_os": asset.os if asset else None,
@@ -1619,12 +1682,42 @@ def send_email_alert(db: Session, params: dict):
 @agent_tool(
     "create_campaign",
     "Create a remediation campaign to track a group of findings. Write operation. "
-    "WHEN TO CALL: After scoping the campaign, identifying findings to include, and confirming with the user.",
+    "WHEN TO CALL: After scoping the campaign and confirming with the user. "
+    "STRONGLY PREFER passing `query` (rule-engine conditions) over `finding_ids`: the campaign "
+    "re-evaluates its query on every Run, so finding_ids attached without a matching query are "
+    "wiped on the first run. Conditions use the format {field, op, value} — see services.rule_engine "
+    "CONDITION_CATALOG. Common fields: 'environment_tag', 'criticality', 'finding.severity', "
+    "'finding.exploit', 'finding.cve', 'finding.plugin_family', 'finding.sla_status'. "
+    "Common ops: 'eq', 'neq', 'gte', 'lte', 'contains', 'is_true', 'is_false', 'cidr'.",
     {
         "name": {"type": "string", "description": "Campaign name"},
         "description": {"type": "string", "description": "Campaign description/goal"},
-        "scan_id": {"type": "integer", "description": "Scope to specific scan (optional)"},
-        "finding_ids": {"type": "array", "description": "List of finding IDs to include"},
+        "scan_id": {"type": "integer", "description": "Scope to specific scan (optional). Omit for cross-scan campaigns."},
+        "query": {
+            "type": "array",
+            "description": (
+                "Rule-engine conditions defining campaign scope. Each condition: "
+                "{field: str, op: str, value: any}. Examples — "
+                "internet-facing exploitable: "
+                "[{\"field\":\"environment_tag\",\"op\":\"eq\",\"value\":\"internet\"},"
+                "{\"field\":\"finding.exploit\",\"op\":\"is_true\"}]; "
+                "Windows criticals: "
+                "[{\"field\":\"finding.plugin_family\",\"op\":\"eq\",\"value\":\"Windows\"},"
+                "{\"field\":\"finding.severity\",\"op\":\"gte\",\"value\":4}]; "
+                "specific CVE: [{\"field\":\"finding.cve\",\"op\":\"contains\",\"value\":\"CVE-2021-44228\"}]."
+            ),
+        },
+        "query_logic": {
+            "type": "string",
+            "description": "How to combine conditions: 'AND' (all must match) or 'OR' (any). Default 'AND'.",
+        },
+        "finding_ids": {
+            "type": "array",
+            "description": (
+                "Optional: list of finding IDs for an initial CampaignFinding seed. "
+                "AVOID unless query is also set — these get wiped on the first Run Campaign click."
+            ),
+        },
         "confirmed": {"type": "boolean", "description": "REQUIRED: Set to true only after user has approved this action"},
     },
 )
@@ -1633,12 +1726,19 @@ def create_campaign(db: Session, params: dict):
     if not name:
         return {"error": "Campaign name is required"}
 
+    query = params.get("query") or []
+    query_logic = (params.get("query_logic") or "AND").upper()
+    if query_logic not in ("AND", "OR"):
+        return {"error": "query_logic must be 'AND' or 'OR'"}
+
     campaign = Campaign(
         org_id=params.get("_org_id"),
         name=name,
         description=params.get("description", ""),
         scan_id=params.get("scan_id"),
         status="active",
+        query=query,
+        query_logic=query_logic,
     )
     db.add(campaign)
     db.flush()
@@ -1649,7 +1749,20 @@ def create_campaign(db: Session, params: dict):
         db.add(cf)
         added += 1
     db.commit()
-    return {"campaign_id": campaign.id, "name": campaign.name, "findings_added": added}
+    return {
+        "campaign_id": campaign.id,
+        "name": campaign.name,
+        "query": query,
+        "query_logic": query_logic,
+        "findings_added": added,
+        "note": (
+            "Campaign created with rule-engine query. Click 'Run Campaign' in the UI "
+            "(or POST /api/campaigns/{id}/run) to evaluate the query and populate findings."
+            if query else
+            "Campaign created without a query — running it will produce zero findings. "
+            "Update the campaign to add conditions before running."
+        ),
+    }
 
 
 @agent_tool(
@@ -3559,7 +3672,7 @@ def build_report(db: Session, params: dict):
         "description": {"type": "string", "description": "Brief description of what the agent does"},
         "system_prompt": {"type": "string", "description": "Instructions for the agent — what it should do when run"},
         "tools": {"type": "array", "items": {"type": "string"}, "description": "List of tool names the agent can use (from the tool catalog)"},
-        "model": {"type": "string", "description": "Optional: LLM model to use (default: claude-sonnet-4-6)"},
+        "model": {"type": "string", "description": "Optional: LLM model to use (default: vertex/gemini-2.5-pro)"},
         "guardrails": {"type": "object", "description": "Optional: {max_steps: int, read_only: bool} — constraints on agent behavior"},
         "confirmed": {"type": "boolean", "description": "REQUIRED: Set to true only after user has approved this action"},
     },
@@ -3579,7 +3692,7 @@ def create_agent_tool(db: Session, params: dict):
         description=params.get("description", ""),
         system_prompt=system_prompt,
         tools=tools,
-        model=params.get("model", "claude-sonnet-4-6"),
+        model=params.get("model", "vertex/gemini-2.5-pro"),
         guardrails=params.get("guardrails", {"max_steps": 15}),
     )
     db.add(agent)
@@ -5560,9 +5673,9 @@ def check_response_body(db: Session, params: dict):
     "update_finding_validation",
     "Record a validator agent's verdict on a finding. Writes ctx_reachability, "
     "ctx_exploitability, and a full llm_validation JSON block with reasoning. "
-    "REQUIRES HITL approval — a human must confirm the verdict before it takes "
-    "effect. WHEN TO CALL: after you've run probes and reached a confident "
-    "conclusion about whether a finding is truly exploitable.",
+    "WHEN TO CALL: after you've run probes and reached a confident "
+    "conclusion about whether a finding is truly exploitable. The analyst can "
+    "review and override these fields from the finding's Context tab.",
     {
         "finding_id": {"type": "integer", "description": "Finding ID to update."},
         "verdict": {
@@ -5649,6 +5762,7 @@ _SQL_TABLE_ORG_FILTER = {
     "scans":               "direct",
     "assets":              "via_scan",
     "findings":            "via_scan",
+    "audit_logs":          "direct",
     "tags":                "direct",
     "tag_assignments":     None,       # safe — joins to tags/findings which are filtered
     "campaigns":           "direct",
@@ -5683,7 +5797,7 @@ _BLOCKED_SQL_KEYWORDS = {
     "run_sql_query",
     "Execute a read-only SQL SELECT query against the database for ad-hoc analysis that existing tools can't answer. "
     "The query is automatically scoped to the current organization — you do NOT need to add org_id filters. "
-    "Returns up to 200 rows. Use standard SQL; both SQLite and PostgreSQL are supported. "
+    "Returns up to 200 rows. Use PostgreSQL-flavored SQL. "
     "WHEN TO CALL: When the user asks an analytical question that requires custom aggregation, joins, or grouping "
     "that no existing tool directly supports (e.g. 'which assets have the most critical findings older than 30 days?'). "
     "Prefer dedicated query tools (query_findings, query_assets, etc.) for standard lookups.",
@@ -6584,3 +6698,1106 @@ def get_exposure_context(db: Session, params: dict):
             for f in findings
         ],
     }
+
+
+# ── Scan upload from chat attachment ────────────────────────────────────
+
+@agent_tool(
+    "upload_scan",
+    "Ingest a vulnerability scan file the user attached to the chat. "
+    "Pass the attachment_id surfaced in the <attachments> hint. "
+    "Auto-detects format (Nessus, Qualys, Rapid7, OpenVAS, etc.) and kicks off "
+    "background processing — the tool returns a scan_id immediately. "
+    "WHEN TO CALL: When the user attaches a scan-looking file and asks to import/process it.",
+    {
+        "attachment_id": {"type": "integer", "description": "ID of the chat attachment to ingest (from <attachments> block)"},
+        "scan_name": {"type": "string", "description": "Optional override for the scan display name (defaults to filename)"},
+    },
+)
+def upload_scan(db: Session, params: dict):
+    attachment_id = params.get("attachment_id")
+    if not attachment_id:
+        return {"error": "attachment_id is required"}
+    org_id = params.get("_org_id")
+
+    att = db.query(CopilotAttachment).filter(CopilotAttachment.id == int(attachment_id)).first()
+    if not att:
+        return {"error": f"Attachment {attachment_id} not found (it may have been deleted)"}
+    if org_id is not None and att.org_id is not None and att.org_id != org_id:
+        return {"error": "Attachment belongs to a different organization"}
+    if att.consumed_at is not None:
+        return {"error": f"Attachment was already processed by {att.consumed_by_tool} on {att.consumed_at.isoformat()}"}
+
+    # Lazy imports to avoid circular dep on app.py
+    from parsers.registry import detect_parser, list_parsers
+    content = bytes(att.content) if att.content else b""
+    if not content:
+        return {"error": "Attachment is empty"}
+
+    source_parser = detect_parser(content, att.filename or "")
+    if not source_parser:
+        supported = sorted({ext for p in list_parsers() for ext in p["extensions"]})
+        return {"error": f"Unsupported file type for {att.filename!r}. Accepted extensions: {', '.join(supported)}"}
+
+    effective_org_id = org_id if org_id is not None else att.org_id
+    if effective_org_id is None:
+        return {"error": "Cannot resolve org_id for scan ingest"}
+
+    scan_name = (params.get("scan_name") or att.filename or "scan").strip()
+    scan = Scan(
+        org_id=effective_org_id,
+        filename=att.filename,
+        scan_name=scan_name,
+        source_type=source_parser.source_type,
+        status="processing",
+    )
+    db.add(scan)
+    db.flush()
+    scan_id = scan.id
+
+    # Mark attachment consumed and free the bytes — once a Scan row owns the
+    # ingest pipeline we don't need the duplicate copy in copilot_attachments.
+    att.consumed_at = datetime.utcnow()
+    att.consumed_by_tool = "upload_scan"
+    att.content = b""
+    db.commit()
+
+    # Kick off the same background processor /api/upload uses.
+    try:
+        from app import _run_scan_ingest
+        import threading
+        owner_email = None
+        owner_user_id = None
+        owner_display = None
+        owner_user = db.query(User).filter(User.id == att.user_id).first() if att.user_id else None
+        if owner_user:
+            owner_email = owner_user.email
+            owner_user_id = owner_user.id
+            owner_display = getattr(owner_user, "display_name", None)
+        threading.Thread(
+            target=_run_scan_ingest,
+            args=(scan_id, content, att.filename, effective_org_id,
+                  owner_user_id, owner_email, owner_display),
+            daemon=True,
+        ).start()
+    except Exception as e:
+        logger.exception("Failed to kick off scan ingest for copilot upload")
+        return {
+            "error": f"Scan record created (id={scan_id}) but background processing failed to start: {e}",
+            "scan_id": scan_id,
+        }
+
+    return {
+        "scan_id": scan_id,
+        "scan_name": scan_name,
+        "filename": att.filename,
+        "source_type": source_parser.source_type,
+        "size_bytes": att.size_bytes,
+        "status": "processing",
+        "message": "Scan accepted; parsing in background. Use list_scans or get_scan_summary to check status.",
+    }
+
+
+# ── User & RBAC management ──────────────────────────────────────────────
+
+@agent_tool(
+    "list_users",
+    "List users in the organization with their roles and status. "
+    "WHEN TO CALL: When the user asks who has access, who is on the team, or wants to audit user accounts.",
+    {
+        "search": {"type": "string", "description": "Optional substring match on email or display name"},
+        "role": {"type": "string", "description": "Filter by role: superadmin, org_admin, analyst, viewer, custom"},
+        "active_only": {"type": "boolean", "description": "If true, only return active users"},
+        "limit": {"type": "integer", "description": "Max results (default 50, max 200)"},
+    },
+)
+def list_users_tool(db: Session, params: dict):
+    org_id = params.get("_org_id")
+    q = db.query(User)
+    if org_id is not None:
+        q = q.filter(User.org_id == org_id)
+    if params.get("role"):
+        q = q.filter(User.role == params["role"])
+    if params.get("active_only"):
+        q = q.filter(User.is_active == True)
+    search = params.get("search")
+    if search:
+        like = f"%{search}%"
+        q = q.filter(or_(User.email.ilike(like), User.display_name.ilike(like)))
+    limit = min(int(params.get("limit") or 50), 200)
+    users = q.order_by(User.created_at.desc()).limit(limit).all()
+    return {
+        "users": [
+            {
+                "id": u.id,
+                "email": u.email,
+                "display_name": u.display_name,
+                "role": u.role,
+                "is_active": getattr(u, "is_active", True),
+                "org_id": u.org_id,
+                "created_at": u.created_at.isoformat() if u.created_at else None,
+                "last_login_at": u.last_login_at.isoformat() if getattr(u, "last_login_at", None) else None,
+            }
+            for u in users
+        ],
+        "count": len(users),
+    }
+
+
+@agent_tool(
+    "invite_user",
+    "Invite a new user to the organization. Sends an activation email if no password is supplied. "
+    "Roles: org_admin (full admin), analyst (read+write findings), viewer (read-only), custom (use assign_user_role to attach a CustomRole). "
+    "NEVER call without confirmed=true.",
+    {
+        "email": {"type": "string", "description": "Email of the user to invite"},
+        "display_name": {"type": "string", "description": "Optional display name (defaults to email local part)"},
+        "role": {"type": "string", "description": "org_admin | analyst | viewer | custom"},
+        "confirmed": {"type": "boolean", "description": "REQUIRED: set true only after the user explicitly confirms"},
+    },
+)
+def invite_user_tool(db: Session, params: dict):
+    if not params.get("confirmed"):
+        return {"error": "Show the invite details (email, role) and ask for explicit confirmation first."}
+    email = (params.get("email") or "").strip().lower()
+    role = params.get("role") or "analyst"
+    if not email:
+        return {"error": "email is required"}
+    if role not in ("org_admin", "analyst", "viewer", "custom"):
+        return {"error": "role must be one of: org_admin, analyst, viewer, custom"}
+    if db.query(User).filter(User.email == email).first():
+        return {"error": f"A user with email {email} already exists"}
+
+    org_id = params.get("_org_id")
+    if not org_id:
+        return {"error": "Cannot resolve org_id for the invitation"}
+
+    import secrets
+    from datetime import timedelta
+    from core.auth import hash_password
+
+    display_name = (params.get("display_name") or email.split("@")[0]).strip()
+    token = secrets.token_urlsafe(32)
+    new_user = User(
+        email=email,
+        display_name=display_name,
+        org_id=org_id,
+        role=role,
+        hashed_password=hash_password(secrets.token_hex(32)),
+        password_reset_token=token,
+        password_reset_expires=datetime.utcnow() + timedelta(hours=24),
+    )
+    db.add(new_user)
+    db.flush()
+
+    invite_email_sent = False
+    try:
+        from services.brevo import send_user_invite, is_configured as brevo_configured
+        if brevo_configured():
+            org = db.query(Organization).filter(Organization.id == org_id).first()
+            send_user_invite(email, display_name, org.name if org else "your organization", token)
+            invite_email_sent = True
+    except Exception as e:
+        logger.warning(f"Invite email failed for {email}: {e}")
+
+    db.commit()
+    return {
+        "id": new_user.id,
+        "email": new_user.email,
+        "role": new_user.role,
+        "invite_email_sent": invite_email_sent,
+        "message": (
+            f"Invited {email} as {role}. "
+            + ("Activation email sent." if invite_email_sent else "No email sent — share the activation link manually.")
+        ),
+    }
+
+
+@agent_tool(
+    "update_user",
+    "Update a user's role, display name, or active status. "
+    "NEVER call without confirmed=true. Refuses to change own role/active state.",
+    {
+        "user_id": {"type": "integer", "description": "ID of the user to update"},
+        "display_name": {"type": "string", "description": "New display name"},
+        "role": {"type": "string", "description": "New role: org_admin | analyst | viewer | custom"},
+        "is_active": {"type": "boolean", "description": "Activate (true) or deactivate (false) the user"},
+        "confirmed": {"type": "boolean", "description": "REQUIRED: set true only after explicit confirmation"},
+    },
+)
+def update_user_tool(db: Session, params: dict):
+    if not params.get("confirmed"):
+        return {"error": "Describe the change and ask for explicit confirmation first."}
+    user_id = params.get("user_id")
+    if not user_id:
+        return {"error": "user_id is required"}
+    target = db.query(User).filter(User.id == int(user_id)).first()
+    if not target:
+        return {"error": f"User {user_id} not found"}
+    org_id = params.get("_org_id")
+    if org_id is not None and target.org_id != org_id:
+        return {"error": "Cannot manage users outside your organization"}
+
+    if params.get("display_name") is not None:
+        target.display_name = params["display_name"]
+    if params.get("role") is not None:
+        if params["role"] not in ("org_admin", "analyst", "viewer", "custom"):
+            return {"error": "role must be one of: org_admin, analyst, viewer, custom"}
+        target.role = params["role"]
+    if params.get("is_active") is not None:
+        target.is_active = bool(params["is_active"])
+    db.commit()
+    return {
+        "id": target.id,
+        "email": target.email,
+        "role": target.role,
+        "is_active": getattr(target, "is_active", True),
+        "message": f"Updated user {target.email}.",
+    }
+
+
+@agent_tool(
+    "delete_user",
+    "Permanently delete a user. NEVER call without confirmed=true. "
+    "Cannot delete yourself or a superadmin (unless caller is also superadmin).",
+    {
+        "user_id": {"type": "integer", "description": "ID of the user to delete"},
+        "confirmed": {"type": "boolean", "description": "REQUIRED: set true only after explicit confirmation"},
+    },
+)
+def delete_user_tool(db: Session, params: dict):
+    if not params.get("confirmed"):
+        return {"error": "Confirm permanent deletion with the user first."}
+    user_id = params.get("user_id")
+    if not user_id:
+        return {"error": "user_id is required"}
+    target = db.query(User).filter(User.id == int(user_id)).first()
+    if not target:
+        return {"error": f"User {user_id} not found"}
+    org_id = params.get("_org_id")
+    if org_id is not None and target.org_id != org_id:
+        return {"error": "Cannot delete users outside your organization"}
+    if target.role == "superadmin":
+        return {"error": "Cannot delete a superadmin via copilot — use the admin UI."}
+
+    email = target.email
+    db.delete(target)
+    db.commit()
+    return {"deleted": True, "email": email, "message": f"Deleted user {email}."}
+
+
+@agent_tool(
+    "assign_user_role",
+    "Attach or detach a custom RBAC role to/from a user. "
+    "NEVER call without confirmed=true.",
+    {
+        "user_id": {"type": "integer", "description": "ID of the user"},
+        "role_id": {"type": "integer", "description": "ID of the CustomRole"},
+        "action": {"type": "string", "description": "'assign' or 'unassign'"},
+        "confirmed": {"type": "boolean", "description": "REQUIRED: set true only after explicit confirmation"},
+    },
+)
+def assign_user_role(db: Session, params: dict):
+    if not params.get("confirmed"):
+        return {"error": "Describe the assignment and ask for confirmation first."}
+    from models.models import UserCustomRole
+    user_id = params.get("user_id")
+    role_id = params.get("role_id")
+    action = (params.get("action") or "assign").lower()
+    if not user_id or not role_id:
+        return {"error": "user_id and role_id are required"}
+    target = db.query(User).filter(User.id == int(user_id)).first()
+    if not target:
+        return {"error": f"User {user_id} not found"}
+    role = db.query(CustomRole).filter(CustomRole.id == int(role_id)).first()
+    if not role:
+        return {"error": f"Role {role_id} not found"}
+
+    existing = db.query(UserCustomRole).filter(
+        UserCustomRole.user_id == int(user_id),
+        UserCustomRole.role_id == int(role_id),
+    ).first()
+    if action == "assign":
+        if existing:
+            return {"message": f"User {target.email} already has role '{role.name}'."}
+        db.add(UserCustomRole(user_id=int(user_id), role_id=int(role_id)))
+        db.commit()
+        return {"message": f"Assigned role '{role.name}' to {target.email}."}
+    if action == "unassign":
+        if not existing:
+            return {"message": f"User {target.email} does not have role '{role.name}'."}
+        db.delete(existing)
+        db.commit()
+        return {"message": f"Removed role '{role.name}' from {target.email}."}
+    return {"error": "action must be 'assign' or 'unassign'"}
+
+
+# ── Relay agents ────────────────────────────────────────────────────────
+
+def _relay_to_dict(agent: "RelayAgent", integration_count: int = 0) -> dict:
+    return {
+        "id": agent.id,
+        "name": agent.name,
+        "status": agent.status or "disconnected",
+        "agent_version": agent.agent_version,
+        "ip_address": agent.ip_address,
+        "allowed_hosts": agent.allowed_hosts or [],
+        "credentials_mode": agent.credentials_mode or "agent_local",
+        "labels": agent.labels or {},
+        "token_prefix": agent.token_prefix,
+        "last_seen_at": agent.last_seen_at.isoformat() if agent.last_seen_at else None,
+        "created_at": agent.created_at.isoformat() if agent.created_at else None,
+        "integration_count": integration_count,
+    }
+
+
+@agent_tool(
+    "list_relay_agents",
+    "List relay agents (on-prem connectors that bridge cloud Hakuna to private networks). "
+    "WHEN TO CALL: When the user asks about relay agents, on-prem connectors, or which networks Hakuna can reach.",
+    {},
+)
+def list_relay_agents(db: Session, params: dict):
+    org_id = params.get("_org_id")
+    q = db.query(RelayAgent)
+    if org_id is not None:
+        q = q.filter(RelayAgent.org_id == org_id)
+    agents = q.order_by(RelayAgent.created_at.desc()).all()
+    out = []
+    for a in agents:
+        count = db.query(Integration).filter(Integration.relay_agent_id == a.id).count()
+        out.append(_relay_to_dict(a, count))
+    return {"relay_agents": out, "count": len(out)}
+
+
+@agent_tool(
+    "get_relay_agent",
+    "Get full details of one relay agent (status, allowed hosts, linked integrations).",
+    {
+        "agent_id": {"type": "string", "description": "Relay agent ID"},
+    },
+)
+def get_relay_agent(db: Session, params: dict):
+    agent_id = params.get("agent_id")
+    if not agent_id:
+        return {"error": "agent_id is required"}
+    org_id = params.get("_org_id")
+    q = db.query(RelayAgent).filter(RelayAgent.id == agent_id)
+    if org_id is not None:
+        q = q.filter(RelayAgent.org_id == org_id)
+    agent = q.first()
+    if not agent:
+        return {"error": f"Relay agent {agent_id} not found"}
+    count = db.query(Integration).filter(Integration.relay_agent_id == agent.id).count()
+    return _relay_to_dict(agent, count)
+
+
+@agent_tool(
+    "create_relay_agent",
+    "Provision a new relay agent and return a one-time enrollment token. "
+    "Display the token to the user — it is only shown once and they paste it into "
+    "the relay-agent docker container env. NEVER call without confirmed=true.",
+    {
+        "name": {"type": "string", "description": "Display name for the relay agent"},
+        "allowed_hosts": {"type": "array", "items": {"type": "string"}, "description": "Hostnames/CIDRs the agent is permitted to reach"},
+        "credentials_mode": {"type": "string", "description": "'agent_local' (default) or 'cloud_pushed'"},
+        "labels": {"type": "object", "description": "Optional key/value labels"},
+        "confirmed": {"type": "boolean", "description": "REQUIRED: set true only after explicit confirmation"},
+    },
+)
+def create_relay_agent(db: Session, params: dict):
+    if not params.get("confirmed"):
+        return {"error": "Describe the relay agent (name, allowed hosts) and ask for confirmation first."}
+    name = (params.get("name") or "").strip()
+    if not name:
+        return {"error": "name is required"}
+    org_id = params.get("_org_id")
+    if not org_id:
+        return {"error": "Cannot resolve org_id"}
+
+    import secrets
+    from passlib.context import CryptContext
+    pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
+    raw_token = "hka_" + secrets.token_urlsafe(48)
+    token_hash = pwd_ctx.hash(raw_token)
+
+    agent = RelayAgent(
+        org_id=org_id,
+        name=name,
+        token_hash=token_hash,
+        token_prefix=raw_token[:12] + "...",
+        allowed_hosts=params.get("allowed_hosts") or [],
+        credentials_mode=params.get("credentials_mode") or "agent_local",
+        labels=params.get("labels") or {},
+    )
+    db.add(agent)
+    db.commit()
+    db.refresh(agent)
+    return {
+        **_relay_to_dict(agent),
+        "token": raw_token,
+        "message": (
+            f"Relay agent '{name}' created. SAVE THIS TOKEN NOW — it is only shown once: "
+            f"{raw_token}"
+        ),
+    }
+
+
+@agent_tool(
+    "delete_relay_agent",
+    "Delete a relay agent. Fails if any integrations still reference it. "
+    "NEVER call without confirmed=true.",
+    {
+        "agent_id": {"type": "string", "description": "Relay agent ID"},
+        "confirmed": {"type": "boolean", "description": "REQUIRED"},
+    },
+)
+def delete_relay_agent(db: Session, params: dict):
+    if not params.get("confirmed"):
+        return {"error": "Confirm permanent deletion first."}
+    agent_id = params.get("agent_id")
+    if not agent_id:
+        return {"error": "agent_id is required"}
+    org_id = params.get("_org_id")
+    q = db.query(RelayAgent).filter(RelayAgent.id == agent_id)
+    if org_id is not None:
+        q = q.filter(RelayAgent.org_id == org_id)
+    agent = q.first()
+    if not agent:
+        return {"error": f"Relay agent {agent_id} not found"}
+    linked = db.query(Integration).filter(Integration.relay_agent_id == agent_id).count()
+    if linked > 0:
+        return {"error": f"Agent is used by {linked} integration(s). Detach them first."}
+    db.delete(agent)
+    db.commit()
+    return {"deleted": True, "message": f"Relay agent '{agent.name}' deleted."}
+
+
+@agent_tool(
+    "rotate_relay_agent_token",
+    "Generate a fresh enrollment token for a relay agent. The old token is "
+    "immediately invalidated; show the new token to the user. NEVER call without confirmed=true.",
+    {
+        "agent_id": {"type": "string", "description": "Relay agent ID"},
+        "confirmed": {"type": "boolean", "description": "REQUIRED"},
+    },
+)
+def rotate_relay_agent_token(db: Session, params: dict):
+    if not params.get("confirmed"):
+        return {"error": "Confirm token rotation — old token will stop working immediately."}
+    agent_id = params.get("agent_id")
+    if not agent_id:
+        return {"error": "agent_id is required"}
+    org_id = params.get("_org_id")
+    q = db.query(RelayAgent).filter(RelayAgent.id == agent_id)
+    if org_id is not None:
+        q = q.filter(RelayAgent.org_id == org_id)
+    agent = q.first()
+    if not agent:
+        return {"error": f"Relay agent {agent_id} not found"}
+
+    import secrets
+    from passlib.context import CryptContext
+    pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
+    raw_token = "hka_" + secrets.token_urlsafe(48)
+    agent.token_hash = pwd_ctx.hash(raw_token)
+    agent.token_prefix = raw_token[:12] + "..."
+    agent.status = "disconnected"
+    db.commit()
+    return {
+        "token": raw_token,
+        "token_prefix": agent.token_prefix,
+        "message": f"Rotated token for '{agent.name}'. New token (shown once): {raw_token}",
+    }
+
+
+# ── Custom fields ───────────────────────────────────────────────────────
+
+VALID_CUSTOM_FIELD_ENTITY_TYPES = ("asset", "finding")
+
+
+def _custom_field_to_dict(d: "CustomFieldDefinition") -> dict:
+    return {
+        "id": d.id,
+        "entity_type": d.entity_type,
+        "key": d.key,
+        "label": d.label,
+        "description": d.description,
+        "data_type": d.data_type,
+        "enum_values": d.enum_values,
+        "source_type": d.source_type,
+        "mapping_source": d.mapping_source,
+        "mapping_source_system": d.mapping_source_system,
+        "show_in_list": d.show_in_list,
+        "is_active": d.is_active,
+        "created_at": d.created_at.isoformat() if d.created_at else None,
+    }
+
+
+@agent_tool(
+    "list_custom_fields",
+    "List custom fields defined on Asset and/or Finding entities. "
+    "WHEN TO CALL: When the user asks about custom fields, schema extensions, or what bespoke metadata is captured.",
+    {
+        "entity_type": {"type": "string", "description": "Filter by 'asset' or 'finding' (omit for all)"},
+        "active_only": {"type": "boolean", "description": "If true, hide deactivated fields"},
+    },
+)
+def list_custom_fields_tool(db: Session, params: dict):
+    org_id = params.get("_org_id")
+    q = db.query(CustomFieldDefinition)
+    if org_id is not None:
+        q = q.filter(CustomFieldDefinition.org_id == org_id)
+    et = params.get("entity_type")
+    if et:
+        if et not in VALID_CUSTOM_FIELD_ENTITY_TYPES:
+            return {"error": f"entity_type must be one of {VALID_CUSTOM_FIELD_ENTITY_TYPES}"}
+        q = q.filter(CustomFieldDefinition.entity_type == et)
+    if params.get("active_only"):
+        q = q.filter(CustomFieldDefinition.is_active == True)
+    defs = q.order_by(CustomFieldDefinition.entity_type, CustomFieldDefinition.label).all()
+    return {
+        "custom_fields": [_custom_field_to_dict(d) for d in defs],
+        "count": len(defs),
+    }
+
+
+@agent_tool(
+    "create_custom_field",
+    "Define a new custom field on Asset or Finding entities. "
+    "data_type: string|number|boolean|date|enum. source_type: manual (user-edited), mapping (pulled from observation field), formula (computed). "
+    "NEVER call without confirmed=true.",
+    {
+        "entity_type": {"type": "string", "description": "'asset' or 'finding'"},
+        "key": {"type": "string", "description": "snake_case slug, unique per entity_type within the org (e.g. 'data_center')"},
+        "label": {"type": "string", "description": "Human-readable label"},
+        "description": {"type": "string", "description": "Optional description"},
+        "data_type": {"type": "string", "description": "string | number | boolean | date | enum"},
+        "enum_values": {"type": "array", "items": {"type": "string"}, "description": "Required when data_type=enum"},
+        "source_type": {"type": "string", "description": "manual | mapping | formula (default manual)"},
+        "mapping_source": {"type": "string", "description": "Dot-path into observation raw_fields (when source_type=mapping)"},
+        "formula_expression": {"type": "string", "description": "Sandboxed expression (when source_type=formula)"},
+        "show_in_list": {"type": "boolean", "description": "Display the field in list views"},
+        "confirmed": {"type": "boolean", "description": "REQUIRED"},
+    },
+)
+def create_custom_field_tool(db: Session, params: dict):
+    if not params.get("confirmed"):
+        return {"error": "Describe the custom field (entity, key, type) and ask for confirmation first."}
+    org_id = params.get("_org_id")
+    if not org_id:
+        return {"error": "Cannot resolve org_id"}
+    entity_type = params.get("entity_type")
+    key = (params.get("key") or "").strip()
+    label = (params.get("label") or "").strip()
+    if entity_type not in VALID_CUSTOM_FIELD_ENTITY_TYPES:
+        return {"error": f"entity_type must be one of {VALID_CUSTOM_FIELD_ENTITY_TYPES}"}
+    if not key or not label:
+        return {"error": "key and label are required"}
+    data_type = params.get("data_type") or "string"
+    if data_type not in ("string", "number", "boolean", "date", "enum"):
+        return {"error": "data_type must be string|number|boolean|date|enum"}
+    if data_type == "enum" and not params.get("enum_values"):
+        return {"error": "enum_values is required when data_type=enum"}
+    source_type = params.get("source_type") or "manual"
+    if source_type not in ("manual", "mapping", "formula"):
+        return {"error": "source_type must be manual|mapping|formula"}
+
+    existing = db.query(CustomFieldDefinition).filter(
+        CustomFieldDefinition.org_id == org_id,
+        CustomFieldDefinition.entity_type == entity_type,
+        CustomFieldDefinition.key == key,
+    ).first()
+    if existing:
+        return {"error": f"Custom field '{key}' already exists for {entity_type}"}
+
+    definition = CustomFieldDefinition(
+        org_id=org_id,
+        entity_type=entity_type,
+        key=key,
+        label=label,
+        description=params.get("description"),
+        data_type=data_type,
+        enum_values=params.get("enum_values"),
+        source_type=source_type,
+        mapping_source=params.get("mapping_source"),
+        formula_expression=params.get("formula_expression"),
+        show_in_list=bool(params.get("show_in_list", False)),
+        is_active=True,
+    )
+    db.add(definition)
+    db.commit()
+    db.refresh(definition)
+    return {
+        **_custom_field_to_dict(definition),
+        "message": f"Custom field '{key}' created on {entity_type}.",
+    }
+
+
+@agent_tool(
+    "update_custom_field",
+    "Update a custom field's label, description, mapping, formula, or active status. "
+    "NEVER call without confirmed=true.",
+    {
+        "def_id": {"type": "integer", "description": "Custom field definition ID"},
+        "label": {"type": "string", "description": "New label"},
+        "description": {"type": "string", "description": "New description"},
+        "mapping_source": {"type": "string", "description": "New mapping path"},
+        "formula_expression": {"type": "string", "description": "New formula"},
+        "is_active": {"type": "boolean", "description": "Activate / deactivate"},
+        "show_in_list": {"type": "boolean", "description": "Toggle list visibility"},
+        "confirmed": {"type": "boolean", "description": "REQUIRED"},
+    },
+)
+def update_custom_field_tool(db: Session, params: dict):
+    if not params.get("confirmed"):
+        return {"error": "Describe the change and ask for confirmation first."}
+    def_id = params.get("def_id")
+    if not def_id:
+        return {"error": "def_id is required"}
+    org_id = params.get("_org_id")
+    q = db.query(CustomFieldDefinition).filter(CustomFieldDefinition.id == int(def_id))
+    if org_id is not None:
+        q = q.filter(CustomFieldDefinition.org_id == org_id)
+    d = q.first()
+    if not d:
+        return {"error": f"Custom field {def_id} not found"}
+    for attr in ("label", "description", "mapping_source", "formula_expression",
+                 "is_active", "show_in_list"):
+        if params.get(attr) is not None:
+            setattr(d, attr, params[attr])
+    db.commit()
+    return {**_custom_field_to_dict(d), "message": f"Custom field '{d.key}' updated."}
+
+
+@agent_tool(
+    "delete_custom_field",
+    "Permanently delete a custom field definition (clears resolved values too). "
+    "NEVER call without confirmed=true.",
+    {
+        "def_id": {"type": "integer", "description": "Custom field definition ID"},
+        "confirmed": {"type": "boolean", "description": "REQUIRED"},
+    },
+)
+def delete_custom_field_tool(db: Session, params: dict):
+    if not params.get("confirmed"):
+        return {"error": "Confirm deletion — resolved values will be cleared on every record."}
+    def_id = params.get("def_id")
+    if not def_id:
+        return {"error": "def_id is required"}
+    org_id = params.get("_org_id")
+    q = db.query(CustomFieldDefinition).filter(CustomFieldDefinition.id == int(def_id))
+    if org_id is not None:
+        q = q.filter(CustomFieldDefinition.org_id == org_id)
+    d = q.first()
+    if not d:
+        return {"error": f"Custom field {def_id} not found"}
+    key, entity_type = d.key, d.entity_type
+    db.delete(d)
+    db.commit()
+    return {"deleted": True, "message": f"Custom field '{key}' on {entity_type} deleted."}
+
+
+# ── Compliance frameworks ───────────────────────────────────────────────
+
+@agent_tool(
+    "list_compliance_frameworks",
+    "List compliance frameworks (NIST 800-53, ISO 27001, IEC 62443-3-3, etc.) and which ones the org is subscribed to. "
+    "WHEN TO CALL: When the user asks about compliance frameworks, control catalogs, or wants to enable/configure a framework.",
+    {},
+)
+def list_compliance_frameworks(db: Session, params: dict):
+    org_id = params.get("_org_id")
+    frameworks = db.query(ComplianceFramework).order_by(ComplianceFramework.name).all()
+    sub_by_fw: dict[int, OrgFrameworkSubscription] = {}
+    if org_id:
+        sub_by_fw = {
+            s.framework_id: s for s in db.query(OrgFrameworkSubscription)
+            .filter_by(org_id=org_id, enabled=True).all()
+        }
+    return {
+        "frameworks": [
+            {
+                "id": fw.id,
+                "slug": fw.slug,
+                "name": fw.name,
+                "version": fw.version,
+                "description": fw.description,
+                "subscribed": fw.id in sub_by_fw,
+                "scope_tag_expr": (sub_by_fw[fw.id].scope_tag_expr if fw.id in sub_by_fw else None),
+            }
+            for fw in frameworks
+        ],
+        "count": len(frameworks),
+    }
+
+
+@agent_tool(
+    "subscribe_to_compliance_framework",
+    "Enable a compliance framework for the org (idempotent). NEVER call without confirmed=true.",
+    {
+        "slug": {"type": "string", "description": "Framework slug (e.g. 'nist_800_53', 'iec_62443_3_3')"},
+        "scope_tag_expr": {"type": "string", "description": "Optional tag expression to scope which assets the framework applies to"},
+        "confirmed": {"type": "boolean", "description": "REQUIRED"},
+    },
+)
+def subscribe_to_compliance_framework(db: Session, params: dict):
+    if not params.get("confirmed"):
+        return {"error": "Confirm framework subscription with the user first."}
+    slug = params.get("slug")
+    if not slug:
+        return {"error": "slug is required"}
+    fw = db.query(ComplianceFramework).filter_by(slug=slug).first()
+    if not fw:
+        return {"error": f"Framework '{slug}' not found"}
+    org_id = params.get("_org_id")
+    if not org_id:
+        return {"error": "Cannot resolve org_id"}
+    sub = db.query(OrgFrameworkSubscription).filter_by(org_id=org_id, framework_id=fw.id).first()
+    scope_expr = params.get("scope_tag_expr")
+    if sub is None:
+        sub = OrgFrameworkSubscription(
+            org_id=org_id, framework_id=fw.id, enabled=True,
+            scope_tag_expr=scope_expr,
+        )
+        db.add(sub)
+    else:
+        sub.enabled = True
+        if scope_expr is not None:
+            sub.scope_tag_expr = scope_expr
+    db.commit()
+    return {"subscribed": True, "framework": fw.name, "message": f"Subscribed to {fw.name}."}
+
+
+@agent_tool(
+    "list_compliance_controls",
+    "List controls under a compliance framework with the org's mitigation status. "
+    "WHEN TO CALL: When the user asks which controls are passing/failing or wants to drill into a framework.",
+    {
+        "slug": {"type": "string", "description": "Framework slug"},
+        "domain": {"type": "string", "description": "Filter by control domain (e.g. 'AC' for Access Control)"},
+        "search": {"type": "string", "description": "Substring match on ref or title"},
+        "limit": {"type": "integer", "description": "Max controls (default 100, max 500)"},
+    },
+)
+def list_compliance_controls(db: Session, params: dict):
+    slug = params.get("slug")
+    if not slug:
+        return {"error": "slug is required"}
+    fw = db.query(ComplianceFramework).filter_by(slug=slug).first()
+    if not fw:
+        return {"error": f"Framework '{slug}' not found"}
+    q = db.query(ComplianceControl).filter(ComplianceControl.framework_id == fw.id)
+    if params.get("domain"):
+        q = q.filter(ComplianceControl.domain == params["domain"])
+    if params.get("search"):
+        like = f"%{params['search']}%"
+        q = q.filter(or_(ComplianceControl.ref.ilike(like), ComplianceControl.title.ilike(like)))
+    limit = min(int(params.get("limit") or 100), 500)
+    rows = q.order_by(ComplianceControl.ref).limit(limit).all()
+
+    org_id = params.get("_org_id")
+    status_map: dict[int, ComplianceControlStatus] = {}
+    if org_id:
+        for s in db.query(ComplianceControlStatus).filter_by(org_id=org_id).all():
+            status_map[s.control_id] = s
+
+    return {
+        "framework": {"slug": fw.slug, "name": fw.name},
+        "controls": [
+            {
+                "id": c.id,
+                "ref": c.ref,
+                "title": c.title,
+                "domain": c.domain,
+                "state": (status_map[c.id].state if c.id in status_map else "unknown"),
+                "in_scope_asset_count": (status_map[c.id].in_scope_asset_count if c.id in status_map else 0),
+                "failing_finding_count": (status_map[c.id].failing_finding_count if c.id in status_map else 0),
+                "failing_asset_count": (status_map[c.id].failing_asset_count if c.id in status_map else 0),
+            }
+            for c in rows
+        ],
+        "count": len(rows),
+    }
+
+
+@agent_tool(
+    "get_compliance_control",
+    "Get full details for a single compliance control: mappings, compensating controls, status. "
+    "WHEN TO CALL: When the user asks why a control is failing or what evidence supports it.",
+    {
+        "control_id": {"type": "integer", "description": "Control ID"},
+    },
+)
+def get_compliance_control_tool(db: Session, params: dict):
+    control_id = params.get("control_id")
+    if not control_id:
+        return {"error": "control_id is required"}
+    ctrl = db.query(ComplianceControl).filter_by(id=int(control_id)).first()
+    if not ctrl:
+        return {"error": f"Control {control_id} not found"}
+    org_id = params.get("_org_id")
+    status = (db.query(ComplianceControlStatus)
+              .filter_by(org_id=org_id, control_id=int(control_id)).first()
+              if org_id else None)
+    mappings = (db.query(ComplianceControlMapping)
+                .filter_by(control_id=int(control_id)).all())
+    return {
+        "id": ctrl.id,
+        "ref": ctrl.ref,
+        "title": ctrl.title,
+        "domain": ctrl.domain,
+        "description": ctrl.description,
+        "state": status.state if status else "unknown",
+        "in_scope_asset_count": status.in_scope_asset_count if status else 0,
+        "failing_finding_count": status.failing_finding_count if status else 0,
+        "failing_asset_count": status.failing_asset_count if status else 0,
+        "last_evaluated_at": status.last_evaluated_at.isoformat() if (status and status.last_evaluated_at) else None,
+        "mappings": [
+            {"id": m.id, "mapping_key": m.mapping_key, "rule": m.rule,
+             "rule_version": m.rule_version, "testability": m.testability}
+            for m in mappings
+        ],
+    }
+
+
+# ── Audit log query ─────────────────────────────────────────────────────
+
+@agent_tool(
+    "query_audit_log",
+    "Search the user-activity audit log (every create/update/delete on platform entities). "
+    "WHEN TO CALL: When the user asks 'who changed X', 'what happened to Y', 'show recent admin activity', or wants compliance evidence.",
+    {
+        "entity_type": {"type": "string", "description": "Filter by entity type (user, finding_status, exception, sla_config, campaign, workflow, asset_ownership, compliance_subscription, etc.)"},
+        "action": {"type": "string", "description": "Filter by action: create | update | delete | enable | disable | assign"},
+        "actor_email": {"type": "string", "description": "Substring match on actor email"},
+        "entity_id": {"type": "integer", "description": "Filter to events affecting this specific entity ID"},
+        "since": {"type": "string", "description": "ISO date/datetime — only events on/after this"},
+        "until": {"type": "string", "description": "ISO date/datetime — only events on/before this"},
+        "limit": {"type": "integer", "description": "Max results (default 50, max 200)"},
+    },
+)
+def query_audit_log(db: Session, params: dict):
+    org_id = params.get("_org_id")
+    q = db.query(AuditLog)
+    if org_id is not None:
+        q = q.filter(or_(AuditLog.org_id == org_id, AuditLog.org_id.is_(None)))
+    if params.get("entity_type"):
+        q = q.filter(AuditLog.entity_type == params["entity_type"])
+    if params.get("action"):
+        q = q.filter(AuditLog.action == params["action"])
+    if params.get("actor_email"):
+        q = q.filter(AuditLog.actor_email.ilike(f"%{params['actor_email']}%"))
+    if params.get("entity_id"):
+        q = q.filter(AuditLog.entity_id == int(params["entity_id"]))
+    if params.get("since"):
+        try:
+            q = q.filter(AuditLog.created_at >= datetime.fromisoformat(params["since"]))
+        except (TypeError, ValueError):
+            pass
+    if params.get("until"):
+        try:
+            q = q.filter(AuditLog.created_at <= datetime.fromisoformat(params["until"]))
+        except (TypeError, ValueError):
+            pass
+
+    limit = min(int(params.get("limit") or 50), 200)
+    entries = q.order_by(AuditLog.created_at.desc()).limit(limit).all()
+    return {
+        "entries": [
+            {
+                "id": e.id,
+                "action": e.action,
+                "entity_type": e.entity_type,
+                "entity_id": e.entity_id,
+                "entity_name": e.entity_name,
+                "actor_email": e.actor_email,
+                "actor_display_name": e.actor_display_name,
+                "changes": e.changes,
+                "created_at": e.created_at.isoformat() if e.created_at else None,
+            }
+            for e in entries
+        ],
+        "count": len(entries),
+    }
+
+
+# ── Attack paths ────────────────────────────────────────────────────────
+
+@agent_tool(
+    "list_attack_paths",
+    "List discovered attack paths (chained findings that together let an attacker reach a sensitive asset). "
+    "WHEN TO CALL: When the user asks about attack paths, lateral movement, or 'how could an attacker reach X'. "
+    "Returns paths sorted by score by default. Use get_attack_path for full step-by-step details.",
+    {
+        "scan_id": {"type": "integer", "description": "Restrict to paths involving findings from this scan"},
+        "severity": {"type": "string", "description": "Critical | High | Medium"},
+        "search": {"type": "string", "description": "Substring match on title / entry / target hostname"},
+        "min_score": {"type": "number", "description": "Only paths scored ≥ this (0-100)"},
+        "narrated_only": {"type": "boolean", "description": "Only paths with an LLM-generated narrative"},
+        "sort_by": {"type": "string", "description": "score | severity | chain_length | created_at (default: score)"},
+        "limit": {"type": "integer", "description": "Max results (default 50, max 200)"},
+    },
+)
+def list_attack_paths_tool(db: Session, params: dict):
+    from sqlalchemy import text as sql_text
+    org_id = params.get("_org_id")
+
+    where_parts = []
+    sql_params: dict = {}
+    if org_id is not None:
+        where_parts.append("ap.org_id = :org_id")
+        sql_params["org_id"] = org_id
+    if params.get("severity"):
+        where_parts.append("ap.severity = :severity")
+        sql_params["severity"] = params["severity"]
+    if params.get("min_score") is not None:
+        where_parts.append("COALESCE(ap.score, 0) >= :min_score")
+        sql_params["min_score"] = float(params["min_score"])
+    if params.get("narrated_only") is True:
+        where_parts.append("ap.narrative IS NOT NULL AND ap.narrative != ''")
+    if params.get("scan_id"):
+        where_parts.append(
+            "EXISTS (SELECT 1 FROM jsonb_array_elements(ap.steps::jsonb) je "
+            "JOIN findings f ON f.id = (je->>'finding_id')::int "
+            "WHERE f.scan_id = :scan_id)"
+        )
+        sql_params["scan_id"] = int(params["scan_id"])
+
+    sort_map = {
+        "score": "COALESCE(ap.score, 0)",
+        "severity": "CASE ap.severity WHEN 'Critical' THEN 1 WHEN 'High' THEN 2 WHEN 'Medium' THEN 3 ELSE 4 END",
+        "chain_length": "ap.chain_length",
+        "created_at": "ap.created_at",
+    }
+    sort_expr = sort_map.get(params.get("sort_by") or "score", sort_map["score"])
+    direction = "DESC"
+    limit = min(int(params.get("limit") or 50), 200)
+
+    if params.get("search"):
+        where_parts.append(
+            "(LOWER(ap.title) LIKE :q OR LOWER(COALESCE(entry_a.hostname, '')) LIKE :q "
+            "OR LOWER(COALESCE(target_a.hostname, '')) LIKE :q)"
+        )
+        sql_params["q"] = f"%{params['search'].lower()}%"
+
+    where = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
+    sql_params["limit"] = limit
+    stmt = sql_text(f"""
+        SELECT ap.id, ap.title, ap.severity, ap.chain_length, ap.score,
+               ap.entry_reason, ap.target_reason, ap.created_at,
+               entry_a.hostname AS entry_hostname,
+               target_a.hostname AS target_hostname,
+               CASE WHEN ap.narrative IS NOT NULL AND ap.narrative != '' THEN TRUE ELSE FALSE END AS has_narrative
+        FROM attack_paths ap
+        LEFT JOIN assets entry_a ON entry_a.id = ap.entry_asset_id
+        LEFT JOIN assets target_a ON target_a.id = ap.target_asset_id
+        {where}
+        ORDER BY {sort_expr} {direction}, ap.id DESC
+        LIMIT :limit
+    """)
+    try:
+        rows = db.execute(stmt, sql_params).fetchall()
+    except Exception as e:
+        logger.warning(f"list_attack_paths failed: {e}")
+        return {"error": f"Attack path query failed: {e}", "paths": [], "count": 0}
+
+    return {
+        "paths": [
+            {
+                "id": r.id,
+                "title": r.title,
+                "severity": r.severity,
+                "score": r.score,
+                "chain_length": r.chain_length,
+                "entry_hostname": r.entry_hostname,
+                "target_hostname": r.target_hostname,
+                "entry_reason": r.entry_reason,
+                "target_reason": r.target_reason,
+                "has_narrative": bool(r.has_narrative),
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in rows
+        ],
+        "count": len(rows),
+    }
+
+
+@agent_tool(
+    "get_attack_path",
+    "Get full details for one attack path: every step, the LLM narrative, and recommended mitigations. "
+    "WHEN TO CALL: After list_attack_paths surfaces a path the user wants to drill into.",
+    {
+        "path_id": {"type": "integer", "description": "Attack path ID"},
+    },
+)
+def get_attack_path_tool(db: Session, params: dict):
+    from sqlalchemy import text as sql_text
+    path_id = params.get("path_id")
+    if not path_id:
+        return {"error": "path_id is required"}
+    org_id = params.get("_org_id")
+
+    where = "WHERE ap.id = :id"
+    sql_params = {"id": int(path_id)}
+    if org_id is not None:
+        where += " AND ap.org_id = :org_id"
+        sql_params["org_id"] = org_id
+
+    stmt = sql_text(f"""
+        SELECT ap.id, ap.title, ap.severity, ap.steps, ap.chain_length,
+               ap.entry_asset_id, ap.target_asset_id, ap.entry_reason, ap.target_reason,
+               ap.score, ap.score_breakdown, ap.narrative, ap.recommended_mitigations,
+               ap.created_at,
+               entry_a.hostname AS entry_hostname,
+               target_a.hostname AS target_hostname
+        FROM attack_paths ap
+        LEFT JOIN assets entry_a ON entry_a.id = ap.entry_asset_id
+        LEFT JOIN assets target_a ON target_a.id = ap.target_asset_id
+        {where}
+    """)
+    try:
+        row = db.execute(stmt, sql_params).fetchone()
+    except Exception as e:
+        return {"error": f"Attack path query failed: {e}"}
+    if not row:
+        return {"error": f"Attack path {path_id} not found"}
+
+    def _json(value):
+        if value is None:
+            return None
+        if isinstance(value, (list, dict)):
+            return value
+        try:
+            return json.loads(value)
+        except Exception:
+            return value
+
+    return {
+        "id": row.id,
+        "title": row.title,
+        "severity": row.severity,
+        "score": row.score,
+        "score_breakdown": _json(row.score_breakdown),
+        "chain_length": row.chain_length,
+        "entry_asset_id": row.entry_asset_id,
+        "target_asset_id": row.target_asset_id,
+        "entry_hostname": row.entry_hostname,
+        "target_hostname": row.target_hostname,
+        "entry_reason": row.entry_reason,
+        "target_reason": row.target_reason,
+        "steps": _json(row.steps) or [],
+        "narrative": row.narrative,
+        "recommended_mitigations": _json(row.recommended_mitigations),
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+    }
+
+
+# ── Protocol audit tool palettes ─────────────────────────────────────────
+#
+# Side-effect imports: each protocol's tools module (`agents.tools.wmi_tools`,
+# later `ldap_tools`, `smb_tools`, …) registers its tools via `@agent_tool`
+# and its `ProtocolAudit` entry via `register_audit()`. Importing the package
+# triggers both registrations so TOOL_REGISTRY and AUDITS are populated before
+# any route or agent_engine reads from them.
+from agents import tools as _protocol_tools  # noqa: F401, E402

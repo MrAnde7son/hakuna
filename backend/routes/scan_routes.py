@@ -15,8 +15,9 @@ from core.auth import (
     get_current_user, get_accessible_org_ids,
     apply_org_filter, apply_scan_org_filter,
 )
+from core.time_utils import iso_utc
 from models.models import (
-    Scan, Asset, Finding, AutomateClick,
+    Scan, Asset, Finding, AutomateClick, AgentApproval, AgentRun,
 )
 from parsers.registry import list_parsers
 from services.nlp_search import parse_nlp_query
@@ -31,7 +32,12 @@ router = APIRouter()
 # ─────────────────────────────────────────────
 
 @router.get("/api/health")
-def health_check():
+async def health_check():
+    # Async so Cloud Run liveness probes are served directly on the event loop
+    # and never queue behind the FastAPI threadpool. A sync handler ends up in
+    # anyio's bounded threadpool — when finalize_scan / httpx polls saturate it,
+    # the trivial /api/health request stalls past the 1s probe timeout and the
+    # instance gets killed even though the API is healthy.
     return {"status": "ok"}
 
 
@@ -89,10 +95,22 @@ def list_scans(db: Session = Depends(get_db), org_ids: Optional[List[int]] = Dep
     if not scan_ids:
         return []
 
+    # Map scan_id → current run_id so we can filter rows of active VM rescans
+    # (old-run rows coexist with new-run rows until finalize). Non-VM scans
+    # and scans without a run_id show up with run_id=None and match all rows.
+    current_run_by_scan = {
+        s.id: (s.raw_metadata or {}).get("current_run_id") for s in scans
+    }
+    current_run_ids = [rid for rid in current_run_by_scan.values() if rid]
+
     # Batch finding counts in one query
     finding_counts = dict(
         db.query(Finding.scan_id, func.count(Finding.id))
         .filter(Finding.scan_id.in_(scan_ids))
+        .filter(or_(
+            Finding.scan_run_id.is_(None),
+            Finding.scan_run_id.in_(current_run_ids),
+        ))
         .group_by(Finding.scan_id)
         .all()
     )
@@ -101,6 +119,10 @@ def list_scans(db: Session = Depends(get_db), org_ids: Optional[List[int]] = Dep
     direct_asset_counts = dict(
         db.query(Asset.scan_id, func.count(Asset.id))
         .filter(Asset.scan_id.in_(scan_ids))
+        .filter(or_(
+            Asset.scan_run_id.is_(None),
+            Asset.scan_run_id.in_(current_run_ids),
+        ))
         .group_by(Asset.scan_id)
         .all()
     )
@@ -113,6 +135,10 @@ def list_scans(db: Session = Depends(get_db), org_ids: Optional[List[int]] = Dep
         vm_asset_counts = dict(
             db.query(Finding.scan_id, func.count(distinct(Finding.asset_id)))
             .filter(Finding.scan_id.in_(vm_scan_ids), Finding.asset_id.isnot(None))
+            .filter(or_(
+                Finding.scan_run_id.is_(None),
+                Finding.scan_run_id.in_(current_run_ids),
+            ))
             .group_by(Finding.scan_id)
             .all()
         )
@@ -122,12 +148,47 @@ def list_scans(db: Session = Depends(get_db), org_ids: Optional[List[int]] = Dep
             via_findings = vm_asset_counts.get(sid, 0)
             vm_extra_asset_counts[sid] = max(direct, via_findings)
 
+    # Audit scans pause as `awaiting_approval` when an agent tool gates on
+    # human review. Surface the pending count + earliest gated run id on the
+    # scan row so the UI can render a "Review action" deep-link without the
+    # user having to navigate to Agents → Approval Queue.
+    audit_pending: dict[int, dict] = {}
+    audit_scan_to_agents: dict[int, list[int]] = {}
+    audit_agent_to_scan: dict[int, int] = {}
+    for s in scans:
+        if not (s.scan_type or "").endswith("_audit"):
+            continue
+        scratch_ids = (s.raw_metadata or {}).get("scratch_agent_ids") or []
+        if scratch_ids:
+            audit_scan_to_agents[s.id] = list(scratch_ids)
+            for aid in scratch_ids:
+                audit_agent_to_scan[aid] = s.id
+    if audit_agent_to_scan:
+        pending_rows = (
+            db.query(AgentApproval.agent_id, AgentApproval.agent_run_id)
+            .filter(
+                AgentApproval.agent_id.in_(audit_agent_to_scan.keys()),
+                AgentApproval.status == "pending",
+            )
+            .order_by(AgentApproval.requested_at.asc())
+            .all()
+        )
+        for agent_id, run_id in pending_rows:
+            scan_id = audit_agent_to_scan.get(agent_id)
+            if scan_id is None:
+                continue
+            entry = audit_pending.setdefault(
+                scan_id, {"count": 0, "agent_run_id": run_id}
+            )
+            entry["count"] += 1
+
     result = []
     for s in scans:
         if s.source_type == "vm_scanner":
             asset_count = vm_extra_asset_counts.get(s.id, 0)
         else:
             asset_count = direct_asset_counts.get(s.id, 0)
+        pending = audit_pending.get(s.id)
         result.append({
             "id": s.id,
             "filename": s.filename,
@@ -138,14 +199,16 @@ def list_scans(db: Session = Depends(get_db), org_ids: Optional[List[int]] = Dep
             "source_type": s.source_type or "nessus",
             "source_version": s.source_version,
             "raw_metadata": s.raw_metadata,
-            "created_at": s.created_at.isoformat() if s.created_at else None,
+            "created_at": iso_utc(s.created_at),
             "asset_count": asset_count,
             "finding_count": finding_counts.get(s.id, 0),
             "schedule": s.schedule,
             "status": s.status or "completed",
-            "last_run_at": s.last_run_at.isoformat() if s.last_run_at else None,
-            "next_run_at": s.next_run_at.isoformat() if s.next_run_at else None,
+            "last_run_at": iso_utc(s.last_run_at),
+            "next_run_at": iso_utc(s.next_run_at),
             "run_count": s.run_count or 0,
+            "pending_approval_count": (pending or {}).get("count", 0),
+            "pending_approval_run_id": (pending or {}).get("agent_run_id"),
         })
     return result
 
@@ -156,8 +219,11 @@ def get_scan(scan_id: int, db: Session = Depends(get_db), org_ids: Optional[List
     scan = q.filter(Scan.id == scan_id).first()
     if not scan:
         raise HTTPException(404, "Scan not found")
-    finding_count = db.query(func.count(Finding.id)).filter(Finding.scan_id == scan_id).scalar()
-    asset_count = db.query(func.count(Asset.id)).filter(Asset.scan_id == scan_id).scalar()
+    current_run_id = (scan.raw_metadata or {}).get("current_run_id")
+    run_scope_f = or_(Finding.scan_run_id.is_(None), Finding.scan_run_id == current_run_id) if current_run_id else True
+    run_scope_a = or_(Asset.scan_run_id.is_(None), Asset.scan_run_id == current_run_id) if current_run_id else True
+    finding_count = db.query(func.count(Finding.id)).filter(Finding.scan_id == scan_id).filter(run_scope_f).scalar()
+    asset_count = db.query(func.count(Asset.id)).filter(Asset.scan_id == scan_id).filter(run_scope_a).scalar()
 
     # Surface streaming-progress state so the UI can render per-target / per-stage
     # detail while the scan is still running, instead of just a spinner on the
@@ -185,6 +251,8 @@ def get_scan(scan_id: int, db: Session = Depends(get_db), org_ids: Optional[List
         progress = {
             "completed_jobs": meta.get("completed_jobs", 0),
             "total_jobs": meta.get("total_jobs", 0),
+            "completed_targets": meta.get("completed_targets", 0),
+            "total_targets": meta.get("total_targets", len(meta.get("targets") or [])),
             "targets": targets,
         }
     elif scan.source_type == "easm":
@@ -215,6 +283,139 @@ def get_scan(scan_id: int, db: Session = Depends(get_db), org_ids: Optional[List
         "progress": progress,
         "error": meta.get("error"),
     }
+
+
+@router.post("/api/scans/{scan_id}/cancel")
+async def cancel_scan(
+    scan_id: int,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    """Stop an in-flight VM or EASM scan.
+
+    - VM: revokes Celery task ids on the VM scanner (best-effort) and flips
+      ``raw_metadata.status`` to ``"cancelled"`` so the UI and reaper stop
+      tracking it.
+    - EASM: asks hakuna-scanner to mark the ScanRun cancelled. Celery chain
+      keeps draining to completion on the scanner side (the per-stage DB
+      writes don't hold a cancellation check), but the UI stops polling and
+      the local Scan row reflects the cancelled state.
+    - Uploaded scans (nessus, qualys, …) are ingest-only — returns 400.
+    """
+    q = apply_org_filter(db.query(Scan), Scan, org_ids)
+    scan = q.filter(Scan.id == scan_id).first()
+    if not scan:
+        raise HTTPException(404, "Scan not found")
+
+    meta = scan.raw_metadata or {}
+    # Audit scans mirror status to both scan.status and raw_metadata.status
+    # (audit_worker._finalize_scan_if_complete writes both). VM + EASM live
+    # on raw_metadata only. Fall back to the column so audits still read
+    # during the window between insert and first worker commit.
+    status = meta.get("status") or scan.status
+    if status not in ("running", "queued"):
+        raise HTTPException(409, f"Scan is not running (status={status or 'completed'})")
+
+    from core.audit import log_audit
+    scan_name = scan.scan_name or scan.filename
+
+    if (scan.scan_type or "").endswith("_audit"):
+        from services.audit_runner import revoke_audit_tasks
+        from models.models import AgentRun, AgentApproval
+        task_ids_by_agent = meta.get("task_ids") or {}
+        task_ids = list(task_ids_by_agent.values()) if isinstance(task_ids_by_agent, dict) else []
+        revoke_result = revoke_audit_tasks(task_ids)
+        # Mark any still-running/pending/awaiting-approval AgentRuns as
+        # cancelled so the scan UI reflects the real state. Don't touch
+        # already-terminal rows — SIGTERM on a worker may arrive after the
+        # run has already committed `done`.
+        scratch_agent_ids = meta.get("scratch_agent_ids") or []
+        if scratch_agent_ids:
+            from datetime import datetime as _dt
+            from services.approval_lifecycle import clear_approval_notification
+            now = _dt.utcnow()
+            affected = (
+                db.query(AgentRun)
+                .filter(
+                    AgentRun.agent_id.in_(scratch_agent_ids),
+                    AgentRun.status.in_(("pending", "running", "awaiting_approval")),
+                )
+                .all()
+            )
+            affected_run_ids = [r.id for r in affected]
+            for r in affected:
+                r.status = "cancelled"
+                r.error = "Cancelled by user"
+                r.finished_at = now
+            # Expire any pending approvals tied to those runs so the scan-
+            # level "Review action" badge clears and the global queue stops
+            # showing actionable rows for a scan that's no longer running.
+            if affected_run_ids:
+                pending_approvals = (
+                    db.query(AgentApproval)
+                    .filter(
+                        AgentApproval.agent_run_id.in_(affected_run_ids),
+                        AgentApproval.status == "pending",
+                    )
+                    .all()
+                )
+                for a in pending_approvals:
+                    a.status = "expired"
+                    a.decided_at = now
+                    a.rejection_reason = "Scan cancelled by user"
+                    clear_approval_notification(db, a.id)
+        scan.status = "cancelled"
+        scan.raw_metadata = {
+            **meta,
+            "status": "cancelled",
+            "error": "Cancelled by user",
+        }
+        log_audit(db, "cancel", "scan", scan_id, entity_name=scan_name, org_id=scan.org_id)
+        db.commit()
+        return {
+            "message": "Audit cancelled",
+            "revoked_tasks": revoke_result.get("revoked", []),
+            "revoke_errors": revoke_result.get("errors", {}),
+            "total_tasks": len(task_ids),
+        }
+
+    if scan.source_type == "vm_scanner":
+        from services.vm_scanner import _revoke_vm_jobs_sync, _rollback_failed_run
+        job_ids = meta.get("job_ids") or []
+        revoked = _revoke_vm_jobs_sync(job_ids)
+        _rollback_failed_run(db, scan)
+        rolled = dict(scan.raw_metadata or {})
+        scan.raw_metadata = {
+            **rolled,
+            "status": "cancelled",
+            "error": "Cancelled by user",
+        }
+        log_audit(db, "cancel", "scan", scan_id, entity_name=scan_name, org_id=scan.org_id)
+        db.commit()
+        return {"message": "Scan cancelled", "revoked_jobs": revoked, "total_jobs": len(job_ids)}
+
+    if scan.source_type == "easm":
+        from services.easm import cancel_easm_scan
+        hakuna_org_id = meta.get("hakuna_org_id")
+        run_id = meta.get("run_id")
+        remote_ok, remote_err = (False, None)
+        if hakuna_org_id and run_id:
+            remote_ok, remote_err = await cancel_easm_scan(hakuna_org_id, run_id)
+        # scan.status is the source of truth for the UI's "is this still
+        # polling?" check; raw_metadata.status alone left the row stuck on
+        # "running" after a user-initiated cancel.
+        scan.status = "cancelled"
+        scan.raw_metadata = {
+            **meta,
+            "status": "cancelled",
+            "error": "Cancelled by user" + (f" (scanner: {remote_err})" if remote_err and not remote_ok else ""),
+        }
+        log_audit(db, "cancel", "scan", scan_id, entity_name=scan_name, org_id=scan.org_id)
+        db.commit()
+        return {"message": "Scan cancelled", "scanner_cancelled": remote_ok}
+
+    raise HTTPException(400, f"Scans of type '{scan.source_type}' cannot be cancelled")
 
 
 @router.delete("/api/scans/{scan_id}")
@@ -273,10 +474,22 @@ def update_scan_schedule(
         else:
             deregister_scan(scan.id)
 
+    # Same hook for Protocol Audit scans (snmp_audit, ldap_audit, ssh_audit, ...).
+    # Without this the UI saves the cron string but nothing ever fires.
+    if (scan.scan_type or "").endswith("_audit"):
+        from services.audit_scheduler import (
+            register_scan as register_audit_scan,
+            deregister_scan as deregister_audit_scan,
+        )
+        if schedule:
+            register_audit_scan(scan.id, schedule)
+        else:
+            deregister_audit_scan(scan.id)
+
     return {
         "id": scan.id,
         "schedule": scan.schedule,
-        "next_run_at": scan.next_run_at.isoformat() if scan.next_run_at else None,
+        "next_run_at": iso_utc(scan.next_run_at),
     }
 
 
@@ -382,6 +595,7 @@ def get_remediation_queue(
 def log_automate_click(
     finding_id: int,
     db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
 ):
     finding = db.query(Finding).filter(Finding.id == finding_id).first()
     if not finding:
@@ -397,6 +611,20 @@ def log_automate_click(
     )
     db.add(click)
     db.commit()
+
+    if current_user is not None:
+        try:
+            from services import posthog_client as analytics
+            analytics.capture(current_user.id, "remediation_executed", {
+                "finding_id": finding_id,
+                "plugin_id": finding.plugin_id,
+                "plugin_name": finding.plugin_name,
+                "severity": getattr(finding, "severity", None),
+                "asset_ip": asset.ip if asset else None,
+            }, org_id=current_user.org_id)
+        except Exception:
+            pass
+
     return {"message": "Click logged", "finding_id": finding_id}
 
 

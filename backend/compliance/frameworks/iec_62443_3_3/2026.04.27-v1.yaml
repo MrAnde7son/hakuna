@@ -1,0 +1,180 @@
+# IEC 62443-3-3 — Initial OT/ICS mapping pack.
+#
+# Scope: System Requirements (SRs) under FR1 (Identification & Authentication
+# Control), FR2 (Use Control), FR3 (System Integrity), FR5 (Restricted Data
+# Flow), and FR7 (Resource Availability) that map to Hakuna's Phase 5 OT
+# audit surface (`ot_protocol`, `ot_passive`). Mappings key off
+# `finding.plugin_family` since OT findings carry the closed-vocabulary
+# value emitted by `agents/tools/emit_finding.py`.
+
+framework:
+  slug: iec_62443_3_3
+  name: IEC 62443-3-3
+  version: "1.0"
+  authority: IEC
+  published_at: 2013-08-01
+  description: |
+    IEC 62443-3-3 — System security requirements and security levels for
+    industrial automation and control systems (IACS). The ICS-flavored
+    cousin of IEC 27001; widely adopted by plant operators and OT
+    integrators globally and required by regulators in several
+    jurisdictions for SL-1 / SL-2 plant networks.
+  categories: [OT/ICS]
+  mapping_schema_version: 1
+
+release:
+  tag: "2026.04.27-v1"
+  notes: |
+    Initial IEC 62443-3-3 pack — the System Requirements that Hakuna's
+    Phase 5 OT audits (`ot_protocol`, `ot_passive`) directly evidence.
+    Manual-only governance/policy SRs (e.g. SR 1.5 software process
+    integrity) are listed without mappings so they appear in the
+    framework view as not_evaluated.
+
+controls:
+
+  # ── FR 1 — Identification & Authentication Control ─────────
+  - ref: "SR 1.1"
+    title: Human user identification and authentication
+    domain: Identification & Authentication
+    testability: automated
+    canonical_guidance: |
+      The IACS shall provide the capability to identify and authenticate
+      all human users on all interfaces. Findings against OT protocol
+      probes that succeed without authentication (Modbus FC3 / S7 read
+      SZL / EtherNet/IP ListIdentity returning device identity to an
+      anonymous TCP peer) are direct evidence the IACS is *not* enforcing
+      identification on the protocol path.
+    mappings:
+      - key: iec_62443_3_3_sr_1_1_anonymous_ot_fingerprint
+        when:
+          logic: AND
+          conditions:
+            - field: finding.plugin_family
+              op: in
+              value:
+                - "Audit: OT (active read-only)"
+                - "Audit: OT (passive listen)"
+            - field: finding.severity
+              op: gte
+              value: 2
+            - field: finding.workflow_status
+              op: neq
+              value: resolved
+
+  - ref: "SR 1.2"
+    title: Software process and device identification and authentication
+    domain: Identification & Authentication
+    testability: automated
+    canonical_guidance: |
+      The IACS shall provide the capability to identify and authenticate
+      all software processes and devices. Active OT protocol findings
+      that elicit a vendor/product/firmware identity from a device with
+      no peer-side authentication evidence the device-to-device control
+      plane lacks software/device authentication.
+    mappings:
+      - key: iec_62443_3_3_sr_1_2_active_ot_protocol_findings
+        when:
+          logic: AND
+          conditions:
+            - field: finding.plugin_family
+              op: eq
+              value: "Audit: OT (active read-only)"
+            - field: finding.workflow_status
+              op: neq
+              value: resolved
+
+  # ── FR 2 — Use Control ─────────────────────────────────────
+  - ref: "SR 2.1"
+    title: Authorization enforcement
+    domain: Use Control
+    testability: automated
+    canonical_guidance: |
+      The IACS shall provide the capability to enforce authorization on
+      all human users, software processes, and devices. Read-only
+      findings against industrial protocols where a function code
+      response is returned without authorization checks evidence missing
+      authorization enforcement.
+    mappings:
+      - key: iec_62443_3_3_sr_2_1_unauthorized_ot_read_response
+        when:
+          logic: AND
+          conditions:
+            - field: finding.plugin_family
+              op: eq
+              value: "Audit: OT (active read-only)"
+            - field: finding.severity
+              op: gte
+              value: 2
+            - field: finding.workflow_status
+              op: neq
+              value: resolved
+
+  - ref: "SR 2.4"
+    title: Mobile code
+    domain: Use Control
+    testability: manual_only
+    canonical_guidance: |
+      Mobile code (e.g. firmware reflash, OPC UA scripts) handling on
+      IACS nodes — out of scope for read-only Hakuna probes. Tracked as
+      manual-only for evidence pack completeness.
+
+  # ── FR 3 — System Integrity ────────────────────────────────
+  - ref: "SR 3.1"
+    title: Communication integrity
+    domain: System Integrity
+    testability: automated
+    canonical_guidance: |
+      The IACS shall protect the integrity of communicated information.
+      Plain-text ICS protocols (Modbus, S7, EtherNet/IP CIP, BACnet/IP,
+      etc.) lack message integrity by spec; observing them on a
+      production network is evidence the requirement is not met without
+      compensating segmentation.
+    mappings:
+      - key: iec_62443_3_3_sr_3_1_plaintext_ics_protocol_observed
+        when:
+          logic: AND
+          conditions:
+            - field: finding.plugin_family
+              op: in
+              value:
+                - "Audit: OT (active read-only)"
+                - "Audit: OT (passive listen)"
+            - field: finding.workflow_status
+              op: neq
+              value: resolved
+
+  # ── FR 5 — Restricted Data Flow ───────────────────────────
+  - ref: "SR 5.1"
+    title: Network segmentation
+    domain: Restricted Data Flow
+    testability: partial
+    canonical_guidance: |
+      The IACS shall provide the capability to logically segment control
+      networks from non-control networks. OT protocol findings sourced
+      from internet-facing assets (reachability flagged on the asset)
+      are evidence the segmentation is incomplete.
+    mappings:
+      - key: iec_62443_3_3_sr_5_1_ot_finding_internet_facing
+        when:
+          logic: AND
+          conditions:
+            - field: finding.plugin_family
+              op: in
+              value:
+                - "Audit: OT (active read-only)"
+                - "Audit: OT (passive listen)"
+            - field: inventory.is_internet_facing
+              op: is_true
+            - field: finding.workflow_status
+              op: neq
+              value: resolved
+
+  # ── FR 7 — Resource Availability ──────────────────────────
+  - ref: "SR 7.6"
+    title: Network and security configurations
+    domain: Resource Availability
+    testability: manual_only
+    canonical_guidance: |
+      Snapshot-and-recover requirements for network/security config —
+      out of scope for ad-hoc protocol probes. Tracked manually.
