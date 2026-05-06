@@ -90,6 +90,7 @@ from routes.internal_relay_routes import (
 )
 from routes.integration_builder_routes import router as integration_builder_router
 from routes.discovery_routes import router as discovery_router
+from routes.mcp_routes import router as mcp_router
 from routes.billing_routes import router as billing_router
 from routes.copilot_routes import router as copilot_router
 from routes.workflow_routes import router as workflow_router
@@ -324,6 +325,7 @@ app.include_router(internal_relay_router)
 app.include_router(cloud_relay_ws_router)
 app.include_router(integration_builder_router)
 app.include_router(discovery_router)
+app.include_router(mcp_router)
 app.include_router(billing_router)
 app.include_router(workflow_router)
 app.include_router(notification_router)

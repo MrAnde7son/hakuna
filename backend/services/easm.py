@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 from models.models import (
     Organization, Scan, Asset, Finding,
     AutomateClick, FindingOwnership, CampaignFinding, SBOMVulnerability,
-    InventorySoftware,
+    SBOMComponent, InventorySoftware,
 )
 
 from apscheduler.triggers.cron import CronTrigger
@@ -510,9 +510,22 @@ def _clear_scan_data(db: Session, scan_id: int):
             db.query(model).filter(model.finding_id.in_(finding_ids)).delete(synchronize_session=False)
     db.query(Finding).filter(Finding.scan_id == scan_id).delete(synchronize_session=False)
 
-    # Drop inventory rows the previous EASM run produced. SBOMComponent rows
-    # are rebuilt by build_sbom_from_inventory, but their source InventorySoftware
-    # would otherwise accumulate one stale set per re-run.
+    # Drop SBOM rows before InventorySoftware: SBOMComponent.software_id FKs
+    # InventorySoftware, and SBOMVulnerability.component_id FKs SBOMComponent.
+    # The earlier SBOMVulnerability sweep above only catches rows with
+    # finding_id in this scan — vulns with NULL/cross-scan finding_id are still
+    # anchored here via component_id.
+    sbom_component_ids = [
+        r[0] for r in db.query(SBOMComponent.id).filter(SBOMComponent.scan_id == scan_id).all()
+    ]
+    if sbom_component_ids:
+        db.query(SBOMVulnerability).filter(
+            SBOMVulnerability.component_id.in_(sbom_component_ids)
+        ).delete(synchronize_session=False)
+        db.query(SBOMComponent).filter(SBOMComponent.scan_id == scan_id).delete(
+            synchronize_session=False,
+        )
+
     db.query(InventorySoftware).filter(InventorySoftware.scan_id == scan_id).delete(
         synchronize_session=False,
     )

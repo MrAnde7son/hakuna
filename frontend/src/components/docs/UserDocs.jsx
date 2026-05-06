@@ -5,6 +5,7 @@ import {
   Target, Layers, Bot, BarChart3, ShieldAlert, Settings, Tag, Shield, Clock,
   Users, Workflow, Link2, FileDown, Key, Building2, Zap, AlertTriangle,
   ExternalLink, ArrowRight, CheckCircle2, Info, HelpCircle, Globe, BookMarked,
+  Network, ShieldCheck,
 } from 'lucide-react'
 
 const SECTIONS = [
@@ -14,9 +15,11 @@ const SECTIONS = [
   { id: 'dashboard', labelKey: 'docs.sections.dashboard', icon: BarChart3 },
   { id: 'assets', labelKey: 'docs.sections.assets', icon: Server },
   { id: 'findings', labelKey: 'docs.sections.findings', icon: Bug },
+  { id: 'attack-paths', labelKey: 'docs.sections.attackPaths', icon: Network },
   { id: 'inventory', labelKey: 'docs.sections.inventory', icon: Database },
   { id: 'campaigns', labelKey: 'docs.sections.campaigns', icon: Target },
   { id: 'remediation', labelKey: 'docs.sections.remediation', icon: Layers },
+  { id: 'compliance', labelKey: 'docs.sections.compliance', icon: ShieldCheck },
   { id: 'agents', labelKey: 'docs.sections.agents', icon: Bot },
   { id: 'threat-intel', labelKey: 'docs.sections.threatIntel', icon: ShieldAlert },
   { id: 'tags', labelKey: 'docs.sections.tags', icon: Tag },
@@ -175,8 +178,8 @@ function DocContent() {
         <P>Use the sidebar to navigate between the platform's main areas:</P>
         <Ul>
           <li><strong>Intelligence</strong> — Reports dashboard and Threat Intel Center.</li>
-          <li><strong>Exposure</strong> — Assets, Findings, and Inventory Explorer. Switch between scans using the <strong>Active Scan</strong> selector.</li>
-          <li><strong>Response</strong> — Remediation Campaigns, Aggregated Solutions, and AI Agents.</li>
+          <li><strong>Exposure</strong> — Assets, Findings, Attack Paths, and Inventory Explorer. Switch between scans using the <strong>Active Scan</strong> selector.</li>
+          <li><strong>Response</strong> — Remediation Campaigns, Aggregated Solutions, Compliance, and AI Agents.</li>
           <li><strong>Settings</strong> — Integrations, users, roles, SLA, risk config, tags, workflows, and more.</li>
         </Ul>
         <Tip type="info">Use the <strong>Active Scan</strong> dropdown in the sidebar to scope all views to a specific scan, or select "All Scans" for an organization-wide view.</Tip>
@@ -332,6 +335,27 @@ function DocContent() {
           <li><strong>Criticality</strong> — Assign a 1-10 criticality rating to reflect business importance.</li>
           <li><strong>Tags</strong> — Assign organizational tags for grouping and filtering.</li>
         </Ul>
+        <SubHeading>Asset Types</SubHeading>
+        <P>
+          Beyond traditional hosts, the platform tracks a wide range of asset types so the same risk model covers
+          modern attack surface — cloud workloads, identities, APIs, code, AI infrastructure, and more.
+        </P>
+        <Ul>
+          <li><Code>host</Code> — Servers, workstations, network devices (the default).</li>
+          <li><Code>web_app</Code> — Web applications and front-end properties.</li>
+          <li><Code>api_endpoint</Code> — REST/GraphQL/gRPC endpoints.</li>
+          <li><Code>cloud_instance</Code> — EC2/Compute Engine/Azure VMs and similar managed compute.</li>
+          <li><Code>cloud_storage_bucket</Code> — S3, GCS, Azure Blob, and other object stores.</li>
+          <li><Code>k8s_workload</Code> — Kubernetes deployments, pods, and services.</li>
+          <li><Code>container_image</Code> — Container images tracked from registries.</li>
+          <li><Code>identity</Code> — Users, service accounts, machine identities.</li>
+          <li><Code>code_repo</Code> — Source code repositories.</li>
+          <li><Code>ai_agent</Code>, <Code>mcp_server</Code> — AI agents and Model Context Protocol servers.</li>
+        </Ul>
+        <P>
+          You can define your own custom asset types, and configure <strong>Asset Type Rules</strong> that automatically
+          classify newly discovered assets based on hostname, services, ports, source system, or inventory data.
+        </P>
         <SubHeading>Asset Detail</SubHeading>
         <P>
           Click any asset to see its full details, including all findings, inventory data, ownership history, and blast-radius analysis.
@@ -391,6 +415,32 @@ function DocContent() {
         <Tip type="info">Scoring weights and thresholds are fully configurable under Settings &gt; Risk Configuration.</Tip>
       </Section>
 
+      {/* Attack Paths */}
+      <Section id="attack-paths">
+        <Heading id="attack-paths"><Network size={22} /> Attack Paths</Heading>
+        <P>
+          The Attack Paths page (<Code>/attack-paths</Code>) correlates findings, asset relationships, and exposure data to
+          show how an attacker could chain vulnerabilities into a multi-step path through your environment.
+        </P>
+        <SubHeading>Entry &amp; Target Reasons</SubHeading>
+        <P>Each path is annotated with <em>why</em> a node qualifies as an entry point or high-value target:</P>
+        <Ul>
+          <li><strong>Entry-point reasons</strong> — Critical/High/Medium finding, internet-facing, public exploit available.</li>
+          <li><strong>Target reasons</strong> — Domain controller, internet-facing, hosts a critical finding.</li>
+        </Ul>
+        <SubHeading>Running Correlation</SubHeading>
+        <P>
+          Click <strong>Run Correlation</strong> to (re)build paths from the current finding and asset graph.
+          Long-running correlations execute as background jobs and stream status updates into the page.
+        </P>
+        <SubHeading>Approvals</SubHeading>
+        <P>
+          Some inferred path edges (e.g. cross-asset trust assumptions) require human review. Pending approvals appear in a side panel
+          where reviewers can accept or reject each candidate edge before it's promoted into the live attack graph.
+        </P>
+        <Tip type="info">Use Attack Paths together with the Blast Radius view on a single asset to understand both lateral movement <em>into</em> and <em>out of</em> a node.</Tip>
+      </Section>
+
       {/* Inventory */}
       <Section id="inventory">
         <Heading id="inventory"><Database size={22} /> Inventory Explorer</Heading>
@@ -411,6 +461,7 @@ function DocContent() {
           <li><strong>Logged-On Users</strong> — Currently or recently logged-on users.</li>
           <li><strong>Certificates</strong> — SSL/TLS certificates with expiry dates.</li>
           <li><strong>Security Controls</strong> — Antivirus, firewall, and security products detected.</li>
+          <li><strong>Security Coverage</strong> — Roll-up of which assets have endpoint security controls deployed and which have gaps.</li>
           <li><strong>Computers</strong> — Domain computer objects.</li>
           <li><strong>Password Policies</strong> — Password complexity and expiry settings.</li>
           <li><strong>Databases</strong> — Database instances (SQL Server, Oracle, MySQL, etc.).</li>
@@ -419,6 +470,7 @@ function DocContent() {
           <li><strong>Environment Variables</strong> — System environment variables.</li>
           <li><strong>Domain Trusts</strong> — Active Directory trust relationships.</li>
           <li><strong>AI Tools</strong> — AI/ML tools and frameworks detected on assets.</li>
+          <li><strong>API Endpoints</strong> — Discovered REST/GraphQL endpoints with authentication and exposure metadata.</li>
         </Ul>
         <P>
           Each category supports filtering by scan and asset. All inventory data is exportable to CSV or JSON.
@@ -444,6 +496,10 @@ function DocContent() {
           <li><strong>Resurfaced & Regressions</strong> — Previously resolved findings that came back. Often indicates incomplete fixes.</li>
           <li><strong>Zero-Day Exposure</strong> — Assets affected by zero-days with no vendor patch yet. Requires compensating controls.</li>
           <li><strong>Ransomware Exposure</strong> — High/Critical findings with known exploits and high EPSS probability — targets ransomware operators actively use for initial access.</li>
+          <li><strong>Expired &amp; Expiring Certificates</strong> — SSL/TLS certificates that have expired or are nearing expiration. Drives proactive renewal before outages or browser warnings.</li>
+          <li><strong>SIEM Alert Response</strong> — Assets with active SIEM alerts that also carry Critical/High findings — correlates detection signals with known exposure.</li>
+          <li><strong>Internet-Facing Under Attack</strong> — Internet-facing assets generating SIEM alerts plus Critical/High findings. The highest-risk combination of exposure and active threat signals.</li>
+          <li><strong>High Event Volume Assets</strong> — Assets generating an unusually high volume of SIEM events in the last 24 hours alongside known vulnerabilities — potential active exploitation.</li>
           <li><strong>Blank</strong> — Start from scratch with a custom condition builder.</li>
         </Ul>
         <SubHeading>Creating a Campaign</SubHeading>
@@ -485,6 +541,36 @@ function DocContent() {
         <Tip type="success">Use Aggregated Solutions to identify "quick wins" — single actions that resolve many vulnerabilities at once.</Tip>
       </Section>
 
+      {/* Compliance */}
+      <Section id="compliance">
+        <Heading id="compliance"><ShieldCheck size={22} /> Compliance</Heading>
+        <P>
+          The Compliance page (<Code>/compliance</Code>) maps your vulnerability and inventory data onto compliance frameworks
+          (PCI-DSS, SOC 2, NIST CSF, CIS, and any custom YAML pack you ship under <Code>backend/compliance/frameworks/</Code>).
+        </P>
+        <SubHeading>Frameworks</SubHeading>
+        <Ul>
+          <li><strong>Subscribe</strong> — Activate a framework to start tracking control state across your environment.</li>
+          <li><strong>Scope</strong> — Limit a subscription to a tag or asset subset so each business unit can be assessed independently.</li>
+          <li><strong>Import / export</strong> — Ship custom frameworks as YAML and load them via the import action; export your customizations to share across environments.</li>
+        </Ul>
+        <SubHeading>Control States</SubHeading>
+        <Ul>
+          <li><strong>Passing</strong> — All evidence checks succeed.</li>
+          <li><strong>Failing</strong> — One or more checks fail.</li>
+          <li><strong>Partial</strong> — Some assets in scope satisfy the control, others do not.</li>
+          <li><strong>Compensating Control</strong> — Failure has been accepted with a documented compensating control (e.g. WAF rule, network ACL).</li>
+          <li><strong>Not Applicable</strong> — Control does not apply to the current scope.</li>
+          <li><strong>Not Evaluated</strong> — Insufficient data to render a verdict.</li>
+        </Ul>
+        <SubHeading>Reports &amp; Campaigns</SubHeading>
+        <Ul>
+          <li><strong>Reports</strong> — Generate point-in-time compliance reports (downloadable) for auditors and stakeholders.</li>
+          <li><strong>Campaign from Framework</strong> — Spin a remediation campaign directly from a framework's failing controls so the workflow loops back into the response side of the platform.</li>
+        </Ul>
+        <Tip type="info">Compensating controls require a written rationale. The audit log captures who marked which control compensating and when — useful evidence during external audits.</Tip>
+      </Section>
+
       {/* AI Agents */}
       <Section id="agents">
         <Heading id="agents"><Bot size={22} /> AI Agents</Heading>
@@ -499,17 +585,32 @@ function DocContent() {
           <li><strong>Guardrails</strong> — Set max steps and enforce read-only mode to prevent unintended changes.</li>
         </Ul>
         <SubHeading>Templates</SubHeading>
-        <P>Start from pre-built templates for common use cases:</P>
+        <P>
+          The catalog ships with 20+ pre-built agent templates spanning daily operations, audit, compliance,
+          SIEM correlation, and autonomous validation. Highlights:
+        </P>
         <Ul>
-          <li><strong>Daily Triage Report</strong> — Summarizes new findings and priority changes.</li>
-          <li><strong>Patch Tuesday Prep</strong> — Identifies Microsoft patches needed across your environment.</li>
-          <li><strong>Executive Summary</strong> — Generates a management-ready security overview.</li>
-          <li><strong>SLA Watchdog</strong> — Monitors SLA breaches and sends alerts.</li>
-          <li><strong>Attack Surface Mapper</strong> — Analyzes inventory data for exposure patterns.</li>
-          <li><strong>Auto-Ticket Creator</strong> — Creates tickets in Jira/ServiceNow for high-priority findings.</li>
-          <li><strong>Remediation Campaign Builder</strong> — Proposes and creates campaigns automatically.</li>
-          <li><strong>Threat Intelligence Analyst</strong> — Correlates findings with threat intelligence data.</li>
-          <li><strong>Auto-Tagger</strong> — Suggests and applies tags based on finding patterns.</li>
+          <li><strong>Daily Triage Report</strong> — Morning rundown of new criticals, SLA breaches, and quick wins.</li>
+          <li><strong>Patch Tuesday Prep</strong> — Groups missing patches by KB, identifies impacted assets, and prioritizes patching order.</li>
+          <li><strong>Executive Summary</strong> — Non-technical executive write-up with risk posture, trends, and key metrics.</li>
+          <li><strong>SLA Watchdog</strong> — Monitors deadlines, alerts on breaches, and suggests escalation actions.</li>
+          <li><strong>Attack Surface Mapper</strong> — Maps internet-facing hosts, admin accounts, open shares, and weak certs.</li>
+          <li><strong>Auto-Ticket Creator</strong> — Creates Jira/ServiceNow tickets for high-priority findings with proper priority mapping.</li>
+          <li><strong>Remediation Campaign Builder</strong> — Builds targeted campaigns based on risk criteria and team ownership.</li>
+          <li><strong>Threat Intelligence Analyst</strong> — Correlates threat intel with your scan data to identify active campaigns hitting your environment.</li>
+          <li><strong>Auto-Tagger</strong> &amp; <strong>Auto-Tag Rule Builder</strong> — Classify scan data on the fly, then promote the patterns into persistent rules.</li>
+          <li><strong>Asset Classifier</strong> — Builds a tagging taxonomy (OS, environment, network segment, role) and tags every asset.</li>
+          <li><strong>Scan Coverage Auditor</strong> — Surfaces assets not scanned recently, credential failures, and scan gaps.</li>
+          <li><strong>Regression Detector</strong> &amp; <strong>Change Window Validator</strong> — Catch findings that came back, and confirm patches actually landed across change windows.</li>
+          <li><strong>Exception / Risk Acceptance Reviewer</strong> — Audits expiring risk acceptances, false positives, and exception hygiene.</li>
+          <li><strong>Asset Owner Accountability Report</strong> — Per-team scorecards: open vulns, SLA compliance, resolution rates, remediation velocity.</li>
+          <li><strong>Zero-Day Exposure Check</strong> — Rapid blast-radius assessment when a new CVE drops.</li>
+          <li><strong>Noise Reducer / Tuning Advisor</strong> — Surfaces low-value findings driving noise and recommends scan tuning.</li>
+          <li><strong>Compliance Auditor</strong> — Pre-audit gap assessment mapping VM posture to PCI-DSS, SOC 2, NIST CSF, and CIS controls.</li>
+          <li><strong>Dedup Analyst</strong> — Resolves duplicate or overlapping findings across scans (same CVE, multiple plugins, superseded patches).</li>
+          <li><strong>SOC Triage Analyst</strong> &amp; <strong>Detection Engineer</strong> — Investigate SIEM alerts against vulnerability exposure, and tune detection rules to cut false positives.</li>
+          <li><strong>Escalation Detective</strong> — Investigates why specific vulns persistently fail remediation — chronic offenders, owner gaps, root causes.</li>
+          <li><strong>Vulnerability Validator</strong> — Autonomous validator that runs safe probes to confirm or refute exploitability for high/critical findings.</li>
         </Ul>
         <SubHeading>Scheduling</SubHeading>
         <P>

@@ -17,7 +17,10 @@ from datetime import datetime
 
 import pytest
 
-from models.models import Asset, AssetObservation, Scan
+from models.models import (
+    Asset, AssetObservation, InventorySoftware, SBOMComponent,
+    SBOMVulnerability, Scan,
+)
 from services.easm import _clear_scan_data, _import_assets_for_domain
 
 
@@ -128,6 +131,49 @@ def test_clear_scan_deletes_easm_only_assets(db_session, easm_scan):
 
     gone = db_session.query(Asset).filter(Asset.id == asset_id).first()
     assert gone is None, "EASM-only asset should be deleted by _clear_scan_data"
+
+
+def test_clear_scan_drops_sbom_chain_before_inventory(db_session, easm_scan):
+    """Regression: SBOMComponent.software_id FKs InventorySoftware. A re-run
+    must clear the SBOM chain before deleting InventorySoftware, otherwise
+    the DELETE raises ForeignKeyViolation (production incident 2026-05-06)."""
+    asset = _make_asset(
+        db_session, easm_scan,
+        fqdn="sbom.hakunahq.com", ip="9.9.9.9",
+        source_systems=["easm"],
+    )
+
+    sw = InventorySoftware(
+        scan_id=easm_scan.id, asset_id=asset.id,
+        name="nginx", version="1.18.0", source_plugin="easm_cpe",
+    )
+    db_session.add(sw)
+    db_session.flush()
+
+    component = SBOMComponent(
+        scan_id=easm_scan.id, asset_id=asset.id, software_id=sw.id,
+        name="nginx", version="1.18.0",
+    )
+    db_session.add(component)
+    db_session.flush()
+
+    db_session.add(SBOMVulnerability(
+        component_id=component.id, cve_id="CVE-2021-23017", severity=3,
+    ))
+    db_session.flush()
+
+    _clear_scan_data(db_session, easm_scan.id)
+    db_session.flush()
+
+    assert db_session.query(InventorySoftware).filter(
+        InventorySoftware.scan_id == easm_scan.id
+    ).count() == 0
+    assert db_session.query(SBOMComponent).filter(
+        SBOMComponent.scan_id == easm_scan.id
+    ).count() == 0
+    assert db_session.query(SBOMVulnerability).filter(
+        SBOMVulnerability.component_id == component.id
+    ).count() == 0
 
 
 def test_import_accumulates_easm_source_without_clobber(db_session, easm_scan):
