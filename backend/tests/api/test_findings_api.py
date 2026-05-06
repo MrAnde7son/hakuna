@@ -29,6 +29,35 @@ class TestListFindings:
         resp = authed_client.get("/api/findings?search=Critical")
         assert resp.status_code == 200
 
+    def test_list_findings_ids_only(self, authed_client, test_findings):
+        """ids_only=true returns IDs without heavy joinedload — used by Select All Matching."""
+        resp = authed_client.get("/api/findings?ids_only=true")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "ids" in data
+        assert "total" in data
+        assert "capped" in data
+        assert "findings" not in data
+        assert isinstance(data["ids"], list)
+        assert all(isinstance(i, int) for i in data["ids"])
+        assert data["total"] == len(data["ids"])
+        assert data["capped"] is False
+
+    def test_list_findings_ids_only_respects_filters(self, authed_client, test_findings):
+        """ids_only must apply the same filters as the list endpoint."""
+        full = authed_client.get("/api/findings?severity=4&ids_only=true").json()
+        filtered = authed_client.get("/api/findings?severity=4").json()
+        assert set(full["ids"]) == {f["id"] for f in filtered["findings"]}
+
+    def test_list_findings_ids_filter(self, authed_client, test_findings):
+        """ids=1,2,3 filter narrows the result set to that explicit list."""
+        wanted = [f.id for f in test_findings[:2]]
+        resp = authed_client.get(f"/api/findings?ids={','.join(str(i) for i in wanted)}")
+        assert resp.status_code == 200
+        data = resp.json()
+        returned = {f["id"] for f in data["findings"]}
+        assert returned == set(wanted)
+
 
 class TestFindingDetail:
     def test_get_finding(self, authed_client, test_findings):

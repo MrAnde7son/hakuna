@@ -4,11 +4,11 @@ import useURLFilters from '../../hooks/useURLFilters.js'
 import { useTranslation } from 'react-i18next'
 import { Bug, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Tag, Clock, Download, Bookmark, SlidersHorizontal, X as XIcon, Zap, Filter } from 'lucide-react'
 import { useScan, useIsMobile } from '../../App.jsx'
-import { getFindings, getPluginFamilies, getAssets, getTags, assignTags, unassignTags, exportDownload, advancedSearch, setFindingOwnership, createCampaign, listCustomFieldDefinitions } from '../../api.js'
+import { getFindings, getFindingIds, getPluginFamilies, getAssets, getTags, assignTags, unassignTags, exportDownload, advancedSearch, setFindingOwnership, createCampaign, listCustomFieldDefinitions } from '../../api.js'
 import useScanProgress from '../../hooks/useScanProgress.js'
 import {
   Card, SeverityBadge, ScoreBar, Table, PageHeader, Select, MultiSelect,
-  Spinner, EmptyState, Button, EffortBadge, ResolvedOwnerBadge, Pill, TagPill, TagFilterBar, TagPicker, ColumnSelector, SaveAsRuleModal, OwnershipEditPopover, SourceDots, SourceFilter, ErrorBanner, SkeletonTable, useToast
+  Spinner, EmptyState, Button, EffortBadge, ResolvedOwnerBadge, Pill, TagPill, TagFilterBar, TagPicker, ColumnSelector, SaveAsRuleModal, OwnershipEditPopover, SourceDots, SourceFilter, ErrorBanner, SkeletonTable, SelectAllBanner, useToast
 } from '../shared/ui.jsx'
 import RuleBuilder from '../campaigns/RuleBuilder.jsx'
 import { filtersToConditions } from '../../utils/filtersToConditions.js'
@@ -221,34 +221,44 @@ function BulkTagModal({ findingIds, onClose, onDone }) {
   )
 }
 
-function BulkFindingCampaignModal({ selectedFindings, scanId, onClose, onCreated }) {
+function BulkFindingCampaignModal({ selectedFindings, selectedIds, acrossPages, scanId, onClose, onCreated }) {
   const toast = useToast()
   const [name, setName] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState(null)
+  const totalSelected = acrossPages ? (selectedIds?.size || 0) : selectedFindings.length
 
   const handleCreate = async () => {
     if (!name.trim()) { setError('Name is required'); return }
     setSaving(true); setError(null)
     try {
-      // Deduplicate plugin IDs and build valid rule-engine conditions
-      const uniquePluginIds = [...new Set(selectedFindings.map(f => f.plugin_id).filter(Boolean))]
-      const pluginConditions = uniquePluginIds.map(pid => ({ field: 'finding.plugin_id', op: 'eq', value: String(pid) }))
-      // Also scope to the specific asset IPs/hostnames
-      const assetConditions = selectedFindings.reduce((acc, f) => {
-        const key = f.asset_ip || f.asset_hostname
-        if (key && !acc.find(c => c.value === key)) {
-          acc.push({ field: f.asset_ip ? 'ip' : 'hostname', op: 'eq', value: key })
-        }
-        return acc
-      }, [])
-      const conditions = pluginConditions.length > 0 ? pluginConditions : assetConditions
-      if (conditions.length === 0) { setError('Could not build query from selected findings'); setSaving(false); return }
+      let conditions
+      if (acrossPages && selectedIds?.size) {
+        // Cross-page selection: we don't have all the finding records on hand,
+        // so pin the campaign to the explicit ID set via the rule-engine
+        // `finding.id` condition (comma-separated values, see rule_engine.py).
+        const idCsv = [...selectedIds].join(',')
+        conditions = [{ field: 'finding.id', op: 'eq', value: idCsv }]
+      } else {
+        // Deduplicate plugin IDs and build valid rule-engine conditions
+        const uniquePluginIds = [...new Set(selectedFindings.map(f => f.plugin_id).filter(Boolean))]
+        const pluginConditions = uniquePluginIds.map(pid => ({ field: 'finding.plugin_id', op: 'eq', value: String(pid) }))
+        // Also scope to the specific asset IPs/hostnames
+        const assetConditions = selectedFindings.reduce((acc, f) => {
+          const key = f.asset_ip || f.asset_hostname
+          if (key && !acc.find(c => c.value === key)) {
+            acc.push({ field: f.asset_ip ? 'ip' : 'hostname', op: 'eq', value: key })
+          }
+          return acc
+        }, [])
+        conditions = pluginConditions.length > 0 ? pluginConditions : assetConditions
+      }
+      if (!conditions || conditions.length === 0) { setError('Could not build query from selected findings'); setSaving(false); return }
       const result = await createCampaign({
         name: name.trim(),
         scan_id: scanId || null,
         query: conditions,
-        query_logic: 'OR',
+        query_logic: acrossPages ? 'AND' : 'OR',
         status: 'planned',
       })
       toast.success('Campaign created')
@@ -271,7 +281,7 @@ function BulkFindingCampaignModal({ selectedFindings, scanId, onClose, onCreated
       }}>
         <div style={{ fontSize: 15, fontWeight: 700 }}>
           <Zap size={15} style={{ verticalAlign: 'middle', marginRight: 6, color: 'var(--accent)' }} />
-          Create Campaign from {selectedFindings.length} finding{selectedFindings.length !== 1 ? 's' : ''}
+          Create Campaign from {totalSelected} finding{totalSelected !== 1 ? 's' : ''}
         </div>
         <div>
           <label style={{ fontSize: 11, color: 'var(--text-muted)', display: 'block', marginBottom: 4 }}>Campaign name</label>
@@ -432,6 +442,12 @@ export default function FindingExplorer() {
   const [assets, setAssets] = useState([])
   const [openGroups, setOpenGroups] = useState({})
   const [selectedIds, setSelectedIds] = useState(new Set())
+  // True when selectedIds was populated by "Select all matching" — i.e., it
+  // includes findings beyond the current page. Cleared whenever the user
+  // touches an individual checkbox or the page resets.
+  const [selectedAcrossPages, setSelectedAcrossPages] = useState(false)
+  const [selectAllLoading, setSelectAllLoading] = useState(false)
+  const [selectAllNotice, setSelectAllNotice] = useState(null)
   const [showBulkTag, setShowBulkTag] = useState(false)
   const [showSaveAs, setShowSaveAs] = useState(false)
   const [showBulkCampaign, setShowBulkCampaign] = useState(false)
@@ -699,12 +715,103 @@ export default function FindingExplorer() {
     [advancedMode, advancedConditions, search, severity, family, hasExploit, cveFilter, effortLevel, tagFilter]
   )
 
-  const toggleSelect = (id) => setSelectedIds(prev => {
-    const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next
-  })
-  const toggleSelectAll = () => setSelectedIds(prev =>
-    prev.size === findings.length ? new Set() : new Set(findings.map(f => f.id))
-  )
+  const toggleSelect = (id) => {
+    // Any individual toggle invalidates the across-pages flag.
+    setSelectedAcrossPages(false)
+    setSelectAllNotice(null)
+    setSelectedIds(prev => {
+      const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next
+    })
+  }
+  const toggleSelectAll = () => {
+    setSelectedAcrossPages(false)
+    setSelectAllNotice(null)
+    setSelectedIds(prev =>
+      prev.size === findings.length ? new Set() : new Set(findings.map(f => f.id))
+    )
+  }
+  const clearSelection = () => {
+    setSelectedIds(new Set())
+    setSelectedAcrossPages(false)
+    setSelectAllNotice(null)
+  }
+  // Re-fetch finding IDs across all pages matching the current filters and
+  // mark the selection as cross-page. Backend caps at 25k.
+  const selectAllMatching = useCallback(async () => {
+    setSelectAllLoading(true)
+    try {
+      let res
+      if (advancedMode) {
+        res = await advancedSearch({
+          query: advancedConditions,
+          query_logic: advancedLogic,
+          scan_id: activeScanId,
+          type: 'finding',
+          ids_only: true,
+        })
+      } else {
+        const params = {
+          scan_id: activeScanId,
+          asset_id: assetId || null,
+          severity: severity !== null ? severity : undefined,
+          plugin_family: family,
+          has_exploit: hasExploit,
+          sla_status: slaStatus,
+          effort_level: effortLevel,
+          cve: cveFilter,
+          is_kev: isKev,
+          ransomware_linked: ransomwareLinked,
+          trending_in_news: trendingInNews,
+          has_ttps: hasTtps,
+          tactic: tacticFilter,
+          technique_id: techniqueFilter,
+          threat_group_id: threatGroupId,
+          workflow_status: workflowStatus,
+          has_exception: hasException,
+          has_ticket: hasTicket,
+          ticket_status: ticketStatus,
+          control_mitigation_status: urlFilters.control_status || null,
+          search: search || null,
+          source: sourceFilter || null,
+          product: productFilter || null,
+          cpe: cpeFilter2 || null,
+          validation: validationFilter || null,
+          hide_validated_fps: showValidatedFps ? 'false' : null,
+          corroborated: corroboratedFilter === true ? 'true' : null,
+          created_after: createdAfter || undefined,
+        }
+        if (tagFilter.length) {
+          params.tags = tagFilter.map(t => t.label || `${t.category}:${t.value}`).join(',')
+          params.tag_logic = tagLogic
+        }
+        res = await getFindingIds(params)
+      }
+      const ids = res?.ids || []
+      setSelectedIds(new Set(ids))
+      setSelectedAcrossPages(true)
+      if (res?.capped) {
+        setSelectAllNotice(t('findings.selectAllCapped', { count: res.cap.toLocaleString() }))
+      } else {
+        setSelectAllNotice(null)
+      }
+      capture('findings_select_all_matching', { count: ids.length, capped: !!res?.capped })
+    } catch (e) {
+      setSelectAllNotice(e?.message || 'Failed to select all matching findings.')
+    } finally {
+      setSelectAllLoading(false)
+    }
+  }, [
+    advancedMode, advancedConditions, advancedLogic, activeScanId, assetId,
+    severity, family, hasExploit, slaStatus, effortLevel, cveFilter, isKev,
+    ransomwareLinked, trendingInNews, hasTtps, tacticFilter, techniqueFilter,
+    threatGroupId, workflowStatus, hasException, hasTicket, ticketStatus,
+    urlFilters.control_status, search, sourceFilter, productFilter, cpeFilter2,
+    validationFilter, showValidatedFps, corroboratedFilter, createdAfter,
+    tagFilter, tagLogic, t,
+  ])
+  // Page changes invalidate the visible "All on this page" relationship —
+  // clear the across-pages flag so the banner can re-prompt.
+  useEffect(() => { setSelectedAcrossPages(false); setSelectAllNotice(null) }, [page, pageSize])
   const handleUntagFinding = async (findingId, tag) => {
     await unassignTags({ tag_ids: [tag.tag_id], finding_ids: [findingId] })
     load()
@@ -713,7 +820,9 @@ export default function FindingExplorer() {
   const allColumns = [
     {
       key: '_select', label: (
-        <input type="checkbox" checked={findings.length > 0 && selectedIds.size === findings.length} onChange={toggleSelectAll} />
+        <input type="checkbox"
+          checked={findings.length > 0 && findings.every(f => selectedIds.has(f.id))}
+          onChange={toggleSelectAll} />
       ), width: '36px',
       render: (_, row) => (
         <input type="checkbox" checked={selectedIds.has(row.id)} onChange={() => toggleSelect(row.id)} onClick={e => e.stopPropagation()} />
@@ -1282,6 +1391,18 @@ export default function FindingExplorer() {
       {/* Advanced filters row removed — Tickets & Control Status moved to main filter bar, Advanced button opens Rule Builder directly */}
 
       <ErrorBanner error={fetchError} onRetry={advancedMode ? runAdvancedSearch : load} onDismiss={() => setFetchError(null)} />
+      <SelectAllBanner
+        pageCount={findings.length}
+        total={total}
+        selectedCount={selectedIds.size}
+        acrossPages={selectedAcrossPages}
+        loading={selectAllLoading}
+        notice={selectAllNotice}
+        onSelectAll={selectAllMatching}
+        onClear={clearSelection}
+        t={t}
+        entity="finding"
+      />
       {(loading || advancedLoading) ? <SkeletonTable rows={10} columns={6} /> : (
         findings.length === 0 ? (
           <EmptyState icon={Bug}
@@ -1353,16 +1474,18 @@ export default function FindingExplorer() {
         <BulkTagModal
           findingIds={[...selectedIds]}
           onClose={() => setShowBulkTag(false)}
-          onDone={() => { setShowBulkTag(false); setSelectedIds(new Set()); load() }}
+          onDone={() => { setShowBulkTag(false); clearSelection(); load() }}
         />
       )}
 
       {showBulkCampaign && (
         <BulkFindingCampaignModal
           selectedFindings={findings.filter(f => selectedIds.has(f.id))}
+          selectedIds={selectedIds}
+          acrossPages={selectedAcrossPages}
           scanId={activeScanId}
           onClose={() => setShowBulkCampaign(false)}
-          onCreated={(campaign) => { setShowBulkCampaign(false); setSelectedIds(new Set()); navigate(`/campaigns/${campaign.id}`) }}
+          onCreated={(campaign) => { setShowBulkCampaign(false); clearSelection(); navigate(`/campaigns/${campaign.id}`) }}
         />
       )}
 

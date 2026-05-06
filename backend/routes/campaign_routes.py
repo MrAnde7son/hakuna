@@ -95,6 +95,7 @@ class AdvancedSearchBody(BaseModel):
     type: str = "finding"   # "finding" | "asset"
     page: int = 1
     page_size: int = 50
+    ids_only: bool = False
 
 
 # ─── Helpers ───
@@ -358,8 +359,17 @@ def advanced_search(
     from services.blast_radius import resolve_dc_asset_ids as _resolve_dc_asset_ids
     results = cq.run_query(db, body.query, body.query_logic, body.scan_id, org_ids=org_ids)
 
+    SELECT_ALL_CAP = 25000
+
     if body.type == "asset":
         asset_ids = [r["asset"].id for r in results]
+        if body.ids_only:
+            return {
+                "total": len(asset_ids),
+                "ids": asset_ids[:SELECT_ALL_CAP],
+                "capped": len(asset_ids) > SELECT_ALL_CAP,
+                "cap": SELECT_ALL_CAP,
+            }
         tag_map = tag_engine.get_asset_tags(asset_ids, db)
         dc_asset_ids = _resolve_dc_asset_ids(db, restrict_to_asset_ids=asset_ids) if asset_ids else set()
         assets_out = []
@@ -380,6 +390,16 @@ def advanced_search(
     # deduplicate (same finding can only appear once since each asset is unique)
     all_findings.sort(key=lambda f: f.priority_score or 0, reverse=True)
     total = len(all_findings)
+
+    if body.ids_only:
+        finding_ids_all = [f.id for f in all_findings]
+        return {
+            "total": total,
+            "ids": finding_ids_all[:SELECT_ALL_CAP],
+            "capped": total > SELECT_ALL_CAP,
+            "cap": SELECT_ALL_CAP,
+        }
+
     start = (body.page - 1) * body.page_size
     page_findings = all_findings[start:start + body.page_size]
 

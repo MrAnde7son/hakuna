@@ -741,6 +741,62 @@ export function EmptyState({ icon: Icon, title, sub, children }) {
   )
 }
 
+// Inline notice that appears above a paginated list when the entire visible
+// page is selected and additional matching rows exist beyond the page. Lets
+// the user expand the selection to all matches with one click — the parent
+// is responsible for fetching the cross-page IDs.
+export function SelectAllBanner({
+  pageCount, total, selectedCount, acrossPages, loading, notice,
+  onSelectAll, onClear, t, entity = 'finding',
+}) {
+  const fullPage = pageCount > 0 && selectedCount >= pageCount && !acrossPages
+  const showOffer = fullPage && total > pageCount
+  if (!showOffer && !acrossPages && !notice) return null
+  const ns = entity === 'asset' ? 'assets' : 'findings'
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10,
+      padding: '8px 12px', marginBottom: 12, borderRadius: 6,
+      background: 'var(--accent)10', border: '1px solid var(--accent)40',
+      fontSize: 12, color: 'var(--text-secondary)', flexWrap: 'wrap',
+    }}>
+      {acrossPages ? (
+        <>
+          <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>
+            {t(`${ns}.selectedAcrossPages`, { count: selectedCount.toLocaleString() })}
+          </span>
+          {notice && <span style={{ color: 'var(--warning)' }}>{notice}</span>}
+          <button
+            onClick={onClear}
+            style={{
+              background: 'none', border: 'none', color: 'var(--accent)',
+              cursor: 'pointer', fontSize: 12, fontWeight: 600, padding: 0,
+              textDecoration: 'underline',
+            }}
+          >
+            {t(`${ns}.clearSelection`)}
+          </button>
+        </>
+      ) : (
+        <>
+          <span>{t(`${ns}.selectAllOnPage`, { count: pageCount })}</span>
+          <button
+            onClick={onSelectAll}
+            disabled={loading}
+            style={{
+              background: 'none', border: 'none', color: 'var(--accent)',
+              cursor: loading ? 'wait' : 'pointer', fontSize: 12, fontWeight: 600,
+              padding: 0, textDecoration: 'underline', opacity: loading ? 0.6 : 1,
+            }}
+          >
+            {loading ? '…' : t(`${ns}.selectAllMatching`, { count: total.toLocaleString() })}
+          </button>
+        </>
+      )}
+    </div>
+  )
+}
+
 export function EffortBadge({ effort }) {
   const MAP = {
     quick_win: { label: 'Quick Win', color: 'var(--success)' },

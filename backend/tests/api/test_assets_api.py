@@ -25,6 +25,24 @@ class TestListAssets:
         resp = authed_client.get("/api/assets?sort_by=ip&order=asc")
         assert resp.status_code == 200
 
+    def test_list_assets_ids_only(self, authed_client, test_assets):
+        """ids_only=true returns IDs only — used by Select All Matching."""
+        resp = authed_client.get("/api/assets?ids_only=true")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "ids" in data
+        assert "assets" not in data
+        assert data["total"] == len(data["ids"])
+        assert data["capped"] is False
+
+    def test_list_assets_ids_filter(self, authed_client, test_assets):
+        """ids=1,2,3 filter narrows the result set to that explicit list."""
+        wanted = [a.id for a in test_assets[:2]]
+        resp = authed_client.get(f"/api/assets?ids={','.join(str(i) for i in wanted)}")
+        assert resp.status_code == 200
+        returned = {a["id"] for a in resp.json()["assets"]}
+        assert returned == set(wanted)
+
 
 class TestAssetDetail:
     def test_get_asset(self, authed_client, test_assets):

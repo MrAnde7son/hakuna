@@ -4,9 +4,9 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import useURLFilters from '../../hooks/useURLFilters.js'
 import { Server, RefreshCw, Edit2, Tag, X, Crosshair, Download, Bookmark, SlidersHorizontal, X as XIcon, Database, MoreHorizontal, AlertTriangle, ChevronLeft, ChevronRight, Zap, Radar, Filter, ChevronDown, ChevronUp } from 'lucide-react'
 import { useScan, useIsMobile } from '../../App.jsx'
-import { getAssets, getAssetTypes, updateAsset, getBlastRadiusBulk, assignTags, unassignTags, confirmAssetOwner, exportDownload, advancedSearch, setAssetOwnership, getSBOMComponents, syncEasmAssets, getEasmStatus, getTags, createCampaign, startVmScan, listCustomFieldDefinitions } from '../../api.js'
+import { getAssets, getAssetIds, getAssetTypes, updateAsset, getBlastRadiusBulk, assignTags, unassignTags, confirmAssetOwner, exportDownload, advancedSearch, setAssetOwnership, getSBOMComponents, syncEasmAssets, getEasmStatus, getTags, createCampaign, startVmScan, listCustomFieldDefinitions } from '../../api.js'
 import useScanProgress from '../../hooks/useScanProgress.js'
-import { Card, ScoreBar, Table, PageHeader, Select, Spinner, EmptyState, Button, TagPill, TagFilterBar, TagPicker, OwnerBadge, ConfidenceDot, ColumnSelector, SaveAsRuleModal, OwnershipEditPopover, ContextEditPopover, SourceDots, SourceFilter, ErrorBanner, SkeletonTable } from '../shared/ui.jsx'
+import { Card, ScoreBar, Table, PageHeader, Select, Spinner, EmptyState, Button, TagPill, TagFilterBar, TagPicker, OwnerBadge, ConfidenceDot, ColumnSelector, SaveAsRuleModal, OwnershipEditPopover, ContextEditPopover, SourceDots, SourceFilter, ErrorBanner, SkeletonTable, SelectAllBanner } from '../shared/ui.jsx'
 import RuleBuilder from '../campaigns/RuleBuilder.jsx'
 import { capture } from '../../utils/analytics.js'
 import { filtersToConditions } from '../../utils/filtersToConditions.js'
@@ -246,18 +246,40 @@ function BulkTagModal({ assetIds, onClose, onDone }) {
   )
 }
 
+// Hydrate asset records by ID in chunks. The /api/assets?ids=... endpoint
+// uses a GET query string, which servers commonly cap around 8KB — large
+// selections (e.g., 5000+ IDs) would silently truncate. Splitting into
+// ~500-ID chunks keeps each URL well under that ceiling.
+const HYDRATE_CHUNK_SIZE = 500
+async function hydrateAssetsByIds(ids) {
+  const out = []
+  for (let i = 0; i < ids.length; i += HYDRATE_CHUNK_SIZE) {
+    const chunk = ids.slice(i, i + HYDRATE_CHUNK_SIZE)
+    const data = await getAssets({ ids: chunk.join(','), page_size: chunk.length })
+    out.push(...(data.assets || []))
+  }
+  return out
+}
+
 // Bulk campaign modal
-function BulkCampaignModal({ selectedAssets, scanId, onClose, onCreated }) {
+function BulkCampaignModal({ selectedAssets, selectedIds, acrossPages, scanId, onClose, onCreated }) {
   const [name, setName] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState(null)
+  const totalSelected = acrossPages ? (selectedIds?.size || 0) : selectedAssets.length
 
   const handleCreate = async () => {
     if (!name.trim()) { setError('Name is required'); return }
     setSaving(true); setError(null)
     try {
+      // For cross-page selections, hydrate full records by ID list so we can
+      // emit ip/hostname/fqdn conditions the rule engine understands.
+      let assetsForConditions = selectedAssets
+      if (acrossPages && selectedIds?.size && selectedIds.size > selectedAssets.length) {
+        assetsForConditions = await hydrateAssetsByIds([...selectedIds])
+      }
       // Build valid rule-engine conditions using ip (preferred) or hostname
-      const conditions = selectedAssets.map(a => {
+      const conditions = assetsForConditions.map(a => {
         const target = getAssetTarget(a)
         if (!target) return null
         const field = a.ip ? 'ip' : a.hostname ? 'hostname' : 'fqdn'
@@ -290,7 +312,7 @@ function BulkCampaignModal({ selectedAssets, scanId, onClose, onCreated }) {
       }}>
         <div style={{ fontSize: 15, fontWeight: 700 }}>
           <Zap size={15} style={{ verticalAlign: 'middle', marginRight: 6, color: 'var(--accent)' }} />
-          Create Campaign from {selectedAssets.length} asset{selectedAssets.length !== 1 ? 's' : ''}
+          Create Campaign from {totalSelected} asset{totalSelected !== 1 ? 's' : ''}
         </div>
         <div>
           <label style={{ fontSize: 11, color: 'var(--text-muted)', display: 'block', marginBottom: 4 }}>Campaign name</label>
@@ -401,6 +423,12 @@ export default function AssetInventory() {
   const [sbomRiskMap, setSbomRiskMap] = useState({})
   const [expandedAsset, setExpandedAsset] = useState(null)
   const [selectedIds, setSelectedIds] = useState(new Set())
+  // True when selectedIds was populated by "Select all matching" — i.e., it
+  // includes assets beyond the current page. Cleared when the user touches
+  // any individual checkbox or pagination changes.
+  const [selectedAcrossPages, setSelectedAcrossPages] = useState(false)
+  const [selectAllLoading, setSelectAllLoading] = useState(false)
+  const [selectAllNotice, setSelectAllNotice] = useState(null)
   const [showBulkTag, setShowBulkTag] = useState(false)
   const [showSaveAs, setShowSaveAs] = useState(false)
   const [showBulkCampaign, setShowBulkCampaign] = useState(false)
@@ -618,6 +646,9 @@ export default function AssetInventory() {
   }
 
   const toggleSelect = (id) => {
+    // Any individual toggle invalidates the across-pages flag.
+    setSelectedAcrossPages(false)
+    setSelectAllNotice(null)
     setSelectedIds(prev => {
       const next = new Set(prev)
       next.has(id) ? next.delete(id) : next.add(id)
@@ -626,8 +657,73 @@ export default function AssetInventory() {
   }
 
   const toggleSelectAll = () => {
+    setSelectedAcrossPages(false)
+    setSelectAllNotice(null)
     setSelectedIds(prev => prev.size === assets.length ? new Set() : new Set(assets.map(a => a.id)))
   }
+
+  const clearSelection = () => {
+    setSelectedIds(new Set())
+    setSelectedAcrossPages(false)
+    setSelectAllNotice(null)
+  }
+
+  // Re-fetch asset IDs across all pages matching the current filters and
+  // mark the selection as cross-page. Backend caps at 25k.
+  const selectAllMatching = async () => {
+    setSelectAllLoading(true)
+    try {
+      let res
+      if (advancedMode) {
+        res = await advancedSearch({
+          query: advancedConditions,
+          query_logic: advancedLogic,
+          scan_id: activeScanId,
+          type: 'asset',
+          ids_only: true,
+        })
+      } else {
+        const params = {
+          scan_id: activeScanId,
+          environment: filters.env || undefined,
+          criticality: filters.criticality || undefined,
+          asset_type: filters.assetType || undefined,
+          search: filters.search || undefined,
+          min_risk: filters.minRisk || undefined,
+          max_risk: filters.maxRisk || undefined,
+          min_critical: filters.minCritical || undefined,
+          min_high: filters.minHigh || undefined,
+          server_role: filters.serverRole || undefined,
+          source: filters.source || undefined,
+          min_sources: filters.minSources || undefined,
+          credentialed: filters.credentialed !== null ? filters.credentialed : undefined,
+          first_seen_after: firstSeenAfter || undefined,
+        }
+        if (tagFilter.length) {
+          params.tags = tagFilter.map(t => t.label || `${t.category}:${t.value}`).join(',')
+          params.tag_logic = tagLogic
+        }
+        res = await getAssetIds(params)
+      }
+      const ids = res?.ids || []
+      setSelectedIds(new Set(ids))
+      setSelectedAcrossPages(true)
+      if (res?.capped) {
+        setSelectAllNotice(t('assets.selectAllCapped', { count: res.cap.toLocaleString() }))
+      } else {
+        setSelectAllNotice(null)
+      }
+      capture('assets_select_all_matching', { count: ids.length, capped: !!res?.capped })
+    } catch (e) {
+      setSelectAllNotice(e?.message || 'Failed to select all matching assets.')
+    } finally {
+      setSelectAllLoading(false)
+    }
+  }
+
+  // Page changes invalidate the visible "All on this page" relationship —
+  // clear the across-pages flag so the banner can re-prompt.
+  useEffect(() => { setSelectedAcrossPages(false); setSelectAllNotice(null) }, [page])
 
   const handleUntagAsset = async (assetId, tag) => {
     await unassignTags({ tag_ids: [tag.tag_id], asset_ids: [assetId] })
@@ -635,27 +731,35 @@ export default function AssetInventory() {
   }
 
   const handleBulkScan = async () => {
-    const selectedAssets = assets.filter(a => selectedIds.has(a.id))
-    const assetEntries = selectedAssets.map(a => ({
-      asset_id: a.id,
-      target: getAssetTarget(a),
-    })).filter(e => e.target)
-    if (assetEntries.length === 0) {
-      setBulkScanError('Selected assets have no IP or hostname')
-      setBulkScanState('error')
-      return
-    }
     setBulkScanState('scanning')
     setBulkScanError(null)
     try {
+      // Cross-page: hydrate full records by ID list before scanning so we can
+      // resolve each asset's IP/hostname/fqdn target. Chunk the fetch to
+      // avoid hitting URL length limits for large selections.
+      let selectedAssets
+      if (selectedAcrossPages && selectedIds.size > assets.length) {
+        selectedAssets = await hydrateAssetsByIds([...selectedIds])
+      } else {
+        selectedAssets = assets.filter(a => selectedIds.has(a.id))
+      }
+      const assetEntries = selectedAssets.map(a => ({
+        asset_id: a.id,
+        target: getAssetTarget(a),
+      })).filter(e => e.target)
+      if (assetEntries.length === 0) {
+        setBulkScanError('Selected assets have no IP or hostname')
+        setBulkScanState('error')
+        return
+      }
       await startVmScan({
         targets: assetEntries.map(e => e.target),
         asset_ids: assetEntries.map(e => e.asset_id),
       })
       setBulkScanState('done')
-      setTimeout(() => { setBulkScanState(null); setSelectedIds(new Set()) }, 3000)
+      setTimeout(() => { setBulkScanState(null); clearSelection() }, 3000)
     } catch (err) {
-      setBulkScanError(err.message)
+      setBulkScanError(err.message || 'Bulk scan failed')
       setBulkScanState('error')
     }
   }
@@ -663,7 +767,9 @@ export default function AssetInventory() {
   const allColumns = [
     {
       key: '_select', label: (
-        <input type="checkbox" checked={assets.length > 0 && selectedIds.size === assets.length} onChange={toggleSelectAll} />
+        <input type="checkbox"
+          checked={assets.length > 0 && assets.every(a => selectedIds.has(a.id))}
+          onChange={toggleSelectAll} />
       ), width: '36px',
       render: (_, row) => (
         <input type="checkbox" checked={selectedIds.has(row.id)} onChange={() => toggleSelect(row.id)} onClick={e => e.stopPropagation()} />
@@ -1287,6 +1393,18 @@ export default function AssetInventory() {
       </div>
 
       <ErrorBanner error={fetchError} onRetry={load} onDismiss={() => setFetchError(null)} />
+      <SelectAllBanner
+        pageCount={assets.length}
+        total={totalAssets}
+        selectedCount={selectedIds.size}
+        acrossPages={selectedAcrossPages}
+        loading={selectAllLoading}
+        notice={selectAllNotice}
+        onSelectAll={selectAllMatching}
+        onClear={clearSelection}
+        t={t}
+        entity="asset"
+      />
       {(loading || advancedLoading) ? <SkeletonTable rows={10} columns={6} /> : (
         assets.length === 0 ? (
           <EmptyState icon={Server}
@@ -1330,16 +1448,18 @@ export default function AssetInventory() {
         <BulkTagModal
           assetIds={[...selectedIds]}
           onClose={() => setShowBulkTag(false)}
-          onDone={() => { setShowBulkTag(false); setSelectedIds(new Set()); load() }}
+          onDone={() => { setShowBulkTag(false); clearSelection(); load() }}
         />
       )}
 
       {showBulkCampaign && (
         <BulkCampaignModal
           selectedAssets={assets.filter(a => selectedIds.has(a.id))}
+          selectedIds={selectedIds}
+          acrossPages={selectedAcrossPages}
           scanId={activeScanId}
           onClose={() => setShowBulkCampaign(false)}
-          onCreated={(campaign) => { setShowBulkCampaign(false); setSelectedIds(new Set()); navigate(`/campaigns/${campaign.id}`) }}
+          onCreated={(campaign) => { setShowBulkCampaign(false); clearSelection(); navigate(`/campaigns/${campaign.id}`) }}
         />
       )}
 

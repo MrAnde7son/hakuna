@@ -420,6 +420,8 @@ export const getAssets = (params = {}) => {
   const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v != null && v !== ''))
   return request(`/assets?${q}`)
 }
+// Returns { ids: number[], total, capped, cap } for "select all matching" UI.
+export const getAssetIds = (params = {}) => getAssets({ ...params, ids_only: true })
 export const getAssetTypes = () => request('/assets/types')
 export const getAsset = (id) => request(`/assets/${id}`)
 export const getAssetRiskBreakdown = (id) => request(`/assets/${id}/risk-breakdown`)
@@ -442,6 +444,8 @@ export const getFindings = (params = {}) => {
   const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v != null && v !== ''))
   return request(`/findings?${q}`)
 }
+// Returns { ids: number[], total, capped, cap } for "select all matching" UI.
+export const getFindingIds = (params = {}) => getFindings({ ...params, ids_only: true })
 export const getFinding = (id) => request(`/findings/${id}`)
 export const getFindingSources = (id) => request(`/findings/${id}/sources`)
 export const getFindingProducts = () => request('/findings/products')

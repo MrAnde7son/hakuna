@@ -375,6 +375,7 @@ def list_assets(
     order: str = "desc",
     page: int = 1,
     page_size: int = 50,
+    ids_only: bool = False,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
     org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
@@ -389,6 +390,17 @@ def list_assets(
             q = q.filter(Asset.first_seen > datetime.fromisoformat(first_seen_after))
         except ValueError:
             pass
+    # Comma-separated explicit ID list — used by the "select all matching" UI
+    # to load full records for selected IDs across pages.
+    _ids_param = request.query_params.get("ids")
+    if _ids_param:
+        try:
+            id_list = [int(x) for x in _ids_param.split(",") if x.strip()]
+        except ValueError:
+            raise HTTPException(status_code=400, detail="ids must be comma-separated integers")
+        if not id_list:
+            return {"total": 0, "page": page, "page_size": page_size, "assets": []}
+        q = q.filter(Asset.id.in_(id_list))
     if scan_id:
         # VM scans may attach findings to existing assets (different scan_id) via dedup.
         # Use the same union approach as the scan list endpoint so all relevant assets appear.
@@ -471,6 +483,19 @@ def list_assets(
         q = q.filter(Asset.id.in_(role_ids))
 
     total = q.count()
+
+    if ids_only:
+        # "Select all matching" support: return only IDs for bulk actions.
+        # Capped to avoid runaway payloads / abuse.
+        SELECT_ALL_CAP = 25000
+        id_rows = q.with_entities(Asset.id).limit(SELECT_ALL_CAP).all()
+        return {
+            "total": total,
+            "ids": [r[0] for r in id_rows],
+            "capped": total > SELECT_ALL_CAP,
+            "cap": SELECT_ALL_CAP,
+        }
+
     if page_size == 0:
         page_size = 10000  # cap unbounded requests
     assets = q.offset((page - 1) * page_size).limit(page_size).all()
