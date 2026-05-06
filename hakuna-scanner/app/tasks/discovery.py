@@ -641,27 +641,37 @@ async def _do_liveness_gate(sf, org_id: str, target_scope: str | None = None) ->
             {"org_id": org_id},
         )
         for row in rows.fetchall():
-            resolved_ips = check_dns_resolution(row.hostname)
-            cloud_provider = None
-            for ip in resolved_ips:
-                cloud_provider = identify_cloud_provider(ip)
-                if cloud_provider:
-                    break
+            try:
+                resolved_ips = check_dns_resolution(row.hostname)
+                cloud_provider = None
+                for ip in resolved_ips:
+                    cloud_provider = identify_cloud_provider(ip)
+                    if cloud_provider:
+                        break
 
-            cname_targets: list[str] = []
-            dns_records = row.dns_records
-            if isinstance(dns_records, dict):
-                raw_cnames = dns_records.get("CNAME") or dns_records.get("cname") or []
-                if isinstance(raw_cnames, str):
-                    cname_targets = [raw_cnames]
-                elif isinstance(raw_cnames, list):
-                    cname_targets = [str(c) for c in raw_cnames if c]
+                cname_targets: list[str] = []
+                dns_records = row.dns_records
+                if isinstance(dns_records, dict):
+                    raw_cnames = dns_records.get("CNAME") or dns_records.get("cname") or []
+                    if isinstance(raw_cnames, str):
+                        cname_targets = [raw_cnames]
+                    elif isinstance(raw_cnames, list):
+                        cname_targets = [str(c) for c in raw_cnames if c]
 
-            await create_dangling_dns_finding(
-                db, uuid.UUID(org_id), row.id, row.hostname,
-                resolved_ips, cloud_provider,
-                cname_targets=cname_targets,
-            )
+                await create_dangling_dns_finding(
+                    db, uuid.UUID(org_id), row.id, row.hostname,
+                    resolved_ips, cloud_provider,
+                    cname_targets=cname_targets,
+                )
+            except Exception:
+                # Don't let a single asset's finding-creation failure abort
+                # the whole liveness_gate stage. If it does, the surrounding
+                # chain leaves the scan_run stuck at this stage and the
+                # recovery loop re-dispatches it forever.
+                logger.exception(
+                    "org=%s dangling_dns finding failed for asset=%s host=%s",
+                    org_id, row.id, row.hostname,
+                )
         await db.commit()
 
     return summary

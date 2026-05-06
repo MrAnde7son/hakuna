@@ -66,33 +66,39 @@ async def _find_and_recover_orphans() -> dict:
     cutoff = now - timedelta(minutes=ORPHAN_THRESHOLD_MINUTES)
     queued_cutoff = now - timedelta(minutes=QUEUED_THRESHOLD_MINUTES)
 
+    # Atomic claim: a single UPDATE … RETURNING bumps recovery_attempts and
+    # resets stage_started_at for every eligible orphan in one shot. With
+    # FOR UPDATE SKIP LOCKED, concurrent recovery passes (periodic beat,
+    # worker_ready signal on each worker boot) cannot both claim the same
+    # scan_run — the loser sees an empty result set and re-dispatches nothing.
     async with sf() as db:
-        # Category 1: running scans stuck on a stage
         result = await db.execute(
             text("""
-                SELECT id, org_id, scan_type, stage_index, recovery_attempts
-                FROM scan_runs
-                WHERE status = 'running'
-                  AND stage_started_at < :cutoff
-                  AND recovery_attempts < :max_attempts
+                UPDATE scan_runs SET
+                    recovery_attempts = recovery_attempts + 1,
+                    stage_started_at = :now
+                WHERE id IN (
+                    SELECT id FROM scan_runs
+                    WHERE (
+                        (status = 'running' AND stage_started_at < :cutoff)
+                        OR (status = 'queued' AND created_at < :queued_cutoff)
+                    )
+                    AND recovery_attempts < :max_attempts
+                    FOR UPDATE SKIP LOCKED
+                )
+                RETURNING id, org_id, scan_type,
+                          COALESCE(stage_index, 0) AS stage_index,
+                          recovery_attempts, status
             """),
-            {"cutoff": cutoff, "max_attempts": MAX_RECOVERY_ATTEMPTS},
+            {
+                "cutoff": cutoff,
+                "queued_cutoff": queued_cutoff,
+                "max_attempts": MAX_RECOVERY_ATTEMPTS,
+                "now": now,
+            },
         )
         orphans = list(result.fetchall())
-
-        # Category 2: queued scans never picked up by Celery
-        result2 = await db.execute(
-            text("""
-                SELECT id, org_id, scan_type, 0 AS stage_index, recovery_attempts
-                FROM scan_runs
-                WHERE status = 'queued'
-                  AND created_at < :cutoff
-                  AND recovery_attempts < :max_attempts
-            """),
-            {"cutoff": queued_cutoff, "max_attempts": MAX_RECOVERY_ATTEMPTS},
-        )
-        queued_orphans = result2.fetchall()
-        orphans.extend(queued_orphans)
+        await db.commit()
 
     if not orphans:
         return {"orphans_found": 0}
@@ -104,27 +110,15 @@ async def _find_and_recover_orphans() -> dict:
         scan_run_id = str(row.id)
         org_id = str(row.org_id)
         scan_type = row.scan_type
-        stage_index = row.stage_index
-        attempts = row.recovery_attempts + 1
+        # 'queued' rows haven't started any stage yet — treat them as
+        # stage 0 so we re-dispatch the full discovery chain.
+        stage_index = row.stage_index if row.status == "running" else 0
+        attempts = row.recovery_attempts
 
         logger.warning(
             "Recovering orphaned scan run %s (org=%s, type=%s, stage_index=%d, attempt=%d/%d)",
             scan_run_id, org_id, scan_type, stage_index, attempts, MAX_RECOVERY_ATTEMPTS,
         )
-
-        # Bump recovery_attempts and reset stage_started_at so we don't
-        # immediately re-detect this scan as orphaned.
-        async with sf() as db:
-            await db.execute(
-                text("""
-                    UPDATE scan_runs SET
-                        recovery_attempts = :attempts,
-                        stage_started_at = :now
-                    WHERE id = :id
-                """),
-                {"attempts": attempts, "id": scan_run_id, "now": now},
-            )
-            await db.commit()
 
         # Decide which chain to re-dispatch based on where the scan was stuck.
         # Discovery phase: stage_index <= DISCOVERY_MAX_STAGE_INDEX
