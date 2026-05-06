@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 GITHUB_API = "https://api.github.com"
 GITHUB_RAW = "https://raw.githubusercontent.com"
 NPM_REGISTRY = "https://registry.npmjs.org"
+OSV_API = "https://api.osv.dev"
 
 
 class RateLimitedError(Exception):
@@ -250,6 +251,39 @@ class GitHubClient:
                 return
             page += 1
 
+    async def list_directory(
+        self, owner: str, repo: str, path: str, ref: str | None = None,
+    ) -> list[dict]:
+        """List a directory's contents via /repos/{o}/{r}/contents/{path}.
+
+        Returns the array form (one entry per file/subdir) or [] when the
+        directory doesn't exist (404). Single-file responses come back as a
+        dict — we normalize those to a one-element list so callers don't
+        need to branch.
+        """
+        params: dict[str, Any] = {}
+        if ref:
+            params["ref"] = ref
+        data = await self.request(
+            "GET", f"/repos/{owner}/{repo}/contents/{path}", params=params,
+        )
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            return [data]
+        return []
+
+    async def get_branch(self, owner: str, repo: str, branch: str) -> dict | None:
+        """Public-readable branch metadata — includes a top-level `protected` bool.
+
+        Unlike GET /branches/{b}/protection (admin-only), this endpoint is
+        readable for any public repo without elevated scopes, so we can use
+        it to flag default branches with no protection rules at all.
+        """
+        return await self.request(
+            "GET", f"/repos/{owner}/{repo}/branches/{branch}",
+        )  # type: ignore[return-value]
+
     async def list_repo_contributors(
         self, owner: str, repo: str, per_page: int = 30,
     ) -> list[dict]:
@@ -406,3 +440,68 @@ class NpmClient:
         # Package names can contain "/" for scoped packages — URL-encode the slash.
         encoded = name.replace("/", "%2F")
         return await self.request(f"/{encoded}")  # type: ignore[return-value]
+
+
+class OsvClient:
+    """OSV.dev vulnerability database client.
+
+    Single endpoint we use: POST /v1/query with `{package, version}`. No auth,
+    very generous rate limit (the public service is meant to be hit by build
+    pipelines), so we don't bother with token rotation — just retries on
+    transient failures.
+    """
+
+    def __init__(
+        self,
+        session: aiohttp.ClientSession | None = None,
+        max_retries: int = 4,
+    ):
+        self._session = session
+        self._owns_session = session is None
+        self.max_retries = max_retries
+
+    async def __aenter__(self) -> OsvClient:
+        if self._session is None:
+            self._session = aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=30),
+                headers={"User-Agent": "hakuna-easm/1.0"},
+            )
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        if self._owns_session and self._session is not None:
+            await self._session.close()
+
+    async def query(
+        self, package_name: str, version: str | None, ecosystem: str = "npm",
+    ) -> list[dict]:
+        """Return the raw `vulns` list for `package@version` in `ecosystem`.
+
+        Empty list when nothing is known (or on error). OSV expects a version
+        string; if `version` is None we omit it and OSV returns *all known*
+        advisories for the package, which is over-noisy — callers should
+        prefer to pass a concrete version.
+        """
+        assert self._session is not None, "Use as async context manager"
+        body: dict[str, Any] = {"package": {"name": package_name, "ecosystem": ecosystem}}
+        if version:
+            body["version"] = version
+        url = f"{OSV_API}/v1/query"
+        for attempt in range(self.max_retries):
+            try:
+                async with self._session.post(url, json=body) as resp:
+                    if resp.status == 429:
+                        retry_after = float(resp.headers.get("Retry-After", "5"))
+                        await asyncio.sleep(retry_after)
+                        continue
+                    if resp.status >= 500:
+                        await asyncio.sleep(random.uniform(0, 2 ** (attempt + 1)))
+                        continue
+                    if resp.status >= 400:
+                        return []
+                    data = await resp.json()
+                    return list(data.get("vulns") or [])
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                logger.warning("osv query %s@%s transient error: %s", package_name, version, e)
+                await asyncio.sleep(random.uniform(0, 2 ** (attempt + 1)))
+        return []

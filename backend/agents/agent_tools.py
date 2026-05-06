@@ -1089,6 +1089,17 @@ def get_asset_profile(db: Session, params: dict):
     controls = db.query(InventorySecurityControl).filter(InventorySecurityControl.asset_id == aid).all()
     software_count = db.query(func.count(InventorySoftware.id)).filter(InventorySoftware.asset_id == aid).scalar()
 
+    easm = a.easm_data if isinstance(a.easm_data, dict) else {}
+    easm_summary = {
+        "open_ports": easm.get("open_ports") or [],
+        "tech_stack": easm.get("tech_stack") or [],
+        "cdn_provider": easm.get("cdn_provider"),
+        "cloud_provider": easm.get("cloud_provider"),
+        "waf": easm.get("waf"),
+        "http_status": easm.get("http_status"),
+        "http_title": easm.get("http_title"),
+    }
+
     return {
         "asset": {
             "id": a.id, "ip": a.ip, "hostname": a.hostname, "fqdn": a.fqdn,
@@ -1110,6 +1121,7 @@ def get_asset_profile(db: Session, params: dict):
             for c in controls
         ],
         "installed_software_count": software_count,
+        "easm_data": easm_summary,
     }
 
 

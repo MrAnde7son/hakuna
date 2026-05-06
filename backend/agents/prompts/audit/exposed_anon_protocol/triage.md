@@ -9,7 +9,8 @@ For each exposed legacy-protocol port on this asset, confirm whether the service
 3. **Decide per probe**:
    - Misconfig absent (auth enforced / AXFR refused / no readable files / KDC unreachable) → no finding, move on.
    - Misconfig present → `emit_finding` with severity from the rubric, evidence including the probe result snippet.
-4. **Wrap up** — produce a one-line summary of how many protocols were probed and how many were exposed.
+   - Probe returns `skipped: true` (relay flap or unreachable) → no signal; continue to the next probe and note it in the summary. Do NOT treat a skipped probe as evidence of safety.
+4. **Wrap up** — produce a one-line summary of how many protocols were probed, how many were exposed, and how many were skipped.
 
 ### Tools You'll Use Most
 `get_asset_profile`, then whichever probes match the asset's open ports (`ftp_anon_probe`, `vnc_anon_probe`, `dns_axfr_probe`, `kerberos_anon_probe`, `tftp_anon_probe`), then `emit_finding`.

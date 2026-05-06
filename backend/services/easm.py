@@ -2576,11 +2576,12 @@ def _import_github_npm_assets(
         repo_assets_by_full_name[full_name] = a
 
     # ── npm_package assets ────────────────────────────────────────
+    npm_assets_by_name: dict[str, Asset] = {}
     for pkg in attributed.get("npm_packages") or []:
         name = pkg.get("name")
         if not name:
             continue
-        _upsert(
+        a = _upsert(
             "npm_package",
             {"registry": "npm", "name": name},
             {
@@ -2589,28 +2590,80 @@ def _import_github_npm_assets(
                 "repository_url": pkg.get("repository_url"),
                 "homepage": pkg.get("homepage"),
                 "last_published": pkg.get("last_published"),
+                "deprecated": bool(pkg.get("deprecated")),
+                "deprecated_message": pkg.get("deprecated_message"),
                 "confidence_score": pkg.get("confidence_score"),
                 "reasons": pkg.get("reasons") or [],
                 "discovered_for_domain": domain,
             },
         )
+        npm_assets_by_name[name] = a
 
-    # ── exposed_files findings on code_repo assets ────────────────
-    # Each ExposedFile becomes one Finding on the parent code_repo asset.
-    # We use a stable plugin_id per rule_id so multiple files of the same
-    # type on one repo dedup, but different rule types coexist.
+    # ── findings on code_repo + npm_package assets ────────────────
+    # Each Vuln becomes one Finding keyed by (asset_id, plugin_id). plugin_id
+    # is stable per rule so re-scans refresh in place; different rule types
+    # on the same asset coexist.
     findings_to_add: list[Finding] = []
-    # Pre-fetch existing easm-source findings on repo assets in this scan to
-    # detect duplicates and refresh in place rather than re-inserting.
-    repo_asset_ids = [a.id for a in repo_assets_by_full_name.values()]
+    # Pre-fetch existing easm-source findings on repo + npm assets in this
+    # scan so we update in place rather than re-inserting.
+    finding_asset_ids = [
+        *(a.id for a in repo_assets_by_full_name.values()),
+        *(a.id for a in npm_assets_by_name.values()),
+    ]
     existing_findings: dict[tuple[int, str], Finding] = {}
-    if repo_asset_ids:
+    if finding_asset_ids:
         for f in db.query(Finding).filter(
             Finding.scan_id == scan.id,
-            Finding.asset_id.in_(repo_asset_ids),
+            Finding.asset_id.in_(finding_asset_ids),
             Finding.source_type == "easm",
         ).all():
             existing_findings[(f.asset_id, f.plugin_id)] = f
+
+    def _emit_finding(
+        asset: Asset,
+        *,
+        plugin_id: str,
+        plugin_name: str,
+        plugin_family: str,
+        severity_key: str,
+        synopsis: str,
+        description: str,
+        solution: str,
+        plugin_output: str,
+        owner_suggestion: str = "AppSec",
+        effort_level: str = "medium",
+    ) -> None:
+        """Upsert a Finding on `asset` for this scan, keyed on plugin_id."""
+        nonlocal finding_count
+        sev, sev_label, risk, priority = _GH_SEVERITY_MAP.get(
+            severity_key.lower(), _GH_SEVERITY_MAP["medium"],
+        )
+        existing = existing_findings.get((asset.id, plugin_id))
+        if existing:
+            existing.severity = sev
+            existing.severity_label = sev_label
+            existing.risk_factor = risk
+            existing.priority_score = priority
+            existing.last_seen = now
+            existing.plugin_output = plugin_output
+            finding_count += 1
+            return
+        findings_to_add.append(Finding(
+            scan_id=scan.id, asset_id=asset.id,
+            source_type="easm", source_vuln_id=plugin_id,
+            plugin_id=plugin_id,
+            plugin_name=plugin_name,
+            plugin_family=plugin_family,
+            severity=sev, severity_label=sev_label, risk_factor=risk,
+            priority_score=priority, effort_level=effort_level,
+            owner_suggestion=owner_suggestion,
+            synopsis=synopsis,
+            description=description,
+            solution=solution,
+            plugin_output=plugin_output,
+            first_seen=now, last_seen=now,
+        ))
+        finding_count += 1
 
     finding_count = 0
     for ef in vulns.get("exposed_files") or []:
@@ -2675,6 +2728,258 @@ def _import_github_npm_assets(
             first_seen=now, last_seen=now,
         ))
         finding_count += 1
+
+    # ── npm dependency CVEs (OSV.dev) ─────────────────────────────
+    # One Finding per (npm_package, advisory). plugin_id includes the
+    # advisory id so multiple CVEs on one package coexist as distinct
+    # findings — they have different fixes.
+    for cve in vulns.get("dependency_cves") or []:
+        pkg_name = cve.get("package") or ""
+        asset = npm_assets_by_name.get(pkg_name)
+        if not asset:
+            continue
+        advisory = cve.get("cve") or "UNKNOWN"
+        pid = f"EASM-NPM-CVE-{advisory}"
+        installed = cve.get("installed_version") or "unknown"
+        fixed = cve.get("fixed_version")
+        summary = cve.get("summary") or ""
+        advisory_url = cve.get("advisory_url") or ""
+        aliases = cve.get("aliases") or []
+        plugin_output = "\n".join(filter(None, [
+            f"Package: {pkg_name}@{installed}",
+            f"Advisory: {advisory}",
+            f"Aliases: {', '.join(aliases)}" if aliases else "",
+            f"Fixed in: {fixed}" if fixed else "No fix released yet",
+            f"Reference: {advisory_url}" if advisory_url else "",
+            f"Summary: {summary}" if summary else "",
+        ]))
+        solution = (
+            f"Upgrade `{pkg_name}` to version {fixed} or later."
+            if fixed else
+            f"No fixed version is available yet for {pkg_name}. Track the "
+            f"advisory and consider replacing or pinning the dependency."
+        )
+        _emit_finding(
+            asset,
+            plugin_id=pid,
+            plugin_name=f"Vulnerable npm dependency: {pkg_name} ({advisory})",
+            plugin_family="EASM: Supply Chain",
+            severity_key=cve.get("severity") or "medium",
+            synopsis=(
+                f"npm package {pkg_name}@{installed} is affected by {advisory}: "
+                f"{summary[:160]}" if summary else
+                f"npm package {pkg_name}@{installed} is affected by {advisory}."
+            ),
+            description=(
+                f"The npm package `{pkg_name}` at version `{installed}` matches "
+                f"a published advisory ({advisory}). This advisory was retrieved "
+                f"from OSV.dev (which aggregates GHSA, NVD, and ecosystem-native "
+                f"databases). Severity is reported as "
+                f"{(cve.get('severity') or 'medium').upper()}."
+                + (f"\n\nSummary: {summary}" if summary else "")
+            ),
+            solution=solution,
+            plugin_output=plugin_output,
+        )
+
+    # ── npm package hygiene (deprecated, unmaintained) ────────────
+    _NPM_HYGIENE_NAMES = {
+        "deprecated": "npm package marked deprecated",
+        "unmaintained": "npm package appears unmaintained",
+    }
+    for hg in vulns.get("package_hygiene") or []:
+        pkg_name = hg.get("package") or ""
+        asset = npm_assets_by_name.get(pkg_name)
+        if not asset:
+            continue
+        rule_id = (hg.get("rule_id") or "unknown").lower()
+        pid = f"EASM-NPM-HYGIENE-{rule_id.upper()}"
+        installed = hg.get("version") or "unknown"
+        detail = hg.get("detail") or ""
+        plugin_output = "\n".join(filter(None, [
+            f"Package: {pkg_name}@{installed}",
+            f"Rule: {rule_id}",
+            f"Detail: {detail}" if detail else "",
+        ]))
+        if rule_id == "deprecated":
+            solution = (
+                f"Migrate off `{pkg_name}` — the maintainers have marked it "
+                f"deprecated and may not patch future vulnerabilities. The "
+                f"deprecation message often points to a successor package."
+            )
+        elif rule_id == "unmaintained":
+            solution = (
+                f"`{pkg_name}` has not been published in over two years. "
+                f"Audit its current usage, look for an actively maintained "
+                f"alternative, or commit to maintaining a fork."
+            )
+        else:
+            solution = "Review this package's status and decide whether to keep it as a dependency."
+        _emit_finding(
+            asset,
+            plugin_id=pid,
+            plugin_name=_NPM_HYGIENE_NAMES.get(rule_id, f"npm package hygiene: {rule_id}"),
+            plugin_family="EASM: Supply Chain",
+            severity_key=hg.get("severity") or "medium",
+            synopsis=f"npm package {pkg_name}@{installed}: {rule_id.replace('_', ' ')}.",
+            description=(
+                f"The npm package `{pkg_name}` (version {installed}) tripped the "
+                f"`{rule_id}` hygiene rule. {detail}"
+            ),
+            solution=solution,
+            plugin_output=plugin_output,
+            effort_level="high",  # supply-chain swaps are usually non-trivial
+        )
+
+    # ── repo hygiene (branch protection, SECURITY.md, archived) ────
+    _REPO_HYGIENE_NAMES = {
+        "no_branch_protection": "Default branch has no protection rules",
+        "missing_security_md": "Public repository has no security policy",
+        "archived_with_recent_activity": "Archived repository has recent activity",
+    }
+    _REPO_HYGIENE_SOLUTIONS = {
+        "no_branch_protection": (
+            "Enable branch protection on the default branch: require pull "
+            "request reviews, status checks, and disallow force-pushes. On "
+            "GitHub: Settings → Branches → Add classic / ruleset."
+        ),
+        "missing_security_md": (
+            "Add a SECURITY.md to the repository root or .github/ directory "
+            "documenting how to report vulnerabilities (preferred channel, "
+            "PGP key if any, expected response time). GitHub surfaces this "
+            "automatically in the Security tab."
+        ),
+        "archived_with_recent_activity": (
+            "Either un-archive the repository if it's still active, or move "
+            "the recent commits to the successor repo and re-archive a "
+            "frozen snapshot. Drive-by forkers shouldn't see fresh code "
+            "under an 'archived' label."
+        ),
+    }
+    for rh in vulns.get("repo_hygiene") or []:
+        repo_full_name = rh.get("repo") or ""
+        asset = repo_assets_by_full_name.get(repo_full_name)
+        if not asset:
+            continue
+        rule_id = (rh.get("rule_id") or "unknown").lower()
+        pid = f"EASM-REPO-HYGIENE-{rule_id.upper()}"
+        detail = rh.get("detail") or ""
+        evidence = rh.get("evidence") or ""
+        plugin_output = "\n".join(filter(None, [
+            f"Repository: {repo_full_name}",
+            f"Rule: {rule_id}",
+            f"Detail: {detail}" if detail else "",
+            f"Evidence: {evidence}" if evidence else "",
+        ]))
+        _emit_finding(
+            asset,
+            plugin_id=pid,
+            plugin_name=_REPO_HYGIENE_NAMES.get(rule_id, f"Repo hygiene: {rule_id}"),
+            plugin_family="EASM: Repo Hygiene",
+            severity_key=rh.get("severity") or "low",
+            synopsis=(
+                f"GitHub repository {repo_full_name} tripped the "
+                f"`{rule_id}` hygiene rule."
+            ),
+            description=(
+                f"{detail or _REPO_HYGIENE_NAMES.get(rule_id, rule_id)} "
+                f"This was detected by passive metadata inspection — no code "
+                f"was scanned."
+            ),
+            solution=_REPO_HYGIENE_SOLUTIONS.get(
+                rule_id,
+                "Review the repository configuration and bring it in line with policy.",
+            ),
+            plugin_output=plugin_output,
+            effort_level="low",
+        )
+
+    # ── GitHub Actions workflow risks ─────────────────────────────
+    # plugin_id includes both rule and workflow basename so different rules
+    # on different workflow files coexist as distinct findings on one repo.
+    _WORKFLOW_RISK_NAMES = {
+        "pull_request_target": "Workflow exposes write token to fork PRs (pull_request_target + head checkout)",
+        "unpinned_action": "Third-party GitHub Action pinned to a mutable ref",
+        "self_hosted_runner": "Workflow uses self-hosted runner",
+    }
+    _WORKFLOW_RISK_SOLUTIONS = {
+        "pull_request_target": (
+            "Switch the trigger to `pull_request` (fork code is checked out "
+            "with a read-only token and no secrets) — that's the safe default. "
+            "If the workflow genuinely needs write permissions for triage "
+            "(labeling, adding comments), keep `pull_request_target` BUT do "
+            "not check out `pull_request.head.*` — operate only on the base "
+            "branch and event payload."
+        ),
+        "unpinned_action": (
+            "Pin every third-party action to a full 40-character commit SHA "
+            "(e.g. `uses: org/repo@a1b2c3d…`). Dependabot can keep the SHAs "
+            "fresh automatically. Tag/branch refs are mutable — a compromised "
+            "upstream silently hijacks every build. `actions/*` and `github/*` "
+            "are exempt from this rule."
+        ),
+        "self_hosted_runner": (
+            "If self-hosted runners are required, isolate them per-job "
+            "(ephemeral VMs/containers, no shared filesystem, single-use "
+            "tokens) and gate fork-PR execution behind a maintainer label. "
+            "A persistent shared runner that any PR can hit is effectively "
+            "RCE-as-a-service."
+        ),
+    }
+
+    def _workflow_basename(path: str) -> str:
+        """`.github/workflows/ci-build.yml` → `CI-BUILD`. Drops the directory
+        prefix and the .yml/.yaml extension and uppercases — so the plugin_id
+        is stable and human-readable."""
+        leaf = path.rsplit("/", 1)[-1]
+        for ext in (".yml", ".yaml"):
+            if leaf.lower().endswith(ext):
+                leaf = leaf[: -len(ext)]
+                break
+        return leaf.upper() or "UNKNOWN"
+
+    for wr in vulns.get("workflow_risks") or []:
+        repo_full_name = wr.get("repo") or ""
+        asset = repo_assets_by_full_name.get(repo_full_name)
+        if not asset:
+            continue
+        rule_id = (wr.get("rule_id") or "unknown").lower()
+        workflow_path = wr.get("workflow_path") or ""
+        detail = wr.get("detail") or ""
+        evidence = wr.get("evidence") or ""
+        wf_base = _workflow_basename(workflow_path)
+        pid = f"EASM-WORKFLOW-{rule_id.upper()}-{wf_base}"
+        plugin_output = "\n".join(filter(None, [
+            f"Repository: {repo_full_name}",
+            f"Workflow: {workflow_path}",
+            f"Rule: {rule_id}",
+            f"Detail: {detail}" if detail else "",
+            f"Evidence: {evidence}" if evidence else "",
+        ]))
+        _emit_finding(
+            asset,
+            plugin_id=pid,
+            plugin_name=_WORKFLOW_RISK_NAMES.get(
+                rule_id, f"GitHub Actions workflow risk: {rule_id}",
+            ),
+            plugin_family="EASM: CI/CD",
+            severity_key=wr.get("severity") or "medium",
+            synopsis=(
+                f"Workflow `{workflow_path}` in {repo_full_name} tripped the "
+                f"`{rule_id}` rule."
+            ),
+            description=(
+                f"{detail}\n\n"
+                f"Detected by passive YAML inspection of "
+                f"`{workflow_path}` — no execution was performed."
+            ),
+            solution=_WORKFLOW_RISK_SOLUTIONS.get(
+                rule_id,
+                "Review the workflow definition and remove the unsafe pattern.",
+            ),
+            plugin_output=plugin_output,
+            effort_level="low",
+        )
 
     for f in findings_to_add:
         f.source_systems = ["easm"]

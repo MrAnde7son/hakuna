@@ -79,6 +79,8 @@ class AttributedNpmPackage:
     repository_url: str | None = None       # parsed from package.json
     homepage: str | None = None
     last_published: str | None = None
+    deprecated: bool = False
+    deprecated_message: str | None = None
     reasons: list[str] = field(default_factory=list)
     confidence_score: float = 0.0
 
@@ -123,11 +125,34 @@ class ExposedFile:
 class DependencyCVE:
     package: str
     installed_version: str | None
-    cve: str | None
+    cve: str | None                         # GHSA or CVE id (prefer GHSA)
     severity: str                           # "low" | "medium" | "high" | "critical"
     advisory_url: str | None = None
     fix_available: bool = False
+    fixed_version: str | None = None        # earliest fixed version per OSV ranges
+    summary: str | None = None
+    aliases: list[str] = field(default_factory=list)
     unmaintained: bool = False
+
+
+@dataclass
+class PackageHygiene:
+    """Non-CVE hygiene issues on an npm package — deprecated, unmaintained, etc."""
+    package: str                            # "@scope/pkg" or "pkg"
+    version: str | None
+    rule_id: str                            # "deprecated" | "unmaintained"
+    severity: str                           # "low" | "medium" | "high"
+    detail: str = ""
+
+
+@dataclass
+class RepoHygiene:
+    """Repository-level hygiene findings — branch protection, security policy, etc."""
+    repo: str                               # "owner/repo"
+    rule_id: str                            # stable id, e.g. "no_branch_protection"
+    severity: str                           # "low" | "medium" | "high"
+    detail: str = ""
+    evidence: str = ""
 
 
 @dataclass
@@ -145,6 +170,8 @@ class DiscoveryResult:
         "secrets": [],
         "workflow_risks": [],
         "dependency_cves": [],
+        "package_hygiene": [],
+        "repo_hygiene": [],
         "exposed_files": [],
     })
     stats: dict[str, int] = field(default_factory=dict)

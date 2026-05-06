@@ -192,18 +192,50 @@ def test_ftp_probe_raises_when_no_relay_supplied(db_session, anon_asset):
         ftp_anon_probe_tool(db_session, {"asset_id": anon_asset.id})
 
 
-def test_ftp_probe_raises_when_relay_disconnected(db_session, anon_asset):
-    from agents.tools.exposed_anon_protocol_tools import ftp_anon_probe_tool
+def test_ftp_probe_returns_skipped_when_relay_disconnected(db_session, anon_asset):
+    """Cloud Run idle-closes the relay's WebSocket every ~5 min. A
+    disconnect mid-mission must not abort the audit — the probe returns
+    a structured ``skipped: true`` so the agent moves on to the next
+    protocol instead of bailing with 0 findings."""
+    from agents.tools import exposed_anon_protocol_tools as mod
 
     fake_broker = MagicMock()
     fake_broker.is_connected.return_value = False
 
-    with patch("agents.tools.exposed_anon_protocol_tools.get_relay_broker", return_value=fake_broker):
-        with pytest.raises(ConnectionError, match="not connected"):
-            ftp_anon_probe_tool(db_session, {
-                "asset_id": anon_asset.id,
-                "_relay_agent_id": "relay-x",
-            })
+    with patch.object(mod, "get_relay_broker", return_value=fake_broker), \
+         patch.object(mod, "_RELAY_RECONNECT_WAIT_S", 0):
+        result = mod.ftp_anon_probe_tool(db_session, {
+            "asset_id": anon_asset.id,
+            "_relay_agent_id": "relay-x",
+        })
+
+    assert result.get("skipped") is True
+    assert "relay" in (result.get("_errors") or {})
+    fake_broker.send_task.assert_not_called()
+
+
+def test_probe_retries_once_after_relay_reconnect(db_session, anon_asset):
+    """If the relay flaps but reconnects within seconds, the probe must
+    retry once and return the real result rather than skipping."""
+    from agents.tools import exposed_anon_protocol_tools as mod
+
+    fake_broker = MagicMock()
+    # First check: disconnected. Second check (after sleep): reconnected.
+    fake_broker.is_connected.side_effect = [False, True]
+    fake_broker.send_task = AsyncMock(return_value={
+        "anonymous_login_allowed": False, "banner": "220 ok"
+    })
+
+    with patch.object(mod, "get_relay_broker", return_value=fake_broker), \
+         patch.object(mod, "_RELAY_RECONNECT_WAIT_S", 0):
+        result = mod.ftp_anon_probe_tool(db_session, {
+            "asset_id": anon_asset.id,
+            "_relay_agent_id": "relay-x",
+        })
+
+    assert result.get("skipped") is not True
+    assert result["anonymous_login_allowed"] is False
+    fake_broker.send_task.assert_awaited_once()
 
 
 # ── Auto-trigger ─────────────────────────────────────────────────────

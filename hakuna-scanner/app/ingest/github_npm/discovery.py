@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from datetime import datetime, timezone
 from typing import AsyncIterator
 
 from app.ingest.github_npm.attribution import (
@@ -19,7 +20,7 @@ from app.ingest.github_npm.attribution import (
     score_user,
     top_level_confidence,
 )
-from app.ingest.github_npm.clients import GitHubClient, NpmClient
+from app.ingest.github_npm.clients import GitHubClient, NpmClient, OsvClient
 from app.ingest.github_npm.models import (
     REASON_CONTRIBUTOR_EMAIL,
     REASON_NPM_MAINTAINER_MATCH,
@@ -29,7 +30,11 @@ from app.ingest.github_npm.models import (
     AttributedOrg,
     AttributedRepo,
     AttributedUser,
+    DependencyCVE,
     ExposedFile,
+    PackageHygiene,
+    RepoHygiene,
+    WorkflowRisk,
 )
 
 logger = logging.getLogger(__name__)
@@ -203,6 +208,17 @@ async def find_npm_packages_by_domain(
         if latest and isinstance(time_map, dict):
             last_published = time_map.get(latest)
 
+        # `deprecated` lives on the per-version manifest, not the packument
+        # root. Pull from `versions[latest]` so we surface what `npm install`
+        # would warn on.
+        deprecated_msg = None
+        versions_map = full.get("versions") or {}
+        if latest and isinstance(versions_map, dict):
+            ver_manifest = versions_map.get(latest) or {}
+            raw = ver_manifest.get("deprecated")
+            if isinstance(raw, str) and raw.strip():
+                deprecated_msg = raw.strip()
+
         reasons = [REASON_NPM_MAINTAINER_MATCH]
         out.append(AttributedNpmPackage(
             name=name,
@@ -211,6 +227,8 @@ async def find_npm_packages_by_domain(
             repository_url=_normalize_git_url(repo_url),
             homepage=full.get("homepage"),
             last_published=last_published,
+            deprecated=bool(deprecated_msg),
+            deprecated_message=deprecated_msg,
             reasons=reasons,
             confidence_score=top_level_confidence(reasons),
         ))
@@ -593,3 +611,473 @@ async def enrich_repos_with_package_json(
             repo.confidence_score = top_level_confidence(repo.reasons)
 
     await asyncio.gather(*(_check(r) for r in repos), return_exceptions=True)
+
+
+# ── npm dependency CVEs (OSV.dev) ─────────────────────────────────────
+
+
+# OSV severity strings vary by source DB; normalize to our four-bucket scale.
+_OSV_SEVERITY_MAP: dict[str, str] = {
+    "CRITICAL": "critical",
+    "HIGH": "high",
+    "MODERATE": "medium",
+    "MEDIUM": "medium",
+    "LOW": "low",
+    "NONE": "low",
+}
+
+
+def _normalize_osv_severity(vuln: dict) -> str:
+    """Pick the best severity string from an OSV vulnerability record.
+
+    Prefers `database_specific.severity` (set by GHSA / PyPA / etc.), falls
+    back to parsing the CVSS base score from `severity[].score`, then to
+    "medium" as a safe default.
+    """
+    db_spec = vuln.get("database_specific") or {}
+    raw = (db_spec.get("severity") or "").upper()
+    if raw in _OSV_SEVERITY_MAP:
+        return _OSV_SEVERITY_MAP[raw]
+
+    # Fallback: parse CVSS base score from the severity array.
+    for sev in vuln.get("severity") or []:
+        score_str = sev.get("score") or ""
+        # Format examples: "CVSS:3.1/AV:N/.../A:H" (vector) or "9.8" (numeric).
+        if score_str.replace(".", "", 1).isdigit():
+            try:
+                score = float(score_str)
+            except ValueError:
+                continue
+            if score >= 9.0:
+                return "critical"
+            if score >= 7.0:
+                return "high"
+            if score >= 4.0:
+                return "medium"
+            return "low"
+    return "medium"
+
+
+def _earliest_fixed_version(vuln: dict, ecosystem: str = "npm") -> str | None:
+    """Walk OSV `affected[].ranges[].events` for the earliest `fixed` event.
+
+    OSV uses event ranges of the form `[{introduced: "0"}, {fixed: "1.2.3"}]`.
+    We don't try to compare versions semantically — picking *any* fixed
+    version is enough to tell the user "an upgrade exists." If multiple
+    `fixed` events appear, we just take the first.
+    """
+    for affected in vuln.get("affected") or []:
+        for rng in affected.get("ranges") or []:
+            if rng.get("type") not in ("ECOSYSTEM", "SEMVER"):
+                continue
+            for ev in rng.get("events") or []:
+                fixed = ev.get("fixed")
+                if fixed:
+                    return str(fixed)
+    return None
+
+
+def _osv_advisory_url(vuln: dict) -> str | None:
+    """Pick the canonical advisory URL — prefer GHSA, then OSV's own page."""
+    refs = vuln.get("references") or []
+    for ref in refs:
+        url = ref.get("url") or ""
+        if "github.com/advisories/GHSA-" in url:
+            return url
+    vid = vuln.get("id") or ""
+    if vid:
+        return f"https://osv.dev/vulnerability/{vid}"
+    return None
+
+
+def _osv_primary_id(vuln: dict) -> str | None:
+    """Prefer the GHSA id (more stable & widely indexed) over the OSV id."""
+    vid = vuln.get("id") or ""
+    if vid.startswith("GHSA-"):
+        return vid
+    for alias in vuln.get("aliases") or []:
+        if isinstance(alias, str) and alias.startswith("GHSA-"):
+            return alias
+    # Fall back to first CVE alias, then the OSV id itself.
+    for alias in vuln.get("aliases") or []:
+        if isinstance(alias, str) and alias.startswith("CVE-"):
+            return alias
+    return vid or None
+
+
+async def scan_npm_dependency_cves(
+    osv: OsvClient,
+    packages: list[AttributedNpmPackage],
+    *,
+    concurrency: int = 10,
+) -> list[DependencyCVE]:
+    """One OSV query per package@version → DependencyCVE per advisory.
+
+    Skips packages with no resolved version (we'd otherwise get every
+    historical advisory back, which is just noise).
+    """
+    out: list[DependencyCVE] = []
+    sem = asyncio.Semaphore(concurrency)
+
+    async def _scan(pkg: AttributedNpmPackage) -> None:
+        if not pkg.version:
+            return
+        async with sem:
+            vulns = await osv.query(pkg.name, pkg.version, ecosystem="npm")
+        for v in vulns:
+            primary = _osv_primary_id(v)
+            severity = _normalize_osv_severity(v)
+            fixed = _earliest_fixed_version(v)
+            cve_alias = next(
+                (a for a in (v.get("aliases") or []) if isinstance(a, str) and a.startswith("CVE-")),
+                None,
+            )
+            out.append(DependencyCVE(
+                package=pkg.name,
+                installed_version=pkg.version,
+                cve=primary,
+                severity=severity,
+                advisory_url=_osv_advisory_url(v),
+                fix_available=bool(fixed),
+                fixed_version=fixed,
+                summary=v.get("summary") or v.get("details") or None,
+                aliases=[a for a in (v.get("aliases") or []) if isinstance(a, str)],
+                unmaintained=False,
+            ))
+
+    await asyncio.gather(*(_scan(p) for p in packages), return_exceptions=True)
+    return out
+
+
+# ── npm package hygiene (deprecated, unmaintained) ────────────────────
+
+
+def scan_npm_package_hygiene(
+    packages: list[AttributedNpmPackage],
+    *,
+    unmaintained_after_days: int = 730,
+    now: datetime | None = None,
+) -> list[PackageHygiene]:
+    """Pure function — turns existing package metadata into hygiene findings.
+
+    No network calls: `deprecated` is captured during attribution, and
+    `last_published` lets us flag packages that haven't been touched in
+    `unmaintained_after_days` (default 2 years).
+    """
+    out: list[PackageHygiene] = []
+    cutoff = (now or datetime.now(timezone.utc))
+    for pkg in packages:
+        if pkg.deprecated:
+            msg = pkg.deprecated_message or "package marked deprecated by maintainers"
+            out.append(PackageHygiene(
+                package=pkg.name,
+                version=pkg.version,
+                rule_id="deprecated",
+                severity="medium",
+                detail=msg[:500],  # cap — some maintainers paste long migration guides
+            ))
+
+        if pkg.last_published:
+            published = _parse_iso8601(pkg.last_published)
+            if published is None:
+                continue
+            age_days = (cutoff - published).days
+            if age_days > unmaintained_after_days:
+                out.append(PackageHygiene(
+                    package=pkg.name,
+                    version=pkg.version,
+                    rule_id="unmaintained",
+                    severity="low",
+                    detail=(
+                        f"latest version published {age_days} days ago "
+                        f"(threshold: {unmaintained_after_days})"
+                    ),
+                ))
+    return out
+
+
+def _parse_iso8601(s: str) -> datetime | None:
+    """Parse npm/GitHub-style ISO8601 timestamps into a tz-aware UTC datetime.
+
+    npm uses `2023-04-12T14:22:01.123Z`; GitHub uses `2023-04-12T14:22:01Z`.
+    Both are handled by stripping the trailing `Z` and forcing UTC.
+    """
+    if not s:
+        return None
+    try:
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except ValueError:
+        return None
+
+
+# ── Repo hygiene (branch protection, SECURITY.md, archived w/ activity) ──
+
+
+# Conventional locations for a repo's security policy. We HEAD all three on
+# raw.githubusercontent.com — no API budget cost — and only emit a finding
+# if every one is missing.
+_SECURITY_MD_PATHS: tuple[str, ...] = (
+    "SECURITY.md",
+    ".github/SECURITY.md",
+    "docs/SECURITY.md",
+)
+
+
+async def scan_repo_hygiene(
+    gh: GitHubClient,
+    repos: list[AttributedRepo],
+    *,
+    concurrency: int = 20,
+    archived_active_days: int = 180,
+    now: datetime | None = None,
+) -> list[RepoHygiene]:
+    """Three checks per public, non-fork repo:
+
+    1. **no_branch_protection** — default branch has no protection rules.
+       Uses GET /repos/{o}/{r}/branches/{b} which is public-readable and
+       includes a `protected` bool, so we don't need admin scope.
+    2. **missing_security_md** — none of SECURITY.md, .github/SECURITY.md,
+       or docs/SECURITY.md exists. HEAD-only, no auth.
+    3. **archived_with_recent_activity** — repo flagged archived but pushed
+       in the last `archived_active_days` (default 180), suggesting either
+       a mis-flag or an active fork-bait scenario.
+
+    Forks are skipped on every check (they inherit upstream's protection
+    state and noise drowns the signal).
+    """
+    out: list[RepoHygiene] = []
+    sem = asyncio.Semaphore(concurrency)
+    cutoff = (now or datetime.now(timezone.utc))
+
+    async def _check(repo: AttributedRepo) -> None:
+        if repo.is_fork:
+            return
+        full_name = repo.full_name
+        if "/" not in full_name:
+            return
+        owner, name = full_name.split("/", 1)
+        branch = repo.default_branch or "main"
+
+        # (3) Archived-with-activity is a pure local check — no API call.
+        if repo.archived and repo.pushed_at:
+            pushed = _parse_iso8601(repo.pushed_at)
+            if pushed and (cutoff - pushed).days <= archived_active_days:
+                out.append(RepoHygiene(
+                    repo=full_name,
+                    rule_id="archived_with_recent_activity",
+                    severity="low",
+                    detail=(
+                        f"archived repo last pushed {(cutoff - pushed).days} days ago — "
+                        f"verify intent (archive freezes issues/PRs but the code stays public)"
+                    ),
+                ))
+
+        # Skip remote checks on archived repos — they can't change, so a
+        # finding is just noise.
+        if repo.archived:
+            return
+
+        # (1) Branch protection — single REST call.
+        async with sem:
+            branch_data = await gh.get_branch(owner, name, branch)
+        if isinstance(branch_data, dict) and branch_data.get("protected") is False:
+            out.append(RepoHygiene(
+                repo=full_name,
+                rule_id="no_branch_protection",
+                severity="medium",
+                detail=(
+                    f"default branch '{branch}' has no protection rules — "
+                    f"force-push, history rewrite, and unreviewed merges are unrestricted"
+                ),
+                evidence=f"branches/{branch}.protected=false",
+            ))
+
+        # (2) SECURITY.md — three HEADs in parallel; emit only if all miss.
+        sec_results = await asyncio.gather(*[
+            gh.raw_file_exists(owner, name, p, ref=branch)
+            for p in _SECURITY_MD_PATHS
+        ], return_exceptions=True)
+        any_present = any(r is True for r in sec_results)
+        if not any_present:
+            out.append(RepoHygiene(
+                repo=full_name,
+                rule_id="missing_security_md",
+                severity="low",
+                detail=(
+                    "no security policy file found at SECURITY.md, "
+                    ".github/SECURITY.md, or docs/SECURITY.md — researchers "
+                    "have no documented disclosure channel"
+                ),
+            ))
+
+    await asyncio.gather(*(_check(r) for r in repos), return_exceptions=True)
+    return out
+
+
+# ── GitHub Actions workflow risks ─────────────────────────────────────
+
+
+# Action owners we consider trusted enough to allow tag/branch refs. GitHub
+# itself runs these on managed infra and rotates them, so the
+# unpinned-action class isn't actionable for them.
+_TRUSTED_ACTION_OWNERS: frozenset[str] = frozenset({
+    "actions", "github", "docker",
+})
+
+# Workflow yaml regexes — line-oriented and tolerant to formatting.
+# We avoid a yaml parser deliberately: malformed yaml in real workflows is
+# common, and we only care about a few specific tokens.
+_SHA40_RE = re.compile(r"^[0-9a-f]{40}$")
+_USES_RE = re.compile(r"^\s*-?\s*uses:\s*['\"]?([^'\"\s]+)", re.MULTILINE)
+_PR_TARGET_RE = re.compile(r"\bpull_request_target\b")
+_PR_HEAD_RE = re.compile(
+    # Matches both `github.event.pull_request.head.*` and the rare bare
+    # `pull_request.head.*` form some workflows use after destructuring.
+    r"\bpull_request\.head\.(sha|ref)\b",
+)
+_SELF_HOSTED_RE = re.compile(
+    r"runs-on:\s*\[?\s*['\"]?self-hosted",
+    re.IGNORECASE,
+)
+
+
+def analyze_workflow_content(
+    repo_full_name: str, workflow_path: str, content: str,
+) -> list[WorkflowRisk]:
+    """Run three checks on a single workflow yaml string.
+
+    Returns at most one risk per (workflow, rule_id) — multiple unpinned
+    action references in the same file collapse into a single finding with
+    all matched refs in `evidence`. This keeps the finding list aggregable
+    by workflow path on the backend side.
+    """
+    risks: list[WorkflowRisk] = []
+
+    if _SELF_HOSTED_RE.search(content):
+        risks.append(WorkflowRisk(
+            repo=repo_full_name,
+            workflow_path=workflow_path,
+            rule_id="self_hosted_runner",
+            severity="high",
+            detail=(
+                "Workflow uses `self-hosted` runners. Unless the repo is "
+                "private and runners are isolated per-job, fork PRs can "
+                "execute attacker code on the runner host."
+            ),
+        ))
+
+    if _PR_TARGET_RE.search(content) and _PR_HEAD_RE.search(content):
+        risks.append(WorkflowRisk(
+            repo=repo_full_name,
+            workflow_path=workflow_path,
+            rule_id="pull_request_target",
+            severity="high",
+            detail=(
+                "Workflow triggers on `pull_request_target` AND references "
+                "`pull_request.head.{sha|ref}`. This pattern checks out "
+                "untrusted fork code while running with the repo's secrets "
+                "and write token — a well-known privilege-escalation route."
+            ),
+        ))
+
+    unpinned: list[str] = []
+    for match in _USES_RE.finditer(content):
+        ref = match.group(1).strip()
+        # Skip local (`./.github/actions/foo`) and docker:// refs entirely.
+        if ref.startswith("./") or ref.startswith("docker://"):
+            continue
+        if "@" not in ref or "/" not in ref:
+            continue
+        action_path, _, version = ref.rpartition("@")
+        owner = action_path.split("/", 1)[0].lower()
+        if owner in _TRUSTED_ACTION_OWNERS:
+            continue
+        if _SHA40_RE.match(version):
+            continue  # SHA-pinned → safe
+        unpinned.append(ref)
+
+    if unpinned:
+        # Order-preserving dedup — same action can be `uses:`d in multiple
+        # steps and we don't want to repeat it in evidence.
+        seen: set[str] = set()
+        unique = [r for r in unpinned if not (r in seen or seen.add(r))]
+        evidence_refs = unique[:10]
+        evidence = ", ".join(evidence_refs)
+        if len(unique) > len(evidence_refs):
+            evidence += f", …and {len(unique) - len(evidence_refs)} more"
+        risks.append(WorkflowRisk(
+            repo=repo_full_name,
+            workflow_path=workflow_path,
+            rule_id="unpinned_action",
+            severity="medium",
+            detail=(
+                f"{len(unique)} third-party action reference(s) pinned to a "
+                f"tag or branch instead of a full commit SHA. A compromised "
+                f"upstream tag silently propagates to every build."
+            ),
+            evidence=evidence,
+        ))
+
+    return risks
+
+
+async def scan_workflow_risks(
+    gh: GitHubClient,
+    repos: list[AttributedRepo],
+    *,
+    concurrency: int = 10,
+    max_workflows_per_repo: int = 25,
+) -> list[WorkflowRisk]:
+    """For each public, non-fork, non-archived repo: list its workflow
+    files via the contents API and run `analyze_workflow_content` on each.
+
+    Cost per repo: 1 GitHub API call (contents listing) + N raw fetches
+    (no API budget). Forks/archived are skipped — forks inherit upstream
+    workflows and archived repos can't be remediated.
+    """
+    out: list[WorkflowRisk] = []
+    sem = asyncio.Semaphore(concurrency)
+
+    async def _process_repo(repo: AttributedRepo) -> None:
+        if repo.is_fork or repo.archived:
+            return
+        if "/" not in repo.full_name:
+            return
+        owner, name = repo.full_name.split("/", 1)
+        ref = repo.default_branch or None
+
+        async with sem:
+            entries = await gh.list_directory(owner, name, ".github/workflows", ref=ref)
+        if not entries:
+            return
+
+        # Filter to .yml/.yaml files; cap so a pathological repo can't blow
+        # our budget by checking in dozens of generated workflows.
+        workflows = [
+            e for e in entries
+            if isinstance(e, dict)
+            and (e.get("name") or "").lower().endswith((".yml", ".yaml"))
+            and e.get("type") == "file"
+        ][:max_workflows_per_repo]
+
+        async def _fetch_and_analyze(entry: dict) -> None:
+            path = entry.get("path") or ""
+            if not path:
+                return
+            content = await gh.get_raw_file(owner, name, path, ref=ref or "HEAD")
+            if not content:
+                return
+            out.extend(analyze_workflow_content(repo.full_name, path, content))
+
+        await asyncio.gather(
+            *(_fetch_and_analyze(w) for w in workflows),
+            return_exceptions=True,
+        )
+
+    await asyncio.gather(*(_process_repo(r) for r in repos), return_exceptions=True)
+    return out

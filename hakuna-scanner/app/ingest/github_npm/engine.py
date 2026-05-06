@@ -21,7 +21,7 @@ from app.ingest.github_npm.attribution import (
     filter_above_threshold,
     is_noisy_target,
 )
-from app.ingest.github_npm.clients import GitHubClient, NpmClient
+from app.ingest.github_npm.clients import GitHubClient, NpmClient, OsvClient
 from app.ingest.github_npm.discovery import (
     enrich_repos_with_package_json,
     find_npm_packages_by_domain,
@@ -32,6 +32,10 @@ from app.ingest.github_npm.discovery import (
     repos_from_orgs,
     repos_from_users,
     scan_exposed_secret_files,
+    scan_npm_dependency_cves,
+    scan_npm_package_hygiene,
+    scan_repo_hygiene,
+    scan_workflow_risks,
 )
 from app.ingest.github_npm.models import (
     AttributedRepo,
@@ -59,6 +63,9 @@ class EASMEngine:
         enable_keyword_search: bool = True,
         enable_package_json_enrichment: bool = True,
         enable_exposed_file_scan: bool = True,
+        enable_dependency_cve_scan: bool = True,
+        enable_repo_hygiene_scan: bool = True,
+        enable_workflow_risk_scan: bool = True,
         max_users: int = 200,
         max_packages: int = 250,
         max_keyword_results: int = 50,
@@ -69,6 +76,9 @@ class EASMEngine:
         self.enable_keyword_search = enable_keyword_search
         self.enable_package_json_enrichment = enable_package_json_enrichment
         self.enable_exposed_file_scan = enable_exposed_file_scan
+        self.enable_dependency_cve_scan = enable_dependency_cve_scan
+        self.enable_repo_hygiene_scan = enable_repo_hygiene_scan
+        self.enable_workflow_risk_scan = enable_workflow_risk_scan
         self.max_users = max_users
         self.max_packages = max_packages
         self.max_keyword_results = max_keyword_results
@@ -204,20 +214,72 @@ class EASMEngine:
             repos_kept = filter_above_threshold(all_repos, self.confidence_threshold)
             packages_kept = filter_above_threshold(npm_packages, self.confidence_threshold)
 
-            # Phase 1c — exposed-file probes on kept repos. Runs against the
-            # filtered list so we don't waste calls on low-confidence hits.
-            exposed_files = []
+            # Phase 1c — vuln/hygiene probes on kept assets. All three run
+            # concurrently because they target different services (GitHub
+            # raw, GitHub API, OSV.dev) and don't share rate-limit budgets.
+            exposed_files: list = []
+            dependency_cves: list = []
+            package_hygiene: list = []
+            repo_hygiene: list = []
+            workflow_risks: list = []
+
+            tasks: list[asyncio.Task] = []
+            task_labels: list[str] = []
+
             if self.enable_exposed_file_scan and repos_kept:
-                try:
-                    exposed_files = await scan_exposed_secret_files(gh, repos_kept)
-                except Exception as e:
-                    result.errors.append(f"exposed_files: {e}")
+                tasks.append(asyncio.create_task(
+                    scan_exposed_secret_files(gh, repos_kept),
+                ))
+                task_labels.append("exposed_files")
+
+            if self.enable_repo_hygiene_scan and repos_kept:
+                tasks.append(asyncio.create_task(
+                    scan_repo_hygiene(gh, repos_kept),
+                ))
+                task_labels.append("repo_hygiene")
+
+            if self.enable_workflow_risk_scan and repos_kept:
+                tasks.append(asyncio.create_task(
+                    scan_workflow_risks(gh, repos_kept),
+                ))
+                task_labels.append("workflow_risks")
+
+            if self.enable_dependency_cve_scan and packages_kept:
+                async def _osv_phase():
+                    async with OsvClient() as osv:
+                        return await scan_npm_dependency_cves(osv, packages_kept)
+                tasks.append(asyncio.create_task(_osv_phase()))
+                task_labels.append("dependency_cves")
+
+            if tasks:
+                gathered = await asyncio.gather(*tasks, return_exceptions=True)
+                for label, val in zip(task_labels, gathered):
+                    if isinstance(val, Exception):
+                        result.errors.append(f"{label}: {val}")
+                        continue
+                    if label == "exposed_files":
+                        exposed_files = val
+                    elif label == "repo_hygiene":
+                        repo_hygiene = val
+                    elif label == "workflow_risks":
+                        workflow_risks = val
+                    elif label == "dependency_cves":
+                        dependency_cves = val
+
+            # Package hygiene is pure local computation — no point running it
+            # in the gather above, and it's effectively free.
+            if packages_kept:
+                package_hygiene = scan_npm_package_hygiene(packages_kept)
 
             result.attributed_assets["github_orgs"] = [asdict(o) for o in orgs_kept]
             result.attributed_assets["github_users"] = [asdict(u) for u in users_kept]
             result.attributed_assets["github_repos"] = [asdict(r) for r in repos_kept]
             result.attributed_assets["npm_packages"] = [asdict(p) for p in packages_kept]
             result.vulnerabilities["exposed_files"] = [asdict(f) for f in exposed_files]
+            result.vulnerabilities["dependency_cves"] = [asdict(f) for f in dependency_cves]
+            result.vulnerabilities["package_hygiene"] = [asdict(f) for f in package_hygiene]
+            result.vulnerabilities["repo_hygiene"] = [asdict(f) for f in repo_hygiene]
+            result.vulnerabilities["workflow_risks"] = [asdict(f) for f in workflow_risks]
 
             result.stats = {
                 "orgs_found": len(orgs),
@@ -229,6 +291,10 @@ class EASMEngine:
                 "npm_found": len(npm_packages),
                 "npm_kept": len(packages_kept),
                 "exposed_files": len(exposed_files),
+                "dependency_cves": len(dependency_cves),
+                "package_hygiene": len(package_hygiene),
+                "repo_hygiene": len(repo_hygiene),
+                "workflow_risks": len(workflow_risks),
                 "errors": len(result.errors),
             }
 

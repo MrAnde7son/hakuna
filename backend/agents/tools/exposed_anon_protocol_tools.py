@@ -50,6 +50,12 @@ logger = logging.getLogger(__name__)
 
 _PROBE_TIMEOUT_S = 8
 
+# Cloud Run idle-closes the relay's WebSocket every ~5 min. The agent
+# reconnects within seconds, so on a transient drop wait briefly and
+# retry once before reporting the probe as skipped — otherwise a single
+# disconnect mid-mission silently zeros out every remaining probe.
+_RELAY_RECONNECT_WAIT_S = 3
+
 
 def _run_async(coro):
     # See agents/tools/ssh_tools.py for the cross-loop-future rationale.
@@ -97,8 +103,6 @@ async def _dispatch_probe(
     port = target_port or default_port
 
     broker = get_relay_broker()
-    if not broker.is_connected(relay_agent_id):
-        raise ConnectionError(f"relay agent {relay_agent_id} is not connected")
 
     # The DNS-AXFR probe needs the zone name; default to the asset's fqdn
     # apex when not supplied.
@@ -108,14 +112,35 @@ async def _dispatch_probe(
         if zone:
             extended_params["zone"] = zone
 
-    result = await broker.send_task(
-        agent_id=relay_agent_id,
-        method="anon_protocol_probe",
-        config={"target": target, "port": port},
-        credentials={},  # all ops are anonymous by spec
-        params={"op": op, "op_params": extended_params, "timeout_s": _PROBE_TIMEOUT_S},
-    )
-    return asset, (result or {})
+    async def _send():
+        return await broker.send_task(
+            agent_id=relay_agent_id,
+            method="anon_protocol_probe",
+            config={"target": target, "port": port},
+            credentials={},  # all ops are anonymous by spec
+            params={"op": op, "op_params": extended_params, "timeout_s": _PROBE_TIMEOUT_S},
+        )
+
+    last_err: Optional[ConnectionError] = None
+    for attempt in range(2):
+        if not broker.is_connected(relay_agent_id):
+            if attempt == 0:
+                await asyncio.sleep(_RELAY_RECONNECT_WAIT_S)
+                continue
+            break
+        try:
+            result = await _send()
+            return asset, (result or {})
+        except ConnectionError as e:
+            last_err = e
+            if attempt == 0:
+                await asyncio.sleep(_RELAY_RECONNECT_WAIT_S)
+                continue
+
+    return asset, {
+        "_errors": {"relay": str(last_err) if last_err else f"relay agent {relay_agent_id} not connected"},
+        "skipped": True,
+    }
 
 
 # ── FTP ──────────────────────────────────────────────────────────────
