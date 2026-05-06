@@ -62,6 +62,12 @@ class CampaignCreateBody(BaseModel):
     auto_ticket: Optional[AutoTicketConfig] = None
 
 
+class CampaignPreviewBody(BaseModel):
+    query: list = []
+    query_logic: str = "AND"
+    scan_id: Optional[int] = None
+
+
 class CampaignUpdateBody(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
@@ -313,7 +319,7 @@ def nlp_to_campaign_conditions(
 
 @router.post("/api/campaigns/preview")
 def preview_campaign_query(
-    body: CampaignCreateBody,
+    body: CampaignPreviewBody,
     db: Session = Depends(get_db),
     org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):

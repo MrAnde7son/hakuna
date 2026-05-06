@@ -5,6 +5,7 @@ import {
   Target, Play, Plus, X, ChevronDown, ChevronRight, ChevronLeft,
   User, Users, Zap, AlertTriangle, CheckCircle, Edit2, Save, Eye,
   RefreshCw, GitBranch, Trash2, Ticket, ExternalLink, Hash, ShieldOff,
+  Search, ListChecks,
 } from 'lucide-react'
 import { useScan } from '../../App.jsx'
 import { getFindingAssetDisplay } from '../../utils/assetDisplay.js'
@@ -642,6 +643,138 @@ function OwnerGroup({ group, campaignId, onOwnerUpdate, onStatusChange, riskWeig
   )
 }
 
+// ─── Pipeline Strip ───────────────────────────────────────
+// Three connected summary cards: Match → Automate → Results.
+// Click a card to scroll to its editor section below.
+function PipelineStrip({ query, queryDirty, hasResults, totalFindings, criticalCount, lastRunAt, workflows, onScrollTo, t }) {
+  const stepCount = workflows?.length || 0
+  const stepNames = (workflows || []).slice(0, 3).map(w => w.name).filter(Boolean)
+  const moreSteps = stepCount > 3 ? stepCount - 3 : 0
+
+  const matchSummary = query.length === 0
+    ? t('campaigns.pipeline.noConditions', 'No conditions yet')
+    : t('campaigns.pipeline.conditions', { count: query.length, defaultValue: '{{count}} condition' })
+
+  const automateSummary = stepCount === 0
+    ? t('campaigns.pipeline.noAutomation', 'No automation — add a step')
+    : stepNames.join(' → ') + (moreSteps ? ` +${moreSteps}` : '')
+
+  const resultsSummary = !hasResults
+    ? t('campaigns.pipeline.notRun', 'Not yet run')
+    : `${totalFindings} ${t('campaigns.pipeline.findings', 'findings')}${criticalCount ? ` · ${criticalCount} ${t('campaigns.pipeline.critical', 'critical')}` : ''}`
+
+  const cards = [
+    {
+      key: 'match',
+      number: '1',
+      icon: Search,
+      title: t('campaigns.pipeline.match', 'Match'),
+      summary: matchSummary,
+      tone: query.length === 0 ? 'muted' : 'info',
+      dirty: queryDirty,
+    },
+    {
+      key: 'automate',
+      number: '2',
+      icon: Zap,
+      title: t('campaigns.pipeline.automate', 'Automate'),
+      summary: automateSummary,
+      tone: stepCount === 0 ? 'muted' : 'accent',
+    },
+    {
+      key: 'results',
+      number: '3',
+      icon: ListChecks,
+      title: t('campaigns.pipeline.results', 'Results'),
+      summary: resultsSummary,
+      tone: !hasResults ? 'muted' : 'success',
+      meta: lastRunAt ? `${t('campaigns.pipeline.lastRun', 'Last run')} ${new Date(lastRunAt).toLocaleString()}` : null,
+    },
+  ]
+
+  const TONE = {
+    muted:   { bg: 'var(--bg-secondary)', border: 'var(--border)', icon: 'var(--text-muted)' },
+    info:    { bg: 'rgba(96,165,250,0.08)', border: 'rgba(96,165,250,0.30)', icon: '#60a5fa' },
+    accent:  { bg: 'rgba(129,140,248,0.10)', border: 'rgba(129,140,248,0.35)', icon: '#818cf8' },
+    success: { bg: 'rgba(74,222,128,0.10)', border: 'rgba(74,222,128,0.35)', icon: '#4ade80' },
+  }
+
+  return (
+    <div style={{
+      display: 'flex',
+      alignItems: 'stretch',
+      gap: 0,
+      marginBottom: 24,
+      flexWrap: 'wrap',
+    }}>
+      {cards.map((c, i) => {
+        const Icon = c.icon
+        const tone = TONE[c.tone]
+        return (
+          <React.Fragment key={c.key}>
+            <button
+              onClick={() => onScrollTo(c.key)}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 12,
+                background: tone.bg, border: `1px solid ${tone.border}`,
+                borderRadius: 12, padding: '14px 16px',
+                cursor: 'pointer', textAlign: 'left',
+                color: 'var(--text-primary)',
+                transition: 'transform 0.1s, box-shadow 0.1s',
+                minWidth: 0, flex: '1 1 240px',
+              }}
+              onMouseEnter={e => { e.currentTarget.style.boxShadow = '0 2px 8px rgba(0,0,0,0.08)' }}
+              onMouseLeave={e => { e.currentTarget.style.boxShadow = 'none' }}
+            >
+              <div style={{
+                width: 32, height: 32, borderRadius: 10,
+                background: tone.icon + '22', color: tone.icon,
+                fontWeight: 700, fontSize: 13,
+                display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+              }}>
+                <Icon size={16} />
+              </div>
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
+                  <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', letterSpacing: '0.05em' }}>
+                    {c.number}
+                  </span>
+                  <span style={{ fontSize: 13, fontWeight: 700 }}>{c.title}</span>
+                  {c.dirty && (
+                    <span style={{ fontSize: 9, fontWeight: 700, color: '#f59e0b', background: '#78350f22', border: '1px solid #78350f44', borderRadius: 3, padding: '0 5px' }}>
+                      {t('campaigns.pipeline.unsaved', 'Unsaved')}
+                    </span>
+                  )}
+                </div>
+                <div style={{
+                  fontSize: 12, color: 'var(--text-muted)',
+                  whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                }}>
+                  {c.summary}
+                </div>
+                {c.meta && (
+                  <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2,
+                    whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {c.meta}
+                  </div>
+                )}
+              </div>
+            </button>
+            {i < cards.length - 1 && (
+              <div style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                color: 'var(--text-muted)', flexShrink: 0, padding: '0 4px',
+              }}>
+                <ChevronRight size={16} />
+              </div>
+            )}
+          </React.Fragment>
+        )
+      })}
+    </div>
+  )
+}
+
 // ─── Main Component ───────────────────────────────────────
 const STATUS_OPTIONS = ['draft', 'active', 'paused', 'completed']
 
@@ -665,11 +798,12 @@ export default function CampaignDetail() {
   const [editingName, setEditingName] = useState(false)
   const [nameVal, setNameVal] = useState('')
   const [descVal, setDescVal] = useState('')
-  const [activeTab, setActiveTab] = useState('campaign') // 'campaign' | 'workflows' | 'tickets'
+  const [activeTab, setActiveTab] = useState('campaign') // 'campaign' | 'tickets' | 'collaborators'
   const [queryExpanded, setQueryExpanded] = useState(false) // collapsed by default when results exist
   const [users, setUsers] = useState([])
   const [campaignTickets, setCampaignTickets] = useState([])
   const [ticketsLoading, setTicketsLoading] = useState(false)
+  const [workflowSummary, setWorkflowSummary] = useState([])
   const [creatingSlackChannel, setCreatingSlackChannel] = useState(false)
   const [slackChannelError, setSlackChannelError] = useState(null)
 
@@ -972,7 +1106,6 @@ export default function CampaignDetail() {
       <div style={{ display: 'flex', gap: 0, marginBottom: 20, borderBottom: '1px solid var(--border)' }}>
         {[
           { key: 'campaign', label: totalFindings > 0 ? `Campaign (${totalFindings})` : 'Campaign', icon: Target },
-          { key: 'workflows', label: t('campaigns.workflows'), icon: GitBranch },
           ...(campaignTickets.length > 0 ? [{ key: 'tickets', label: `Tickets (${campaignTickets.length})`, icon: Ticket }] : []),
           ...(isCollaboratorMode() ? [] : [{ key: 'collaborators', label: 'Collaborators', icon: Users }]),
         ].map(({ key, label, icon: Icon }) => (
@@ -996,7 +1129,24 @@ export default function CampaignDetail() {
       {/* Tab content */}
       {activeTab === 'campaign' && (
         <div>
-          {/* Query Builder — collapsible, auto-expanded when no results */}
+          {/* Pipeline strip — Match → Automate → Results, always visible */}
+          <PipelineStrip
+            t={t}
+            query={query}
+            queryDirty={queryDirty}
+            hasResults={hasResults}
+            totalFindings={totalFindings}
+            criticalCount={campaign.critical_count || 0}
+            lastRunAt={campaign.last_run_at}
+            workflows={workflowSummary}
+            onScrollTo={(key) => {
+              const el = document.getElementById(`section-${key}`)
+              if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+            }}
+          />
+
+          {/* Section 1: Match — query builder */}
+          <div id="section-match" style={{ scrollMarginTop: 80 }}>
           <Card style={{ marginBottom: 20 }}>
             <button
               onClick={() => setQueryExpanded(e => !e)}
@@ -1074,70 +1224,79 @@ export default function CampaignDetail() {
               </div>
             )}
           </Card>
+          </div>
 
-          {/* Results */}
-          {!hasResults ? (
-            query.length > 0 && (
-              <EmptyState
-                icon={Play}
-                title={t('campaigns.runToSeeResults')}
-                sub={t('campaigns.runToSeeResultsDesc')}
-              >
-                <button onClick={handleRun} disabled={running}
-                  style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 20px', borderRadius: 8, fontSize: 13, fontWeight: 700, border: 'none', background: '#1d4ed8', color: '#fff', cursor: 'pointer' }}>
-                  <Play size={14} /> {t('campaigns.runNow')}
-                </button>
-              </EmptyState>
-            )
-          ) : (
-            <>
-              {/* Summary bar */}
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12, marginBottom: 20 }}>
-                <div style={{ background: '#dc262622', border: '1px solid #dc262644', borderRadius: 10, padding: '12px 16px' }}>
-                  <div style={{ fontSize: 11, color: '#fca5a5', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>{t('campaigns.critical')}</div>
-                  <div style={{ fontSize: 26, fontWeight: 700, color: '#fca5a5' }}>{campaign.critical_count}</div>
-                </div>
-                <div style={{ background: '#78350f22', border: '1px solid #78350f44', borderRadius: 10, padding: '12px 16px' }}>
-                  <div style={{ fontSize: 11, color: '#fcd34d', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>{t('campaigns.withExploits')}</div>
-                  <div style={{ fontSize: 26, fontWeight: 700, color: '#fcd34d' }}>{campaign.exploit_count}</div>
-                </div>
-                <div style={{ background: '#1e3a5f22', border: '1px solid #1e3a5f44', borderRadius: 10, padding: '12px 16px' }}>
-                  <div style={{ fontSize: 11, color: '#60a5fa', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>{t('campaigns.ownerGroups')}</div>
-                  <div style={{ fontSize: 26, fontWeight: 700, color: '#60a5fa' }}>{campaign.owner_groups?.length}</div>
-                </div>
-                <div style={{ background: '#14532d22', border: '1px solid #14532d44', borderRadius: 10, padding: '12px 16px' }}>
-                  <div style={{ fontSize: 11, color: '#4ade80', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>{t('campaigns.totalFindings')}</div>
-                  <div style={{ fontSize: 26, fontWeight: 700, color: '#4ade80' }}>{totalFindings}</div>
-                </div>
-              </div>
+          {/* Section 2: Automate — workflows that run against matched findings */}
+          <div id="section-automate" style={{ scrollMarginTop: 80, marginBottom: 20 }}>
+            <CampaignWorkflows
+              campaignId={campaign.id}
+              hasResults={hasResults}
+              onWorkflowsChange={setWorkflowSummary}
+            />
+          </div>
 
-              {/* Progress bar */}
-              <CampaignProgressBar statusCounts={campaign.status_counts} total={totalFindings} />
+          {/* Section 3: Results — matched findings grouped by owner */}
+          <div id="section-results" style={{ scrollMarginTop: 80 }}>
+            {!hasResults ? (
+              <Card style={{ padding: 24, textAlign: 'center' }}>
+                <Play size={20} color='var(--text-muted)' style={{ marginBottom: 8 }} />
+                <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 4 }}>
+                  {query.length === 0
+                    ? t('campaigns.pipeline.addQueryFirst', 'Add a condition above to start matching findings.')
+                    : t('campaigns.runToSeeResults')}
+                </div>
+                {query.length > 0 && (
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                    {t('campaigns.pipeline.runFromHeader', 'Use Run Campaign in the header to execute the query and trigger automation.')}
+                  </div>
+                )}
+              </Card>
+            ) : (
+              <>
+                {/* Summary bar */}
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12, marginBottom: 20 }}>
+                  <div style={{ background: '#dc262622', border: '1px solid #dc262644', borderRadius: 10, padding: '12px 16px' }}>
+                    <div style={{ fontSize: 11, color: '#fca5a5', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>{t('campaigns.critical')}</div>
+                    <div style={{ fontSize: 26, fontWeight: 700, color: '#fca5a5' }}>{campaign.critical_count}</div>
+                  </div>
+                  <div style={{ background: '#78350f22', border: '1px solid #78350f44', borderRadius: 10, padding: '12px 16px' }}>
+                    <div style={{ fontSize: 11, color: '#fcd34d', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>{t('campaigns.withExploits')}</div>
+                    <div style={{ fontSize: 26, fontWeight: 700, color: '#fcd34d' }}>{campaign.exploit_count}</div>
+                  </div>
+                  <div style={{ background: '#1e3a5f22', border: '1px solid #1e3a5f44', borderRadius: 10, padding: '12px 16px' }}>
+                    <div style={{ fontSize: 11, color: '#60a5fa', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>{t('campaigns.ownerGroups')}</div>
+                    <div style={{ fontSize: 26, fontWeight: 700, color: '#60a5fa' }}>{campaign.owner_groups?.length}</div>
+                  </div>
+                  <div style={{ background: '#14532d22', border: '1px solid #14532d44', borderRadius: 10, padding: '12px 16px' }}>
+                    <div style={{ fontSize: 11, color: '#4ade80', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>{t('campaigns.totalFindings')}</div>
+                    <div style={{ fontSize: 26, fontWeight: 700, color: '#4ade80' }}>{totalFindings}</div>
+                  </div>
+                </div>
 
-              {/* Compliance controls this campaign remediates */}
-              {campaign.compliance_controls?.length > 0 && (
-                <ComplianceControlChips controls={campaign.compliance_controls} />
-              )}
+                {/* Progress bar */}
+                <CampaignProgressBar statusCounts={campaign.status_counts} total={totalFindings} />
 
-              {/* Owner groups */}
-              {campaign.owner_groups.map((group, idx) => (
-                <OwnerGroup
-                  key={group.owner_key}
-                  group={group}
-                  campaignId={campaign.id}
-                  onOwnerUpdate={load}
-                  onStatusChange={load}
-                  riskWeights={riskWeights}
-                  defaultExpanded={idx === 0}
-                />
-              ))}
-            </>
-          )}
+                {/* Compliance controls this campaign remediates */}
+                {campaign.compliance_controls?.length > 0 && (
+                  <ComplianceControlChips controls={campaign.compliance_controls} />
+                )}
+
+                {/* Owner groups */}
+                {campaign.owner_groups.map((group, idx) => (
+                  <OwnerGroup
+                    key={group.owner_key}
+                    group={group}
+                    campaignId={campaign.id}
+                    onOwnerUpdate={load}
+                    onStatusChange={load}
+                    riskWeights={riskWeights}
+                    defaultExpanded={idx === 0}
+                  />
+                ))}
+              </>
+            )}
+          </div>
         </div>
-      )}
-
-      {activeTab === 'workflows' && (
-        <CampaignWorkflows campaignId={campaign.id} hasResults={hasResults} />
       )}
 
       {activeTab === 'collaborators' && (
@@ -1205,7 +1364,7 @@ export default function CampaignDetail() {
 }
 
 // ─── Campaign Workflows Tab ──────────────────────
-function CampaignWorkflows({ campaignId, hasResults }) {
+function CampaignWorkflows({ campaignId, hasResults, onWorkflowsChange }) {
   const { t } = useTranslation()
   const navigate = useNavigate()
   const [workflows, setWorkflows] = useState([])
@@ -1230,6 +1389,10 @@ function CampaignWorkflows({ campaignId, hasResults }) {
   }
 
   useEffect(() => { loadWorkflows() }, [campaignId])
+
+  useEffect(() => {
+    if (onWorkflowsChange) onWorkflowsChange(workflows)
+  }, [workflows, onWorkflowsChange])
 
   const handleCreateFromTemplate = async (tpl) => {
     const wf = await createWorkflowFromTemplate({
