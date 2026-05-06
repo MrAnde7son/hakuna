@@ -9,24 +9,43 @@ Safety: the staleness-based skipping in each pipeline stage means
 re-dispatching a scan is safe -- completed stages will be skipped
 automatically. The recovery_attempts counter prevents infinite loops.
 
-Two entry points:
+Three entry points:
   1. ``recover_orphaned_scans`` -- periodic Celery beat task (every 5 min)
   2. ``_on_worker_ready_recovery`` -- worker_ready signal (runs once at boot)
+  3. ``reap_zombie_tasks`` -- periodic beat task (every 30 min) that clears
+     orphaned ``unacked`` entries left by dead worker containers. Without
+     this, stale claims pin worker slots forever and ``recover_orphaned_scans``
+     itself starves in the queue.
 """
 
 import asyncio
+import json
 import logging
+import time
 from datetime import datetime, timezone, timedelta
 
+import redis
+from celery.exceptions import WorkerLostError
 from celery.signals import worker_ready
 from sqlalchemy import text
 
 from app.celery_app import celery
+from app.config import settings
 from app.database import get_task_session
 from app.tasks.discovery import run_discovery_chain
 from app.tasks.enrichment import run_enrichment_chain
 
 logger = logging.getLogger(__name__)
+
+# Visibility timeout is 14700s (~4h, see celery_app.py). Anything still in
+# `unacked` past that boundary plus a 1h grace was claimed by a worker that's
+# no longer acking — kombu only restores entries claimed by the *current*
+# client_id, so entries orphaned by a container restart never come back
+# without help. Observed in production 2026-05-06: 4 unacked entries from a
+# previous worker generation re-delivered to the live worker, pinning all 4
+# slots with redelivered ghosts (3 of which were duplicates of the same
+# scan_run) and starving the recovery beat task itself.
+ZOMBIE_TASK_THRESHOLD_SECONDS = 5 * 3600
 
 # A scan stuck in 'running' for longer than this is considered orphaned.
 ORPHAN_THRESHOLD_MINUTES = 15
@@ -195,11 +214,24 @@ def recover_orphaned_scans() -> dict:
 
 @worker_ready.connect
 def _on_worker_ready_recovery(sender=None, **_kwargs) -> None:
-    """On worker startup, immediately check for orphaned scans.
+    """On worker startup, reap unacked ghosts then check for orphaned scans.
 
     The most common cause of orphaned scans is the worker restarting, so
     checking at boot catches them without waiting for the next beat tick.
+
+    Ghost reap runs first: if the previous container generation left
+    redelivered ``unacked`` entries, they'll re-pin every slot the moment
+    this worker connects to the broker. Clearing them before recovery
+    re-dispatches anything ensures the new tasks can actually be picked up.
     """
+    logger.info("Worker starting: reaping zombie unacked entries")
+    try:
+        reap_summary = _reap_zombie_tasks_impl()
+        if reap_summary.get("reaped"):
+            logger.warning("Worker startup zombie reap: %s", reap_summary)
+    except Exception:
+        logger.exception("Worker startup zombie reap failed (non-fatal)")
+
     logger.info("Worker starting: checking for orphaned scan runs")
     try:
         summary = _run_async(_find_and_recover_orphans())
@@ -209,3 +241,77 @@ def _on_worker_ready_recovery(sender=None, **_kwargs) -> None:
             logger.info("Worker startup recovery: no orphaned scans found")
     except Exception:
         logger.exception("Worker startup orphan recovery failed (non-fatal)")
+
+
+@celery.task(name="recovery.reap_zombie_tasks")
+def reap_zombie_tasks() -> dict:
+    """Fail tasks orphaned in Celery's redis ``unacked`` set.
+
+    When an easm-worker container is killed mid-scan, its ``unacked`` entries
+    are left behind: kombu's visibility_timeout-based restore only acts on
+    entries claimed by the *current* client_id, so entries from a dead
+    container never recover. With ``task_acks_late=True`` and
+    ``worker_prefetch_multiplier=1``, those ghost entries pin worker slots
+    indefinitely and the periodic ``recover_orphaned_scans`` beat task
+    starves in the queue behind them — that's the failure mode observed in
+    production 2026-05-06, where 3 of 4 slots were pinned by redelivered
+    duplicates of the same scan_run from a previous worker generation.
+
+    Finds delivery tags older than ``ZOMBIE_TASK_THRESHOLD_SECONDS``, marks
+    each task FAILURE in the result backend so any caller polling on it
+    sees a terminal state, and removes the unacked bookkeeping.
+    """
+    return _reap_zombie_tasks_impl()
+
+
+def _reap_zombie_tasks_impl(now: float | None = None) -> dict:
+    cutoff = (now if now is not None else time.time()) - ZOMBIE_TASK_THRESHOLD_SECONDS
+    client = redis.from_url(settings.redis_url)
+
+    # `unacked_index` is a ZSET of delivery_tag -> claim timestamp.
+    stale_tags = client.zrangebyscore("unacked_index", "-inf", cutoff)
+    if not stale_tags:
+        return {"status": "ok", "reaped": 0}
+
+    reaped = []
+    for delivery_tag in stale_tags:
+        body = client.hget("unacked", delivery_tag)
+        if not body:
+            client.zrem("unacked_index", delivery_tag)
+            continue
+
+        try:
+            msg = json.loads(body)
+            headers = msg[0].get("headers", {})
+            task_id = headers.get("id")
+            task_name = headers.get("task")
+        except Exception:
+            logger.warning(
+                "zombie reaper: could not parse unacked body for %s; removing anyway",
+                delivery_tag,
+            )
+            client.hdel("unacked", delivery_tag)
+            client.zrem("unacked_index", delivery_tag)
+            continue
+
+        if task_id:
+            exc = WorkerLostError(
+                f"Task {task_name} ({task_id}) abandoned by dead worker; "
+                f"reaped after {ZOMBIE_TASK_THRESHOLD_SECONDS}s in unacked."
+            )
+            try:
+                celery.backend.mark_as_failure(task_id, exc)
+            except Exception:
+                logger.exception(
+                    "zombie reaper: failed to mark %s as failure", task_id
+                )
+
+        client.hdel("unacked", delivery_tag)
+        client.zrem("unacked_index", delivery_tag)
+        reaped.append({"task_id": task_id, "task_name": task_name})
+        logger.warning(
+            "zombie reaper: failed task %s (%s) abandoned in unacked",
+            task_id, task_name,
+        )
+
+    return {"status": "ok", "reaped": len(reaped), "tasks": reaped}

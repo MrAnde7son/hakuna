@@ -82,6 +82,14 @@ celery.conf.beat_schedule = {
         "task": "recovery.recover_orphaned_scans",
         "schedule": 300.0,  # every 5 minutes
     },
+    # Reap unacked entries left behind by dead worker containers. Without
+    # this, redelivered ghosts pin every slot (acks_late + prefetch=1) and
+    # `recover_orphaned_scans` itself starves in the queue. 30 min is fine —
+    # entries must already be older than 5h to be eligible.
+    "reap-zombie-tasks-every-30m": {
+        "task": "recovery.reap_zombie_tasks",
+        "schedule": 1800.0,
+    },
     # Pull authoritative cloud IP-range feeds (AWS, GCP, Cloudflare,
     # Oracle, DigitalOcean, Fastly) once a day. The matcher
     # (app.ingest.cloud_ranges) reloads in-process after each successful
