@@ -15,6 +15,9 @@ import {
   executeWorkflow, getWorkflowTemplates, authListUsers,
   getCampaignTickets, syncFindingTickets, createCampaignSlackChannel,
   createException,
+  listCampaignCollaborators, inviteCampaignCollaborator,
+  revokeCampaignCollaborator, resendCampaignCollaborator,
+  isCollaboratorMode,
 } from '../../api.js'
 import { SeverityBadge, ScoreBar, Button, Spinner, EmptyState, Card, Pill, ErrorBanner, SkeletonDetail, Table, buildFindingBreakdown, useRiskWeights, OWNERSHIP_ROLE_OPTIONS, OWNERSHIP_ROLE_COLORS } from '../shared/ui.jsx'
 import RuleBuilder from './RuleBuilder.jsx'
@@ -971,6 +974,7 @@ export default function CampaignDetail() {
           { key: 'campaign', label: totalFindings > 0 ? `Campaign (${totalFindings})` : 'Campaign', icon: Target },
           { key: 'workflows', label: t('campaigns.workflows'), icon: GitBranch },
           ...(campaignTickets.length > 0 ? [{ key: 'tickets', label: `Tickets (${campaignTickets.length})`, icon: Ticket }] : []),
+          ...(isCollaboratorMode() ? [] : [{ key: 'collaborators', label: 'Collaborators', icon: Users }]),
         ].map(({ key, label, icon: Icon }) => (
           <button
             key={key}
@@ -1134,6 +1138,10 @@ export default function CampaignDetail() {
 
       {activeTab === 'workflows' && (
         <CampaignWorkflows campaignId={campaign.id} hasResults={hasResults} />
+      )}
+
+      {activeTab === 'collaborators' && (
+        <CollaboratorsPanel campaignId={campaign.id} />
       )}
 
       {activeTab === 'tickets' && (
@@ -1428,5 +1436,173 @@ function CampaignWorkflows({ campaignId, hasResults }) {
         </div>
       )}
     </div>
+  )
+}
+
+
+// ─── External Collaborators ────────────────────────────────
+function CollaboratorsPanel({ campaignId }) {
+  const [rows, setRows] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [email, setEmail] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState('')
+  const [lastInviteUrl, setLastInviteUrl] = useState('')
+
+  const refresh = useCallback(() => {
+    setLoading(true)
+    listCampaignCollaborators(campaignId)
+      .then(d => setRows(d.collaborators || []))
+      .catch(err => setError(err.message || 'Failed to load collaborators'))
+      .finally(() => setLoading(false))
+  }, [campaignId])
+
+  useEffect(() => { refresh() }, [refresh])
+
+  const handleInvite = async (e) => {
+    e.preventDefault()
+    setError('')
+    setLastInviteUrl('')
+    setSubmitting(true)
+    try {
+      const r = await inviteCampaignCollaborator(campaignId, email.trim())
+      setEmail('')
+      // If email delivery isn't configured, surface the link so the user can
+      // share it manually. Always shown once on invite for convenience.
+      setLastInviteUrl(r.accept_url || '')
+      refresh()
+    } catch (err) {
+      setError(err.message || 'Invite failed')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const handleRevoke = async (id) => {
+    if (!window.confirm('Revoke this collaborator? Their access stops immediately.')) return
+    try {
+      await revokeCampaignCollaborator(campaignId, id)
+      refresh()
+    } catch (err) {
+      setError(err.message || 'Revoke failed')
+    }
+  }
+
+  const handleResend = async (id) => {
+    try {
+      const r = await resendCampaignCollaborator(campaignId, id)
+      setLastInviteUrl(r.accept_url || '')
+      refresh()
+    } catch (err) {
+      setError(err.message || 'Resend failed')
+    }
+  }
+
+  const statusColor = {
+    pending: '#f59e0b',
+    active: '#10b981',
+    expired: '#71717a',
+    revoked: '#dc2626',
+  }
+
+  return (
+    <Card>
+      <div style={{ marginBottom: 16 }}>
+        <h3 style={{ fontSize: 15, fontWeight: 600, margin: '0 0 4px' }}>External collaborators</h3>
+        <p style={{ fontSize: 13, color: 'var(--text-muted)', margin: 0 }}>
+          Invite someone outside Hakuna to view findings, build workflows, and connect integrations
+          for this campaign only. They get a magic-link — no account creation needed.
+        </p>
+      </div>
+
+      <form onSubmit={handleInvite} style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+        <input
+          type="email"
+          value={email}
+          onChange={e => setEmail(e.target.value)}
+          required
+          placeholder="email@partner.com"
+          style={{
+            flex: 1, padding: '8px 12px', borderRadius: 6,
+            border: '1px solid var(--border)', background: 'var(--bg-card)',
+            color: 'var(--text-primary)', fontSize: 13,
+          }}
+        />
+        <Button type="submit" disabled={submitting}>
+          {submitting ? 'Inviting…' : 'Invite'}
+        </Button>
+      </form>
+
+      {error && <ErrorBanner message={error} onDismiss={() => setError('')} />}
+
+      {lastInviteUrl && (
+        <div style={{
+          marginBottom: 16, padding: 10, borderRadius: 6,
+          background: 'var(--bg-muted)', border: '1px solid var(--border)',
+          fontSize: 12, color: 'var(--text-secondary)',
+          wordBreak: 'break-all',
+        }}>
+          <div style={{ fontWeight: 600, marginBottom: 4 }}>Invite link (share if email delivery isn't set up):</div>
+          <a href={lastInviteUrl} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent)' }}>
+            {lastInviteUrl}
+          </a>
+        </div>
+      )}
+
+      {loading ? (
+        <Spinner />
+      ) : rows.length === 0 ? (
+        <EmptyState
+          icon={Users}
+          title="No collaborators yet"
+          subtitle="Invite a vendor, contractor, or partner to help triage this campaign."
+        />
+      ) : (
+        <Table
+          columns={[
+            { key: 'email', label: 'Email', render: v => <span style={{ fontSize: 13 }}>{v}</span> },
+            {
+              key: 'status', label: 'Status', width: '100px',
+              render: v => (
+                <Pill style={{ background: `${statusColor[v] || '#71717a'}22`, color: statusColor[v] || '#71717a' }}>
+                  {v}
+                </Pill>
+              )
+            },
+            { key: 'invited_at', label: 'Invited', width: '160px', render: v => v ? new Date(v).toLocaleDateString() : '—' },
+            { key: 'expires_at', label: 'Expires', width: '160px', render: v => v ? new Date(v).toLocaleDateString() : '—' },
+            { key: 'last_seen_at', label: 'Last seen', width: '160px', render: v => v ? new Date(v).toLocaleDateString() : '—' },
+            {
+              key: 'id', label: '', width: '160px',
+              render: (_v, row) => (
+                <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+                  {row.status === 'pending' && (
+                    <button
+                      onClick={() => handleResend(row.id)}
+                      style={{
+                        background: 'transparent', border: '1px solid var(--border)',
+                        borderRadius: 4, padding: '4px 8px', fontSize: 12, cursor: 'pointer',
+                        color: 'var(--text-primary)',
+                      }}
+                    >Resend</button>
+                  )}
+                  {row.status !== 'revoked' && (
+                    <button
+                      onClick={() => handleRevoke(row.id)}
+                      style={{
+                        background: 'transparent', border: '1px solid var(--danger)',
+                        borderRadius: 4, padding: '4px 8px', fontSize: 12, cursor: 'pointer',
+                        color: 'var(--danger)',
+                      }}
+                    >Revoke</button>
+                  )}
+                </div>
+              )
+            },
+          ]}
+          rows={rows}
+        />
+      )}
+    </Card>
   )
 }

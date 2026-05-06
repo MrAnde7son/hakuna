@@ -25,13 +25,31 @@ def log_audit(
     actor=None,
     org_id: Optional[int] = None,
 ) -> None:
-    """Write a single immutable audit record. Fire-and-forget — never raises."""
+    """Write a single immutable audit record. Fire-and-forget — never raises.
+
+    `actor` may be a User (or User-like object with id/email/display_name/org_id)
+    or a CollaboratorPrincipal. For collaborators we record `actor_user_id=NULL`
+    and snapshot the email so the row is identifiable as an external action.
+    """
     try:
+        # Detect a CollaboratorPrincipal without importing core.auth (circular).
+        is_collab = actor is not None and getattr(actor, "collaborator_id", None) is not None
+        if is_collab:
+            actor_user_id = None
+            actor_email = getattr(actor, "email", None)
+            actor_display_name = f"Collaborator <{actor_email}>" if actor_email else "Collaborator"
+            actor_org_id = getattr(actor, "org_id", None)
+        else:
+            actor_user_id = getattr(actor, "id", None) if actor else None
+            actor_email = getattr(actor, "email", None) if actor else None
+            actor_display_name = getattr(actor, "display_name", None) if actor else None
+            actor_org_id = getattr(actor, "org_id", None) if actor else None
+
         entry = AuditLog(
-            org_id=org_id or (actor.org_id if actor else None),
-            actor_user_id=actor.id if actor else None,
-            actor_email=actor.email if actor else None,
-            actor_display_name=getattr(actor, "display_name", None) if actor else None,
+            org_id=org_id or actor_org_id,
+            actor_user_id=actor_user_id,
+            actor_email=actor_email,
+            actor_display_name=actor_display_name,
             action=action,
             entity_type=entity_type,
             entity_id=entity_id,

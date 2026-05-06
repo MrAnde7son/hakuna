@@ -6,8 +6,9 @@ import hashlib
 import hmac
 import os
 import secrets
+from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Optional, List
+from typing import Optional, List, Union
 
 from fastapi import Depends, HTTPException, Header
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -196,6 +197,103 @@ def decode_access_token(token: str) -> dict:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
 
+# ── Campaign collaborator (external) tokens ───────────────
+#
+# An external collaborator has no User row. They authenticate with a JWT scoped
+# to a single campaign. Token payload differs from a regular user JWT:
+#   {"sub": "collab:<id>", "scope": "campaign", "campaign_id": N, "org_id": M, "exp": ...}
+# Resolution returns a CollaboratorPrincipal — never a User. Any route that
+# normally requires a User must reject this principal (handled below in
+# get_current_user) so collaborators can't reach org-level surface area.
+
+COLLABORATOR_SUB_PREFIX = "collab:"
+COLLABORATOR_SCOPE = "campaign"
+COLLABORATOR_INVITE_TOKEN_PREFIX = "hci_"  # plaintext invite token prefix
+COLLABORATOR_INVITE_TTL_DAYS = 7
+
+
+@dataclass
+class CollaboratorPrincipal:
+    """Caller authenticated via a campaign invite token. Has access to exactly
+    one campaign and no org-wide privileges."""
+    collaborator_id: int
+    campaign_id: int
+    org_id: int
+    email: str
+    role: str  # "contributor"
+
+
+def create_collaborator_token(
+    collaborator_id: int,
+    campaign_id: int,
+    org_id: int,
+    expires_delta: Optional[timedelta] = None,
+) -> str:
+    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+    payload = {
+        "sub": f"{COLLABORATOR_SUB_PREFIX}{collaborator_id}",
+        "scope": COLLABORATOR_SCOPE,
+        "campaign_id": campaign_id,
+        "org_id": org_id,
+        "exp": expire,
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+
+def hash_invite_token(plaintext: str) -> str:
+    return hashlib.sha256(plaintext.encode("utf-8")).hexdigest()
+
+
+def generate_invite_token() -> tuple[str, str]:
+    """Mint a campaign invite token. Returns (plaintext, sha256_hex).
+    Plaintext is embedded in the invite email link and never stored."""
+    raw = secrets.token_urlsafe(32)
+    plaintext = f"{COLLABORATOR_INVITE_TOKEN_PREFIX}{raw}"
+    return plaintext, hash_invite_token(plaintext)
+
+
+def _resolve_collaborator(payload: dict, db: Session) -> Optional[CollaboratorPrincipal]:
+    """Return a CollaboratorPrincipal if the payload represents a valid,
+    accepted, non-revoked, non-expired collaborator. None otherwise."""
+    if payload.get("scope") != COLLABORATOR_SCOPE:
+        return None
+    sub = payload.get("sub", "")
+    if not isinstance(sub, str) or not sub.startswith(COLLABORATOR_SUB_PREFIX):
+        return None
+    try:
+        collab_id = int(sub[len(COLLABORATOR_SUB_PREFIX):])
+    except ValueError:
+        return None
+
+    from models.models import CampaignCollaborator
+    collab = db.query(CampaignCollaborator).filter(
+        CampaignCollaborator.id == collab_id,
+        CampaignCollaborator.revoked_at.is_(None),
+    ).first()
+    if not collab:
+        return None
+    if collab.expires_at and collab.expires_at < datetime.utcnow():
+        return None
+    if collab.accepted_at is None:
+        return None  # session token only valid after acceptance
+    if collab.campaign_id != payload.get("campaign_id"):
+        return None
+
+    try:
+        collab.last_seen_at = datetime.utcnow()
+        db.commit()
+    except Exception:
+        db.rollback()
+
+    return CollaboratorPrincipal(
+        collaborator_id=collab.id,
+        campaign_id=collab.campaign_id,
+        org_id=collab.org_id,
+        email=collab.email,
+        role=collab.role,
+    )
+
+
 # ── API token helpers ─────────────────────────────────────
 
 API_TOKEN_PREFIX = "hak_"
@@ -252,6 +350,9 @@ async def get_current_user(
     """Extract and validate the current user from the Authorization header.
     Accepts either a JWT or a `hak_…` API token. Returns None if no token is
     present (allows optional auth during migration).
+
+    Campaign collaborator tokens (scope=campaign) are rejected here with 403 —
+    they must use endpoints that opt in via `get_current_principal`.
     """
     if credentials is None:
         return None
@@ -266,11 +367,98 @@ async def get_current_user(
         return user
 
     payload = decode_access_token(raw)
-    user_id = int(payload["sub"])
+    if payload.get("scope") == COLLABORATOR_SCOPE:
+        raise HTTPException(status_code=403, detail="This endpoint is not available to campaign collaborators")
+    try:
+        user_id = int(payload["sub"])
+    except (KeyError, TypeError, ValueError):
+        raise HTTPException(status_code=401, detail="Invalid token subject")
     user = db.query(User).filter(User.id == user_id, User.is_active == True).first()
     if not user:
         raise HTTPException(status_code=401, detail="User not found or inactive")
     return user
+
+
+async def get_current_principal(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
+    db: Session = Depends(get_db),
+) -> Optional[Union[User, CollaboratorPrincipal]]:
+    """Return either a User or a CollaboratorPrincipal — for endpoints that
+    accept both. Routes that don't opt in here automatically reject
+    collaborators (via get_current_user).
+    """
+    if credentials is None:
+        return None
+
+    raw = credentials.credentials
+    if raw.startswith(API_TOKEN_PREFIX):
+        user = _resolve_api_token(raw, db)
+        if user is None:
+            raise HTTPException(status_code=401, detail="Invalid or expired API token")
+        return user
+
+    payload = decode_access_token(raw)
+    if payload.get("scope") == COLLABORATOR_SCOPE:
+        principal = _resolve_collaborator(payload, db)
+        if principal is None:
+            raise HTTPException(status_code=401, detail="Invalid or expired collaborator token")
+        return principal
+
+    try:
+        user_id = int(payload["sub"])
+    except (KeyError, TypeError, ValueError):
+        raise HTTPException(status_code=401, detail="Invalid token subject")
+    user = db.query(User).filter(User.id == user_id, User.is_active == True).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found or inactive")
+    return user
+
+
+def user_can_access_org(user: User, db: Session, target_org_id: Optional[int]) -> bool:
+    """True if the user's role + org/MSSP linkage covers target_org_id."""
+    if user.role == "superadmin":
+        return True
+    if target_org_id is None:
+        return False
+    if user.org_id == target_org_id:
+        return True
+    org = db.query(Organization).filter(Organization.id == user.org_id).first()
+    if org and org.org_type == "mssp":
+        link = db.query(MSSPOrgAccess).filter(
+            MSSPOrgAccess.mssp_org_id == user.org_id,
+            MSSPOrgAccess.client_org_id == target_org_id,
+            MSSPOrgAccess.is_active == True,
+        ).first()
+        if link:
+            return True
+    return False
+
+
+def assert_can_access_campaign(
+    db: Session,
+    principal: Optional[Union[User, "CollaboratorPrincipal"]],
+    campaign_id: int,
+):
+    """Resolve the campaign and verify the principal is allowed to act on it.
+    Returns the Campaign on success. Raises HTTPException otherwise."""
+    from models.models import Campaign  # avoid circular import at module load
+
+    if principal is None:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    if isinstance(principal, CollaboratorPrincipal):
+        if principal.campaign_id != campaign_id:
+            raise HTTPException(status_code=403, detail="No access to this campaign")
+        return campaign
+
+    user: User = principal
+    if not user_can_access_org(user, db, campaign.org_id):
+        raise HTTPException(status_code=403, detail="No access to this campaign")
+    return campaign
 
 
 async def require_auth(

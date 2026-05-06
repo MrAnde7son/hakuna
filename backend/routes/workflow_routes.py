@@ -14,7 +14,10 @@ from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
 from core.database import get_db
-from core.auth import get_current_user, get_accessible_org_ids, apply_org_filter
+from core.auth import (
+    get_current_user, get_current_principal, get_accessible_org_ids, apply_org_filter,
+    CollaboratorPrincipal, user_can_access_org,
+)
 from core.audit import log_audit, diff as _diff
 from core.time_utils import iso_utc
 from models.models import (
@@ -26,6 +29,32 @@ from services.workflow_generator import generate_workflow
 
 
 router = APIRouter(tags=["workflows"])
+
+
+def _assert_workflow_access(db: Session, principal, wf: Workflow) -> None:
+    """Verify the principal can read/write this workflow.
+
+    - Collaborators: workflow MUST belong to their campaign.
+    - Org users: workflow's org must be accessible (own + MSSP-linked).
+    Raises 403 otherwise. Caller is responsible for the existence check (404).
+    """
+    if principal is None:
+        raise HTTPException(401, "Authentication required")
+    if isinstance(principal, CollaboratorPrincipal):
+        if wf.campaign_id != principal.campaign_id:
+            raise HTTPException(403, "No access to this workflow")
+        return
+    if not user_can_access_org(principal, db, wf.org_id):
+        raise HTTPException(403, "No access to this workflow")
+
+
+def _assert_collaborator_can_target_campaign(principal, campaign_id: Optional[int]) -> None:
+    """When a collaborator creates/updates a workflow, ensure they can only
+    target their own campaign (and must target a campaign — no org-level
+    workflows for collaborators)."""
+    if isinstance(principal, CollaboratorPrincipal):
+        if campaign_id is None or campaign_id != principal.campaign_id:
+            raise HTTPException(403, "Collaborators can only manage workflows for their campaign")
 
 
 # ─────────────────────────────────────────────
@@ -133,11 +162,19 @@ def get_workflow_templates():
 
 
 @router.post("/api/workflows/from-template")
-def create_workflow_from_template_endpoint(body: WorkflowCreateFromTemplate, db: Session = Depends(get_db)):
+def create_workflow_from_template_endpoint(
+    body: WorkflowCreateFromTemplate,
+    db: Session = Depends(get_db),
+    principal=Depends(get_current_principal),
+):
     """Create a workflow from an OOTB template."""
+    _assert_collaborator_can_target_campaign(principal, body.campaign_id)
     try:
         wf = workflow_engine.create_workflow_from_template(
             db, body.template_id, name=body.name, campaign_id=body.campaign_id)
+        if isinstance(principal, CollaboratorPrincipal):
+            wf.org_id = principal.org_id
+            db.commit()
         d = _workflow_to_dict(wf)
         d["nodes"] = [_node_to_dict(n) for n in wf.nodes]
         d["edges"] = [_edge_to_dict(e) for e in wf.edges]
@@ -186,15 +223,22 @@ def generate_workflow_endpoint(
 def create_workflow_from_generated(
     body: WorkflowFromGeneratedBody,
     db: Session = Depends(get_db),
-    user: Optional[User] = Depends(get_current_user),
+    principal=Depends(get_current_principal),
 ):
     """Persist an LLM-generated workflow as a draft.
 
     Forced to status="draft" so an LLM hallucination cannot fire side-effects
     until a human flips it to active.
     """
+    _assert_collaborator_can_target_campaign(principal, body.campaign_id)
+    if isinstance(principal, CollaboratorPrincipal):
+        org_id = principal.org_id
+        user = None
+    else:
+        user = principal
+        org_id = user.org_id if user else None
     wf = Workflow(
-        org_id=user.org_id if user else None,
+        org_id=org_id,
         name=body.name,
         description=body.description,
         campaign_id=body.campaign_id,
@@ -241,9 +285,20 @@ def create_workflow_from_generated(
 
 
 @router.post("/api/workflows")
-def create_workflow(body: WorkflowCreate, db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user)):
+def create_workflow(
+    body: WorkflowCreate,
+    db: Session = Depends(get_db),
+    principal=Depends(get_current_principal),
+):
+    _assert_collaborator_can_target_campaign(principal, body.campaign_id)
+    if isinstance(principal, CollaboratorPrincipal):
+        org_id = principal.org_id
+        user = None
+    else:
+        user = principal
+        org_id = user.org_id if user else None
     wf = Workflow(
-        org_id=user.org_id if user else None,
+        org_id=org_id,
         name=body.name,
         description=body.description,
         campaign_id=body.campaign_id,
@@ -253,7 +308,7 @@ def create_workflow(body: WorkflowCreate, db: Session = Depends(get_db), user: O
     log_audit(db, "create", "workflow", wf.id,
               entity_name=wf.name,
               changes={"name": wf.name, "description": wf.description},
-              actor=user)
+              actor=user if user else principal)
     db.commit()
     db.refresh(wf)
     return _workflow_to_dict(wf)
@@ -263,19 +318,49 @@ def create_workflow(body: WorkflowCreate, db: Session = Depends(get_db), user: O
 def list_workflows(
     campaign_id: Optional[int] = None,
     db: Session = Depends(get_db),
-    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+    principal=Depends(get_current_principal),
 ):
-    q = apply_org_filter(db.query(Workflow), Workflow, org_ids).order_by(desc(Workflow.updated_at))
-    if campaign_id is not None:
-        q = q.filter(Workflow.campaign_id == campaign_id)
+    if principal is None:
+        raise HTTPException(401, "Authentication required")
+    q = db.query(Workflow).order_by(desc(Workflow.updated_at))
+    if isinstance(principal, CollaboratorPrincipal):
+        # Collaborators only ever see workflows attached to their campaign.
+        q = q.filter(Workflow.campaign_id == principal.campaign_id)
+        if campaign_id is not None and campaign_id != principal.campaign_id:
+            return []
+    else:
+        # Reuse get_accessible_org_ids inline to avoid double dependency.
+        from core.auth import get_accessible_org_ids as _gao  # noqa
+        # Build org_ids manually (synchronous)
+        if principal.role == "superadmin":
+            org_ids = None
+        else:
+            from models.models import Organization, MSSPOrgAccess
+            accessible = {principal.org_id}
+            org = db.query(Organization).filter(Organization.id == principal.org_id).first()
+            if org and org.org_type == "mssp":
+                links = db.query(MSSPOrgAccess.client_org_id).filter(
+                    MSSPOrgAccess.mssp_org_id == principal.org_id,
+                    MSSPOrgAccess.is_active == True,
+                ).all()
+                accessible.update(row[0] for row in links)
+            org_ids = list(accessible)
+        q = apply_org_filter(q, Workflow, org_ids)
+        if campaign_id is not None:
+            q = q.filter(Workflow.campaign_id == campaign_id)
     return [_workflow_to_dict(w) for w in q.all()]
 
 
 @router.get("/api/workflows/{wf_id}")
-def get_workflow(wf_id: int, db: Session = Depends(get_db)):
+def get_workflow(
+    wf_id: int,
+    db: Session = Depends(get_db),
+    principal=Depends(get_current_principal),
+):
     wf = db.query(Workflow).filter(Workflow.id == wf_id).first()
     if not wf:
         raise HTTPException(404, "Workflow not found")
+    _assert_workflow_access(db, principal, wf)
     d = _workflow_to_dict(wf)
     d["nodes"] = [_node_to_dict(n) for n in wf.nodes]
     d["edges"] = [_edge_to_dict(e) for e in wf.edges]
@@ -283,10 +368,21 @@ def get_workflow(wf_id: int, db: Session = Depends(get_db)):
 
 
 @router.patch("/api/workflows/{wf_id}")
-def update_workflow(wf_id: int, body: WorkflowUpdate, db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user)):
+def update_workflow(
+    wf_id: int,
+    body: WorkflowUpdate,
+    db: Session = Depends(get_db),
+    principal=Depends(get_current_principal),
+):
     wf = db.query(Workflow).filter(Workflow.id == wf_id).first()
     if not wf:
         raise HTTPException(404, "Workflow not found")
+    _assert_workflow_access(db, principal, wf)
+    # Collaborators cannot reassign a workflow to a different campaign.
+    if isinstance(principal, CollaboratorPrincipal) and body.campaign_id is not None \
+            and body.campaign_id != principal.campaign_id:
+        raise HTTPException(403, "Cannot reassign workflow to a different campaign")
+    user = None if isinstance(principal, CollaboratorPrincipal) else principal
     _old_wf = {"name": wf.name, "status": wf.status, "is_enabled": wf.is_enabled, "description": wf.description}
 
     if body.name is not None:
@@ -355,10 +451,16 @@ def update_workflow(wf_id: int, body: WorkflowUpdate, db: Session = Depends(get_
 
 
 @router.delete("/api/workflows/{wf_id}")
-def delete_workflow(wf_id: int, db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user)):
+def delete_workflow(
+    wf_id: int,
+    db: Session = Depends(get_db),
+    principal=Depends(get_current_principal),
+):
     wf = db.query(Workflow).filter(Workflow.id == wf_id).first()
     if not wf:
         raise HTTPException(404, "Workflow not found")
+    _assert_workflow_access(db, principal, wf)
+    user = None if isinstance(principal, CollaboratorPrincipal) else principal
     _wf_name, _wf_org = wf.name, wf.org_id
     db.delete(wf)
     log_audit(db, "delete", "workflow", wf_id, entity_name=_wf_name, actor=user, org_id=_wf_org)
@@ -367,11 +469,16 @@ def delete_workflow(wf_id: int, db: Session = Depends(get_db), user: Optional[Us
 
 
 @router.get("/api/workflows/{wf_id}/versions")
-def get_workflow_versions(wf_id: int, db: Session = Depends(get_db)):
+def get_workflow_versions(
+    wf_id: int,
+    db: Session = Depends(get_db),
+    principal=Depends(get_current_principal),
+):
     """Return version history for a workflow."""
     wf = db.query(Workflow).filter(Workflow.id == wf_id).first()
     if not wf:
         raise HTTPException(404, "Workflow not found")
+    _assert_workflow_access(db, principal, wf)
     return {
         "current_version": getattr(wf, "version", 1) or 1,
         "history": list(getattr(wf, "version_history", None) or []),
@@ -379,11 +486,18 @@ def get_workflow_versions(wf_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/api/workflows/{wf_id}/restore/{version}")
-def restore_workflow_version(wf_id: int, version: int, db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user)):
+def restore_workflow_version(
+    wf_id: int,
+    version: int,
+    db: Session = Depends(get_db),
+    principal=Depends(get_current_principal),
+):
     """Restore a workflow to a previous version."""
     wf = db.query(Workflow).filter(Workflow.id == wf_id).first()
     if not wf:
         raise HTTPException(404, "Workflow not found")
+    _assert_workflow_access(db, principal, wf)
+    user = None if isinstance(principal, CollaboratorPrincipal) else principal
     history = list(getattr(wf, "version_history", None) or [])
     snapshot = next((h for h in history if h.get("version") == version), None)
     if not snapshot:
@@ -429,7 +543,11 @@ def restore_workflow_version(wf_id: int, version: int, db: Session = Depends(get
 
 
 @router.post("/api/workflows/{wf_id}/execute", status_code=202)
-def execute_workflow_endpoint(wf_id: int, db: Session = Depends(get_db)):
+def execute_workflow_endpoint(
+    wf_id: int,
+    db: Session = Depends(get_db),
+    principal=Depends(get_current_principal),
+):
     """Dispatch workflow execution as a background job. Returns job_id immediately."""
     from services.job_manager import dispatch
     from core.database import SessionLocal
@@ -437,6 +555,7 @@ def execute_workflow_endpoint(wf_id: int, db: Session = Depends(get_db)):
     wf = db.query(Workflow).filter(Workflow.id == wf_id).first()
     if not wf:
         raise HTTPException(404, "Workflow not found")
+    _assert_workflow_access(db, principal, wf)
 
     def _run_workflow():
         db2 = SessionLocal()
@@ -450,7 +569,16 @@ def execute_workflow_endpoint(wf_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/api/workflows/{wf_id}/executions")
-def list_workflow_executions(wf_id: int, limit: int = 20, db: Session = Depends(get_db)):
+def list_workflow_executions(
+    wf_id: int,
+    limit: int = 20,
+    db: Session = Depends(get_db),
+    principal=Depends(get_current_principal),
+):
+    wf = db.query(Workflow).filter(Workflow.id == wf_id).first()
+    if not wf:
+        raise HTTPException(404, "Workflow not found")
+    _assert_workflow_access(db, principal, wf)
     execs = db.query(WorkflowExecution).filter(
         WorkflowExecution.workflow_id == wf_id
     ).order_by(desc(WorkflowExecution.started_at)).limit(limit).all()
@@ -458,10 +586,17 @@ def list_workflow_executions(wf_id: int, limit: int = 20, db: Session = Depends(
 
 
 @router.get("/api/workflows/executions/{exec_id}")
-def get_workflow_execution(exec_id: int, db: Session = Depends(get_db)):
+def get_workflow_execution(
+    exec_id: int,
+    db: Session = Depends(get_db),
+    principal=Depends(get_current_principal),
+):
     ex = db.query(WorkflowExecution).filter(WorkflowExecution.id == exec_id).first()
     if not ex:
         raise HTTPException(404, "Execution not found")
+    wf = db.query(Workflow).filter(Workflow.id == ex.workflow_id).first()
+    if wf:
+        _assert_workflow_access(db, principal, wf)
     d = _execution_to_dict(ex)
     d["logs"] = [
         {

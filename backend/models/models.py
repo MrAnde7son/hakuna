@@ -1517,6 +1517,33 @@ class Campaign(Base):
     slack_channel_name = Column(String)  # Slack channel name (e.g. campaign-log4shell)
 
     findings = relationship("CampaignFinding", back_populates="campaign", cascade="all, delete-orphan")
+    collaborators = relationship("CampaignCollaborator", back_populates="campaign", cascade="all, delete-orphan")
+
+
+class CampaignCollaborator(Base):
+    """External collaborator invited to one specific campaign.
+
+    Magic-link auth: invite_token_hash is the sha256 of the plaintext token
+    embedded in the invite email. Accepting the invite mints a short-lived JWT
+    scoped to (collaborator_id, campaign_id) — the user has no Hakuna account.
+    """
+    __tablename__ = "campaign_collaborators"
+
+    id = Column(Integer, primary_key=True, index=True)
+    campaign_id = Column(Integer, ForeignKey("campaigns.id", ondelete="CASCADE"),
+                         nullable=False, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    email = Column(String, nullable=False, index=True)
+    role = Column(String, nullable=False, default="contributor")  # contributor only for now
+    invite_token_hash = Column(String(64), nullable=False, unique=True, index=True)
+    invited_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    invited_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    accepted_at = Column(DateTime, nullable=True)
+    expires_at = Column(DateTime, nullable=False)
+    last_seen_at = Column(DateTime, nullable=True)
+    revoked_at = Column(DateTime, nullable=True)
+
+    campaign = relationship("Campaign", back_populates="collaborators")
 
 
 # ─────────────────────────────────────────────────────────
@@ -2439,6 +2466,9 @@ class Integration(Base):
 
     id = Column(String, primary_key=True, default=_gen_uuid)
     org_id = Column(Integer, ForeignKey("organizations.id"), nullable=True, index=True)
+    # Non-NULL = scoped to one campaign (visible only to its members + collaborators)
+    campaign_id = Column(Integer, ForeignKey("campaigns.id", ondelete="CASCADE"),
+                         nullable=True, index=True)
     name = Column(String, nullable=False)
     direction = Column(String, nullable=False)  # pull | push
     entity = Column(String, nullable=False)  # asset | finding | action

@@ -16,6 +16,30 @@ export function clearStoredToken() {
   localStorage.removeItem('org_context')
 }
 
+// ── Campaign collaborator (external) session ───────────
+// A separate token, set when a collaborator accepts an invite. When present,
+// the whole UI runs in collaborator mode: their Bearer is sent on every call,
+// no X-Org-Context, and the regular auth_token is ignored.
+
+export function getCollaboratorSession() {
+  const raw = localStorage.getItem('collab_session')
+  if (!raw) return null
+  try { return JSON.parse(raw) } catch { return null }
+}
+
+export function setCollaboratorSession(session) {
+  if (session) localStorage.setItem('collab_session', JSON.stringify(session))
+  else localStorage.removeItem('collab_session')
+}
+
+export function clearCollaboratorSession() {
+  localStorage.removeItem('collab_session')
+}
+
+export function isCollaboratorMode() {
+  return !!getCollaboratorSession()
+}
+
 export function getOrgContext() {
   return localStorage.getItem('org_context')
 }
@@ -61,8 +85,9 @@ function formatErrorDetail(detail) {
 }
 
 async function _doRequest(path, opts = {}) {
-  const token = getStoredToken()
-  const orgContext = getOrgContext()
+  const collab = getCollaboratorSession()
+  const token = collab ? collab.access_token : getStoredToken()
+  const orgContext = collab ? null : getOrgContext()
 
   const headers = { ...(opts.headers || {}) }
   if (token) headers['Authorization'] = `Bearer ${token}`
@@ -89,6 +114,16 @@ async function _doRequest(path, opts = {}) {
 
       // Handle 401 — attempt token refresh, then redirect to login
       if (res.status === 401) {
+        // Collaborators don't have a refresh path — clear and bounce to the
+        // expired-session page (a fresh invite email is needed to re-accept).
+        if (collab) {
+          clearCollaboratorSession()
+          if (!_redirecting && !window.location.pathname.startsWith('/campaigns/accept')) {
+            _redirecting = true
+            window.location.href = '/campaigns/accept?expired=1'
+          }
+          throw new Error('Collaborator session expired')
+        }
         // Try refreshing the token once before giving up
         const refreshed = await tryRefreshToken()
         if (refreshed) {
@@ -904,6 +939,26 @@ export const getTickets = (params = {}) => {
 export const triggerTicketSync = () => request('/ticket-sync', { method: 'POST' })
 export const getCampaignTickets = (campaignId) => request(`/campaigns/${campaignId}/tickets`)
 export const createCampaignSlackChannel = (campaignId) => request(`/campaigns/${campaignId}/slack-channel`, { method: 'POST' })
+
+// Campaign external collaborators
+export const listCampaignCollaborators = (campaignId) =>
+  request(`/campaigns/${campaignId}/collaborators`)
+export const inviteCampaignCollaborator = (campaignId, email) =>
+  request(`/campaigns/${campaignId}/collaborators`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email }),
+  })
+export const revokeCampaignCollaborator = (campaignId, collabId) =>
+  request(`/campaigns/${campaignId}/collaborators/${collabId}`, { method: 'DELETE' })
+export const resendCampaignCollaborator = (campaignId, collabId) =>
+  request(`/campaigns/${campaignId}/collaborators/${collabId}/resend`, { method: 'POST' })
+export const acceptCampaignCollaborator = (token) =>
+  request('/campaigns/collaborator/accept', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token }),
+  })
 
 // Global Exceptions
 export const getExceptions = (params = {}) => {

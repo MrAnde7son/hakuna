@@ -78,6 +78,7 @@ const FindingExplorer = React.lazy(() => import('./components/findings/FindingEx
 const FindingDetail = React.lazy(() => import('./components/findings/FindingDetail.jsx'))
 const Campaigns = React.lazy(() => import('./components/campaigns/Campaigns.jsx'))
 const CampaignDetail = React.lazy(() => import('./components/campaigns/CampaignDetail.jsx'))
+const CampaignAccept = React.lazy(() => import('./components/campaigns/CampaignAccept.jsx'))
 const Reports = React.lazy(() => import('./components/reports/Reports.jsx'))
 const InventoryExplorer = React.lazy(() => import('./components/assets/InventoryExplorer.jsx'))
 const Settings = React.lazy(() => import('./components/settings/Settings.jsx'))
@@ -1064,6 +1065,51 @@ function CommandPalette({ open, onClose }) {
   )
 }
 
+function AppShellOrCollaborator() {
+  const { isCollaborator } = useAuth()
+  return isCollaborator ? <CollaboratorShell /> : <AppShell />
+}
+
+
+function CollaboratorShell() {
+  // Minimal layout for external campaign collaborators: no sidebar, no
+  // onboarding, no scans — they only have one campaign and a logout option.
+  const { collaboratorSession, logout } = useAuth()
+  const cid = collaboratorSession?.campaign_id
+  return (
+    <div style={{ minHeight: '100vh', background: 'var(--bg-muted)' }}>
+      <div style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        padding: '10px 20px', background: 'var(--bg)', borderBottom: '1px solid var(--border)',
+        position: 'sticky', top: 0, zIndex: 40,
+      }}>
+        <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
+          External collaborator on campaign #{cid} ({collaboratorSession?.email})
+        </div>
+        <button
+          onClick={() => { logout(); window.location.href = '/campaigns/accept?expired=1' }}
+          style={{
+            background: 'transparent', border: '1px solid var(--border)',
+            borderRadius: 6, padding: '4px 10px', fontSize: 13, cursor: 'pointer',
+            color: 'var(--text-primary)',
+          }}
+        >Sign out</button>
+      </div>
+      <div style={{ padding: 0 }}>
+        <Suspense fallback={<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '60vh', color: 'var(--muted)' }}>Loading...</div>}>
+          <Routes>
+            <Route path="/campaigns/:id" element={<CampaignDetail />} />
+            <Route path="/campaigns/:id/workflows/:workflowId" element={<WorkflowBuilder />} />
+            <Route path="/workflows/:workflowId" element={<WorkflowBuilder />} />
+            <Route path="*" element={<Navigate to={`/campaigns/${cid}`} replace />} />
+          </Routes>
+        </Suspense>
+      </div>
+    </div>
+  )
+}
+
+
 function AppShell() {
   const [scans, setScans] = useState([])
   const [activeScanId, setActiveScanId] = useState(() => {
@@ -1305,6 +1351,11 @@ export default function App() {
                   <Route path="/accept-invite" element={<AcceptInvite />} />
                   <Route path="/verify-email" element={<VerifyEmail />} />
                   <Route path="/sso/callback" element={<SSOCallback />} />
+                  <Route path="/campaigns/accept" element={
+                    <Suspense fallback={<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', color: 'var(--muted)' }}>Loading...</div>}>
+                      <CampaignAccept />
+                    </Suspense>
+                  } />
                   <Route path="/onboarding" element={
                     <ProtectedRoute>
                       <Suspense fallback={<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', color: 'var(--muted)' }}>Loading...</div>}>
@@ -1314,7 +1365,7 @@ export default function App() {
                   } />
                   <Route path="/*" element={
                     <ProtectedRoute>
-                      <AppShell />
+                      <AppShellOrCollaborator />
                     </ProtectedRoute>
                   } />
                 </Routes>

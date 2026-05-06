@@ -99,7 +99,7 @@ def init_db():
         InventoryComputer, InventoryPasswordPolicy, InventoryEnvVar, InventoryCertificate,
         SBOMComponent, SBOMVulnerability,
         AssetOwnership, FindingOwnership,
-        Campaign, CampaignFinding,
+        Campaign, CampaignFinding, CampaignCollaborator,
         Tag, TagAssignment, AutoTagRule,
         SLAConfig,
         Workflow, WorkflowNode, WorkflowEdge,
@@ -299,6 +299,7 @@ def _migrate_add_columns():
         ],
         "integrations": [
             ("logo_url", "VARCHAR"),
+            ("campaign_id", "INTEGER"),
         ],
         "alerts": [
             ("entity_type", "VARCHAR"),

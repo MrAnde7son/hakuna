@@ -47,6 +47,7 @@ const PUBLIC_ROUTES = [
   { path: '/register', name: 'Register' },
   { path: '/forgot-password', name: 'Forgot Password' },
   { path: '/reset-password', name: 'Reset Password' },
+  { path: '/campaigns/accept?expired=1', name: 'Campaign Accept (expired)' },
 ]
 
 for (const route of PUBLIC_ROUTES) {

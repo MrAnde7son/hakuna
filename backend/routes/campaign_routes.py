@@ -1,8 +1,10 @@
 """
 Campaign endpoints — CRUD, query preview, execution, ticket tracking, Slack integration.
 """
+import logging
+import os
 from typing import Optional, List
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -11,14 +13,17 @@ from sqlalchemy import desc
 
 from core.database import get_db
 from core.auth import (
-    get_current_user, get_accessible_org_ids, apply_org_filter,
+    get_current_user, get_current_principal, get_accessible_org_ids, apply_org_filter,
+    assert_can_access_campaign, CollaboratorPrincipal,
+    generate_invite_token, hash_invite_token, create_collaborator_token,
+    COLLABORATOR_INVITE_TTL_DAYS, ACCESS_TOKEN_EXPIRE_MINUTES,
 )
 from core.subscription import check_campaign_limit
 from core.audit import log_audit, diff as _diff
 from core.time_utils import iso_utc
 from models.models import (
     User, Scan, Asset, Finding, FindingTicket,
-    Campaign, CampaignFinding, AssetOwnership,
+    Campaign, CampaignFinding, CampaignCollaborator, AssetOwnership,
     CampaignComplianceControl, ComplianceControl, ComplianceFramework,
 )
 import services.campaign_query as cq
@@ -28,6 +33,9 @@ import services.workflow_engine as workflow_engine
 import services.integrations as integ_module
 import services.ownership_inference as ownership_inference
 from services.nlp_to_rules import nlp_to_conditions
+from services import brevo
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -450,18 +458,22 @@ def list_campaigns(scan_id: Optional[int] = None, db: Session = Depends(get_db),
 
 
 @router.get("/api/campaigns/{campaign_id}")
-def get_campaign(campaign_id: int, db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
-    """Get a campaign with its findings grouped by owner."""
-    query = db.query(Campaign).options(
+def get_campaign(
+    campaign_id: int,
+    db: Session = Depends(get_db),
+    principal=Depends(get_current_principal),
+):
+    """Get a campaign with its findings grouped by owner. Accessible to org
+    users with access to the campaign's org and to invited collaborators."""
+    assert_can_access_campaign(db, principal, campaign_id)
+    campaign = db.query(Campaign).options(
         selectinload(Campaign.findings)
         .joinedload(CampaignFinding.finding)
         .options(
             joinedload(Finding.asset).selectinload(Asset.ownership),
             selectinload(Finding.ownership),
         )
-    ).filter(Campaign.id == campaign_id)
-    query = apply_org_filter(query, Campaign, org_ids)
-    campaign = query.first()
+    ).filter(Campaign.id == campaign_id).first()
     if not campaign:
         raise HTTPException(404, "Campaign not found")
 
@@ -546,14 +558,16 @@ def delete_campaign(campaign_id: int, db: Session = Depends(get_db), user: Optio
 
 
 @router.post("/api/campaigns/{campaign_id}/run", status_code=202)
-def run_campaign(campaign_id: int, db: Session = Depends(get_db)):
+def run_campaign(
+    campaign_id: int,
+    db: Session = Depends(get_db),
+    principal=Depends(get_current_principal),
+):
     """Dispatch campaign execution as a background job. Returns job_id immediately."""
     from services.job_manager import dispatch
     from core.database import SessionLocal
 
-    campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
-    if not campaign:
-        raise HTTPException(404, "Campaign not found")
+    campaign = assert_can_access_campaign(db, principal, campaign_id)
 
     def _run_campaign():
         db2 = SessionLocal()
@@ -604,9 +618,14 @@ def run_campaign(campaign_id: int, db: Session = Depends(get_db)):
 
 @router.patch("/api/campaigns/{campaign_id}/findings/{cf_id}")
 def update_campaign_finding(
-    campaign_id: int, cf_id: int, body: CampaignFindingUpdateBody, db: Session = Depends(get_db)
+    campaign_id: int,
+    cf_id: int,
+    body: CampaignFindingUpdateBody,
+    db: Session = Depends(get_db),
+    principal=Depends(get_current_principal),
 ):
     """Update ownership or status for a finding within a campaign."""
+    assert_can_access_campaign(db, principal, campaign_id)
     cf = db.query(CampaignFinding).filter(
         CampaignFinding.id == cf_id,
         CampaignFinding.campaign_id == campaign_id
@@ -648,8 +667,13 @@ def update_campaign_finding(
 
 
 @router.get("/api/campaigns/{campaign_id}/tickets")
-def get_campaign_tickets(campaign_id: int, db: Session = Depends(get_db)):
+def get_campaign_tickets(
+    campaign_id: int,
+    db: Session = Depends(get_db),
+    principal=Depends(get_current_principal),
+):
     """Return all tickets linked to findings in this campaign."""
+    assert_can_access_campaign(db, principal, campaign_id)
     from services.ticket_sync import _ticket_to_dict
     # Get finding IDs from campaign
     finding_ids = [
@@ -719,4 +743,254 @@ def create_campaign_slack_channel(campaign_id: int, db: Session = Depends(get_db
         "channel_id": result["channel_id"],
         "channel_name": result["channel_name"],
         "invited": result["invited"],
+    }
+
+
+# ─── External collaborators ───────────────────────────────
+#
+# Lets a campaign owner invite an email (no Hakuna account) into one campaign
+# as a contributor. They get a magic-link → short-lived JWT scoped to that
+# campaign only. Workflows, integrations, and findings outside that campaign
+# stay invisible to them; see `assert_can_access_campaign` and the
+# `campaign_id` filters added on workflow/integration routes.
+
+
+_EMAIL_RE = __import__("re").compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+class CollaboratorInviteBody(BaseModel):
+    email: str
+
+
+def _collaborator_to_dict(c: CampaignCollaborator) -> dict:
+    if c.revoked_at:
+        status = "revoked"
+    elif c.accepted_at:
+        status = "active"
+    elif c.expires_at and c.expires_at < datetime.utcnow():
+        status = "expired"
+    else:
+        status = "pending"
+    return {
+        "id": c.id,
+        "email": c.email,
+        "role": c.role,
+        "status": status,
+        "invited_at": iso_utc(c.invited_at),
+        "accepted_at": iso_utc(c.accepted_at),
+        "expires_at": iso_utc(c.expires_at),
+        "last_seen_at": iso_utc(c.last_seen_at),
+    }
+
+
+def _build_accept_url(token: str) -> str:
+    base = (os.environ.get("APP_URL") or "http://localhost:5173").rstrip("/")
+    return f"{base}/campaigns/accept?token={token}"
+
+
+@router.post("/api/campaigns/{campaign_id}/collaborators")
+def invite_collaborator(
+    campaign_id: int,
+    body: CollaboratorInviteBody,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user),
+):
+    """Invite an external email as a campaign contributor.
+    Existing pending/active invite for the same email is revoked first."""
+    campaign = assert_can_access_campaign(db, user, campaign_id)
+    email = (body.email or "").lower().strip()
+    if not _EMAIL_RE.match(email):
+        raise HTTPException(400, "Invalid email address")
+
+    # Revoke any prior active/pending invite for this (campaign, email).
+    prior = db.query(CampaignCollaborator).filter(
+        CampaignCollaborator.campaign_id == campaign_id,
+        CampaignCollaborator.email == email,
+        CampaignCollaborator.revoked_at.is_(None),
+    ).all()
+    now = datetime.utcnow()
+    for p in prior:
+        p.revoked_at = now
+
+    plaintext, token_hash = generate_invite_token()
+    collab = CampaignCollaborator(
+        campaign_id=campaign_id,
+        org_id=campaign.org_id,
+        email=email,
+        role="contributor",
+        invite_token_hash=token_hash,
+        invited_by_user_id=user.id if user else None,
+        expires_at=now + timedelta(days=COLLABORATOR_INVITE_TTL_DAYS),
+    )
+    db.add(collab)
+    db.flush()
+    log_audit(db, "invite", "campaign_collaborator", collab.id,
+              entity_name=email,
+              changes={"campaign_id": campaign_id, "email": email, "role": "contributor"},
+              actor=user)
+    db.commit()
+    db.refresh(collab)
+
+    accept_url = _build_accept_url(plaintext)
+    invited_by_name = (user.display_name or user.email) if user else "A Hakuna user"
+    org_name = ""
+    if campaign.org_id:
+        from models.models import Organization
+        org = db.query(Organization).filter(Organization.id == campaign.org_id).first()
+        if org:
+            org_name = org.name or ""
+
+    email_sent = False
+    if brevo.is_configured():
+        try:
+            brevo.send_campaign_collaborator_invite(
+                to=email,
+                campaign_name=campaign.name,
+                invited_by_name=invited_by_name,
+                org_name=org_name,
+                accept_url=accept_url,
+                expires_in_days=COLLABORATOR_INVITE_TTL_DAYS,
+            )
+            email_sent = True
+        except Exception as e:
+            logger.warning(f"campaign collaborator invite email failed: {e}")
+
+    return {
+        **_collaborator_to_dict(collab),
+        "email_sent": email_sent,
+        # Plaintext URL is returned to the inviter so they can copy/paste if email
+        # delivery fails. Never returned again after this response.
+        "accept_url": accept_url,
+    }
+
+
+@router.get("/api/campaigns/{campaign_id}/collaborators")
+def list_collaborators(
+    campaign_id: int,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user),
+):
+    assert_can_access_campaign(db, user, campaign_id)
+    rows = db.query(CampaignCollaborator).filter(
+        CampaignCollaborator.campaign_id == campaign_id
+    ).order_by(CampaignCollaborator.invited_at.desc()).all()
+    return {"collaborators": [_collaborator_to_dict(c) for c in rows]}
+
+
+@router.delete("/api/campaigns/{campaign_id}/collaborators/{collab_id}")
+def revoke_collaborator(
+    campaign_id: int,
+    collab_id: int,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user),
+):
+    assert_can_access_campaign(db, user, campaign_id)
+    collab = db.query(CampaignCollaborator).filter(
+        CampaignCollaborator.id == collab_id,
+        CampaignCollaborator.campaign_id == campaign_id,
+    ).first()
+    if not collab:
+        raise HTTPException(404, "Collaborator not found")
+    if collab.revoked_at is None:
+        collab.revoked_at = datetime.utcnow()
+        log_audit(db, "revoke", "campaign_collaborator", collab.id,
+                  entity_name=collab.email, actor=user)
+        db.commit()
+    return {"ok": True}
+
+
+@router.post("/api/campaigns/{campaign_id}/collaborators/{collab_id}/resend")
+def resend_collaborator_invite(
+    campaign_id: int,
+    collab_id: int,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user),
+):
+    """Re-issue a fresh invite token for a not-yet-accepted collaborator."""
+    campaign = assert_can_access_campaign(db, user, campaign_id)
+    collab = db.query(CampaignCollaborator).filter(
+        CampaignCollaborator.id == collab_id,
+        CampaignCollaborator.campaign_id == campaign_id,
+    ).first()
+    if not collab:
+        raise HTTPException(404, "Collaborator not found")
+    if collab.revoked_at is not None:
+        raise HTTPException(400, "Collaborator is revoked")
+    if collab.accepted_at is not None:
+        raise HTTPException(400, "Invite already accepted; revoke and re-invite to rotate")
+
+    plaintext, token_hash = generate_invite_token()
+    collab.invite_token_hash = token_hash
+    collab.expires_at = datetime.utcnow() + timedelta(days=COLLABORATOR_INVITE_TTL_DAYS)
+    db.commit()
+
+    accept_url = _build_accept_url(plaintext)
+    org_name = ""
+    if campaign.org_id:
+        from models.models import Organization
+        org = db.query(Organization).filter(Organization.id == campaign.org_id).first()
+        if org:
+            org_name = org.name or ""
+    invited_by_name = (user.display_name or user.email) if user else "A Hakuna user"
+
+    email_sent = False
+    if brevo.is_configured():
+        try:
+            brevo.send_campaign_collaborator_invite(
+                to=collab.email,
+                campaign_name=campaign.name,
+                invited_by_name=invited_by_name,
+                org_name=org_name,
+                accept_url=accept_url,
+                expires_in_days=COLLABORATOR_INVITE_TTL_DAYS,
+            )
+            email_sent = True
+        except Exception as e:
+            logger.warning(f"campaign collaborator resend email failed: {e}")
+
+    return {"ok": True, "email_sent": email_sent, "accept_url": accept_url}
+
+
+class CollaboratorAcceptBody(BaseModel):
+    token: str
+
+
+@router.post("/api/campaigns/collaborator/accept")
+def accept_collaborator_invite(body: CollaboratorAcceptBody, db: Session = Depends(get_db)):
+    """Public endpoint. Exchange a magic-link token for a session JWT scoped
+    to the invited campaign."""
+    token_hash = hash_invite_token(body.token)
+    collab = db.query(CampaignCollaborator).filter(
+        CampaignCollaborator.invite_token_hash == token_hash,
+    ).first()
+    if not collab:
+        raise HTTPException(404, "Invite not found")
+    if collab.revoked_at is not None:
+        raise HTTPException(403, "Invite has been revoked")
+    if collab.expires_at and collab.expires_at < datetime.utcnow():
+        raise HTTPException(403, "Invite has expired")
+
+    if collab.accepted_at is None:
+        collab.accepted_at = datetime.utcnow()
+    # Push expiry forward so the user gets a full session window after first click.
+    collab.expires_at = max(
+        collab.expires_at or datetime.utcnow(),
+        datetime.utcnow() + timedelta(days=COLLABORATOR_INVITE_TTL_DAYS),
+    )
+    db.commit()
+
+    session_token = create_collaborator_token(
+        collaborator_id=collab.id,
+        campaign_id=collab.campaign_id,
+        org_id=collab.org_id,
+    )
+
+    campaign = db.query(Campaign).filter(Campaign.id == collab.campaign_id).first()
+    return {
+        "access_token": session_token,
+        "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        "campaign_id": collab.campaign_id,
+        "campaign_name": campaign.name if campaign else None,
+        "email": collab.email,
+        "role": collab.role,
     }

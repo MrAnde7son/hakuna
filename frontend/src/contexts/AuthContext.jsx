@@ -5,6 +5,7 @@ import {
   authMe, authLogin, authRegister, authGoogleLogin,
   setStoredToken, clearStoredToken, getStoredToken,
   setOrgContext, getOrgContext,
+  getCollaboratorSession, clearCollaboratorSession,
 } from '../api.js'
 import { identifyUser, resetAnalytics, capture } from '../utils/analytics.js'
 
@@ -21,8 +22,28 @@ export function AuthProvider({ children }) {
   const [isAuthenticated, setIsAuthenticated] = useState(false)
   const { i18n } = useTranslation()
 
+  const [collaboratorSession, setCollabState] = useState(null)
+
   // Attempt to restore session from stored token
   useEffect(() => {
+    // Collaborator sessions take precedence — these users have no User row,
+    // so authMe() would fail. Surface them as an authenticated principal with
+    // a synthetic user object scoped to a single campaign.
+    const collab = getCollaboratorSession()
+    if (collab) {
+      setCollabState(collab)
+      setUser({
+        email: collab.email,
+        display_name: collab.email,
+        role: 'collaborator',
+        is_collaborator: true,
+        campaign_id: collab.campaign_id,
+      })
+      setIsAuthenticated(true)
+      setIsLoading(false)
+      return
+    }
+
     const token = getStoredToken()
     if (!token) {
       setIsLoading(false)
@@ -126,6 +147,7 @@ export function AuthProvider({ children }) {
 
   const logout = useCallback(() => {
     clearStoredToken()
+    clearCollaboratorSession()
     Sentry.setUser(null)
     capture('user_logged_out')
     resetAnalytics()
@@ -134,6 +156,7 @@ export function AuthProvider({ children }) {
     setAccessibleOrgs([])
     setEffectivePermissions({})
     setIsAuthenticated(false)
+    setCollabState(null)
   }, [])
 
   const switchOrg = useCallback((orgId) => {
@@ -166,6 +189,8 @@ export function AuthProvider({ children }) {
       hasPermission,
       hasAnyPermission,
       canAccessPage,
+      isCollaborator: !!collaboratorSession,
+      collaboratorSession,
       isMSSP: org?.org_type === 'mssp',
       isSuperadmin: user?.role === 'superadmin',
       isAdmin: user?.role === 'org_admin' || user?.role === 'superadmin',

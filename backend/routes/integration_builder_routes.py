@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from core.database import get_db
-from core.auth import get_current_user, require_auth
+from core.auth import get_current_user, require_auth, get_current_principal, CollaboratorPrincipal
 from core.time_utils import iso_utc
 from models.models import (
     User, Integration, IntegrationCredential, IntegrationRun, DiscoveredSpec,
@@ -198,13 +198,15 @@ class CredentialCreate(BaseModel):
 
 @router.post("/credentials")
 def create_credential(body: CredentialCreate, db: Session = Depends(get_db),
-                       user: User = Depends(require_auth)):
+                       principal=Depends(get_current_principal)):
+    if principal is None:
+        raise HTTPException(401, "Authentication required")
     try:
         encrypted = credential_vault.encrypt(body.values)
     except Exception as e:
         raise HTTPException(500, f"Failed to encrypt credentials: {e}")
     cred = IntegrationCredential(
-        org_id=user.org_id,
+        org_id=principal.org_id,
         name=body.name,
         connector_id=body.connector_id,
         auth_type=body.auth_type,
@@ -219,10 +221,13 @@ def create_credential(body: CredentialCreate, db: Session = Depends(get_db),
 
 
 @router.get("/credentials")
-def list_credentials(db: Session = Depends(get_db), user: User = Depends(require_auth)):
+def list_credentials(db: Session = Depends(get_db),
+                      principal=Depends(get_current_principal)):
     """List credentials — metadata only, never return encrypted values."""
+    if principal is None:
+        raise HTTPException(401, "Authentication required")
     creds = db.query(IntegrationCredential).filter(
-        IntegrationCredential.org_id == user.org_id
+        IntegrationCredential.org_id == principal.org_id
     ).all()
     return [
         {
@@ -658,16 +663,30 @@ class IntegrationUpdate(BaseModel):
 
 
 @router.get("/integrations")
-def list_integrations(db: Session = Depends(get_db), user: User = Depends(require_auth)):
-    integrations = db.query(Integration).filter(
-        Integration.org_id == user.org_id
-    ).order_by(Integration.created_at.desc()).all()
+def list_integrations(
+    db: Session = Depends(get_db),
+    principal=Depends(get_current_principal),
+):
+    if principal is None:
+        raise HTTPException(401, "Authentication required")
+    q = db.query(Integration)
+    if isinstance(principal, CollaboratorPrincipal):
+        q = q.filter(Integration.campaign_id == principal.campaign_id)
+    else:
+        q = q.filter(Integration.org_id == principal.org_id)
+    integrations = q.order_by(Integration.created_at.desc()).all()
     return [_integration_summary(i) for i in integrations]
 
 
 @router.post("/integrations")
 def create_integration(body: IntegrationCreate, db: Session = Depends(get_db),
-                        user: User = Depends(require_auth)):
+                        principal=Depends(get_current_principal)):
+    if principal is None:
+        raise HTTPException(401, "Authentication required")
+    is_collab = isinstance(principal, CollaboratorPrincipal)
+    user = None if is_collab else principal
+    org_id = principal.org_id
+    campaign_id = principal.campaign_id if is_collab else None
     if body.direction not in ("pull", "push"):
         raise HTTPException(400, "direction must be 'pull' or 'push'")
     valid_entities = set(get_registry().keys()) | {"action"}
@@ -697,7 +716,8 @@ def create_integration(body: IntegrationCreate, db: Session = Depends(get_db),
             pass
 
     integration = Integration(
-        org_id=user.org_id,
+        org_id=org_id,
+        campaign_id=campaign_id,
         name=body.name,
         direction=body.direction,
         entity=body.entity,
@@ -729,23 +749,25 @@ def create_integration(body: IntegrationCreate, db: Session = Depends(get_db),
             "transport_type": integration.transport_type,
             "template_id": integration.template_id,
             "enabled": integration.enabled,
+            "campaign_id": campaign_id,
         },
-        actor=user,
+        actor=user if user else principal,
     )
     db.commit()
 
-    try:
-        from services import posthog_client as analytics
-        analytics.capture(user.id, "integration_connected", {
-            "integration_id": integration.id,
-            "template_id": integration.template_id,
-            "transport_type": integration.transport_type,
-            "direction": integration.direction,
-            "entity": integration.entity,
-            "enabled": integration.enabled,
-        }, org_id=user.org_id)
-    except Exception:
-        pass
+    if user:
+        try:
+            from services import posthog_client as analytics
+            analytics.capture(user.id, "integration_connected", {
+                "integration_id": integration.id,
+                "template_id": integration.template_id,
+                "transport_type": integration.transport_type,
+                "direction": integration.direction,
+                "entity": integration.entity,
+                "enabled": integration.enabled,
+            }, org_id=user.org_id)
+        except Exception:
+            pass
 
     # For webhook transport, auto-create an ingest endpoint
     ingest_creds = None
@@ -758,7 +780,7 @@ def create_integration(body: IntegrationCreate, db: Session = Depends(get_db),
         hmac_secret = _secrets.token_urlsafe(32)
 
         ep = IngestEndpoint(
-            org_id=user.org_id,
+            org_id=org_id,
             integration_id=integration.id,
             name=integration.name,
             token_hash=bcrypt.hash(token),
@@ -790,15 +812,16 @@ def create_integration(body: IntegrationCreate, db: Session = Depends(get_db),
 
 @router.get("/integrations/{integration_id}")
 def get_integration(integration_id: str, db: Session = Depends(get_db),
-                     user: User = Depends(require_auth)):
-    i = _get_integration_or_404(db, integration_id, user.org_id)
+                     principal=Depends(get_current_principal)):
+    i = _get_integration_for_principal(db, integration_id, principal)
     return _integration_detail(i)
 
 
 @router.put("/integrations/{integration_id}")
 def update_integration(integration_id: str, body: IntegrationUpdate,
-                        db: Session = Depends(get_db), user: User = Depends(require_auth)):
-    i = _get_integration_or_404(db, integration_id, user.org_id)
+                        db: Session = Depends(get_db),
+                        principal=Depends(get_current_principal)):
+    i = _get_integration_for_principal(db, integration_id, principal)
     for field in ["name", "transport_config", "credentials_id", "records_path",
                    "field_map", "dedup_key", "params", "schedule", "enabled", "logo_url",
                    "relay_agent_id"]:
@@ -818,8 +841,8 @@ def update_integration(integration_id: str, body: IntegrationUpdate,
 
 @router.delete("/integrations/{integration_id}")
 def delete_integration(integration_id: str, db: Session = Depends(get_db),
-                        user: User = Depends(require_auth)):
-    i = _get_integration_or_404(db, integration_id, user.org_id)
+                        principal=Depends(get_current_principal)):
+    i = _get_integration_for_principal(db, integration_id, principal)
     from services.integration_scheduler import deregister_integration
     deregister_integration(i.id)
     # Clean up associated ingest endpoints (webhook transport)
@@ -930,12 +953,13 @@ def disable_integration(integration_id: str, db: Session = Depends(get_db),
 @router.post("/integrations/{integration_id}/run")
 async def run_integration(integration_id: str, background_tasks: BackgroundTasks = None,
                            db: Session = Depends(get_db),
-                           user: User = Depends(require_auth)):
+                           principal=Depends(get_current_principal)):
     """Trigger an integration run (executes in background)."""
     import asyncio
     from services.run_engine import execute
 
-    i = _get_integration_or_404(db, integration_id, user.org_id)
+    i = _get_integration_for_principal(db, integration_id, principal)
+    user = None if isinstance(principal, CollaboratorPrincipal) else principal
 
     # Create a pending run record so we can return the run_id immediately
     run = IntegrationRun(
@@ -954,7 +978,7 @@ async def run_integration(integration_id: str, background_tasks: BackgroundTasks
         db, "run", "integration", entity_id=None,
         entity_name=i.name,
         changes={"integration_id": i.id, "run_id": run_id, "triggered_by": "manual"},
-        actor=user,
+        actor=user if user else principal,
     )
     db.commit()
 
@@ -990,8 +1014,9 @@ async def run_integration(integration_id: str, background_tasks: BackgroundTasks
 
 @router.get("/integrations/{integration_id}/runs")
 def list_runs(integration_id: str, limit: int = Query(50, le=100),
-              db: Session = Depends(get_db), user: User = Depends(require_auth)):
-    _get_integration_or_404(db, integration_id, user.org_id)
+              db: Session = Depends(get_db),
+              principal=Depends(get_current_principal)):
+    _get_integration_for_principal(db, integration_id, principal)
     runs = db.query(IntegrationRun).filter(
         IntegrationRun.integration_id == integration_id
     ).order_by(IntegrationRun.started_at.desc()).limit(limit).all()
@@ -1017,6 +1042,25 @@ def _get_integration_or_404(db, integration_id, org_id):
         Integration.id == integration_id,
         Integration.org_id == org_id,
     ).first()
+    if not i:
+        raise HTTPException(404, "Integration not found")
+    return i
+
+
+def _get_integration_for_principal(db, integration_id: str, principal):
+    """Resolve an integration in the principal's allowed scope.
+    - Collaborators: must match `campaign_id == collab.campaign_id`.
+    - Users: must match `org_id == user.org_id`.
+    Returns the Integration. Raises 404 otherwise.
+    """
+    if principal is None:
+        raise HTTPException(401, "Authentication required")
+    q = db.query(Integration).filter(Integration.id == integration_id)
+    if isinstance(principal, CollaboratorPrincipal):
+        q = q.filter(Integration.campaign_id == principal.campaign_id)
+    else:
+        q = q.filter(Integration.org_id == principal.org_id)
+    i = q.first()
     if not i:
         raise HTTPException(404, "Integration not found")
     return i
