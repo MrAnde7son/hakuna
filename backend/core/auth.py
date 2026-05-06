@@ -2,8 +2,10 @@
 Authentication & authorization utilities.
 JWT token handling, password hashing, and FastAPI dependency injection.
 """
+import hashlib
 import hmac
 import os
+import secrets
 from datetime import datetime, timedelta
 from typing import Optional, List
 
@@ -14,7 +16,7 @@ from passlib.context import CryptContext
 from sqlalchemy.orm import Session
 
 from core.database import get_db
-from models.models import User, Organization, MSSPOrgAccess, CustomRole, TagPermission, UserCustomRole, Tag
+from models.models import ApiToken, User, Organization, MSSPOrgAccess, CustomRole, TagPermission, UserCustomRole, Tag
 
 # ── Permission keys ──────────────────────────────────────
 # All recognized permission keys for base_permissions / deny_permissions on CustomRole.
@@ -194,6 +196,53 @@ def decode_access_token(token: str) -> dict:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
 
+# ── API token helpers ─────────────────────────────────────
+
+API_TOKEN_PREFIX = "hak_"
+
+
+def generate_api_token() -> tuple[str, str, str]:
+    """Mint a new API token. Returns (plaintext, sha256_hex, display_prefix).
+
+    The plaintext is shown to the user once and never stored. Lookup uses the
+    sha256 hash, which is fine for high-entropy random tokens (no need for
+    bcrypt's slow KDF when there's no password to dictionary-attack).
+    """
+    raw = secrets.token_urlsafe(32)
+    plaintext = f"{API_TOKEN_PREFIX}{raw}"
+    token_hash = hashlib.sha256(plaintext.encode("utf-8")).hexdigest()
+    display_prefix = plaintext[: len(API_TOKEN_PREFIX) + 6]  # "hak_AbCdEf"
+    return plaintext, token_hash, display_prefix
+
+
+def hash_api_token(plaintext: str) -> str:
+    return hashlib.sha256(plaintext.encode("utf-8")).hexdigest()
+
+
+def _resolve_api_token(token: str, db: Session) -> Optional[User]:
+    """If `token` is a valid, non-revoked, non-expired API token, return its
+    user. Returns None for any failure so the caller can fall back to JWT."""
+    if not token.startswith(API_TOKEN_PREFIX):
+        return None
+    row = db.query(ApiToken).filter(ApiToken.token_hash == hash_api_token(token)).first()
+    if not row:
+        return None
+    if row.revoked_at is not None:
+        return None
+    if row.expires_at is not None and row.expires_at < datetime.utcnow():
+        return None
+    user = db.query(User).filter(User.id == row.user_id, User.is_active == True).first()
+    if not user:
+        return None
+    # Best-effort last_used_at update; don't block auth on a write failure.
+    try:
+        row.last_used_at = datetime.utcnow()
+        db.commit()
+    except Exception:
+        db.rollback()
+    return user
+
+
 # ── FastAPI Dependencies ──────────────────────────────────
 
 async def get_current_user(
@@ -201,12 +250,22 @@ async def get_current_user(
     db: Session = Depends(get_db),
 ) -> Optional[User]:
     """Extract and validate the current user from the Authorization header.
-    Returns None if no token is present (allows optional auth during migration).
+    Accepts either a JWT or a `hak_…` API token. Returns None if no token is
+    present (allows optional auth during migration).
     """
     if credentials is None:
         return None
 
-    payload = decode_access_token(credentials.credentials)
+    raw = credentials.credentials
+
+    # API token path — short-circuit so we don't try to JWT-decode "hak_…".
+    if raw.startswith(API_TOKEN_PREFIX):
+        user = _resolve_api_token(raw, db)
+        if user is None:
+            raise HTTPException(status_code=401, detail="Invalid or expired API token")
+        return user
+
+    payload = decode_access_token(raw)
     user_id = int(payload["sub"])
     user = db.query(User).filter(User.id == user_id, User.is_active == True).first()
     if not user:

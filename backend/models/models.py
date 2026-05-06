@@ -79,6 +79,29 @@ class User(Base):
     )
 
 
+class ApiToken(Base):
+    """Long-lived API token for programmatic access (MCP clients, CI scripts).
+
+    Stored hashed (sha256). The plaintext value is shown to the user once on
+    creation and never again. Lookup is by token_hash, not by id.
+    """
+    __tablename__ = "api_tokens"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    name = Column(String, nullable=False)                        # User-facing label
+    token_hash = Column(String(64), nullable=False, unique=True, index=True)  # sha256 hex
+    token_prefix = Column(String(12), nullable=False)            # First chars for display ("hak_AbCd…")
+    scopes = Column(JSON, default=list, nullable=False)          # e.g. ["mcp:read"]
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    last_used_at = Column(DateTime, nullable=True)
+    expires_at = Column(DateTime, nullable=True)                 # None = no expiry
+    revoked_at = Column(DateTime, nullable=True)
+
+    user = relationship("User", foreign_keys=[user_id])
+
+
 class MSSPOrgAccess(Base):
     """Grants an MSSP org access to a client org's data."""
     __tablename__ = "mssp_org_access"

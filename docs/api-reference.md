@@ -15,6 +15,22 @@ All authenticated endpoints require a `Authorization: Bearer <token>` header.
 | POST | `/api/auth/invite` | Invite a user to the current org |
 | PUT | `/api/auth/locale` | Update user locale preference |
 | POST | `/api/auth/password-reset` | Request a password reset |
+| POST | `/api/auth/tokens` | Mint a long-lived API token (`hak_…`) for programmatic access |
+| GET | `/api/auth/tokens` | List the caller's API tokens |
+| DELETE | `/api/auth/tokens/{id}` | Revoke an API token |
+
+API tokens (`hak_…`) and JWTs both work in the `Authorization: Bearer` header. Tokens are issued from **Settings → API Tokens** and are required for MCP clients (see [mcp.md](mcp.md)).
+
+## MCP server
+
+Hakuna ships an MCP (Model Context Protocol) server so customers can connect their own agents (Claude Desktop, Cursor, Claude Agent SDK) and query Hakuna data through tools.
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/mcp` | JSON-RPC 2.0 endpoint (Streamable HTTP transport): `initialize`, `tools/list`, `tools/call` |
+| GET | `/api/mcp` | Server info + tool catalog |
+
+See [mcp.md](mcp.md) for setup, available tools, and client config snippets.
 
 ## Scans
 

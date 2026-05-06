@@ -20,6 +20,7 @@ import OrgsPanel from './OrgsPanel.jsx'
 import IntegrationBuilderTab from './IntegrationBuilderTab.jsx'
 import SSOSettings from './SSOSettings.jsx'
 import RelayAgentManager from '../integrations/relay/RelayAgentManager.jsx'
+import ApiTokensPanel from './ApiTokensPanel.jsx'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -452,7 +453,7 @@ function EntityCard({ entityKey, label, cfg, onChange, runEntityKey, availableSo
 export default function Settings() {
   const [searchParams, setSearchParams] = useSearchParams()
   const { isAdmin, isSuperadmin, isMSSP } = useAuth()
-  const VALID_TABS = ['upload', 'auth-profiles', 'dedup', 'risk', 'tags', 'custom-fields', 'sla', 'exceptions', 'integrations', 'integration-builder', 'relay-agents', 'audit-log', 'ownership', 'users', 'roles', 'orgs', 'sso']
+  const VALID_TABS = ['upload', 'auth-profiles', 'dedup', 'risk', 'tags', 'custom-fields', 'sla', 'exceptions', 'integrations', 'integration-builder', 'relay-agents', 'audit-log', 'ownership', 'users', 'roles', 'orgs', 'sso', 'api-tokens']
   const tabParam = searchParams.get('tab')
   const activeTab = VALID_TABS.includes(tabParam) ? tabParam : 'upload'
   const setActiveTab = (id) => setSearchParams(prev => { prev.set('tab', id); return prev })
@@ -578,6 +579,7 @@ export default function Settings() {
       label: 'Platform',
       items: [
         { id: 'integrations', label: 'Integrations', icon: <Plug size={14} /> },
+        { id: 'api-tokens',   label: 'API Tokens',   icon: <KeyRound size={14} /> },
         { id: 'audit-log',    label: 'Audit Log',    icon: <ClipboardList size={14} /> },
       ],
     },
@@ -649,6 +651,9 @@ export default function Settings() {
 
       {/* Integrations tab */}
       {activeTab === 'integrations' && <IntegrationSettings />}
+
+      {/* API Tokens tab */}
+      {activeTab === 'api-tokens' && <ApiTokensPanel />}
 
       {/* Integration Builder tab */}
       {activeTab === 'integration-builder' && <IntegrationBuilderTab />}

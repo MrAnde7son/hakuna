@@ -1026,6 +1026,15 @@ export const getOwnerRiskSummary = (params = {}) => {
   return request(`/reports/owner-risk-summary?${q}`)
 }
 
+// API tokens (long-lived bearer credentials for MCP / agent integrations)
+export const listApiTokens = () => request('/auth/tokens')
+export const createApiToken = (body) => request('/auth/tokens', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(body),
+})
+export const revokeApiToken = (id) => request(`/auth/tokens/${id}`, { method: 'DELETE' })
+
 // Deduplication
 export const getDedupConfig = () => request('/dedup/config')
 export const saveDedupConfig = (cfg) => request('/dedup/config', {
