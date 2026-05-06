@@ -13,6 +13,12 @@
  * Get primary display name for any asset.
  * Prefers: display_name in identity > first identity value > hostname > ip > fqdn > fallback.
  */
+// Generic discriminator keys in asset_identity — these label the source/kind
+// but aren't human identifiers, so skip them when picking a display name
+// (e.g. github_org identity is {provider: "github", login: "tenable"} — we
+// want "tenable", not "github").
+const IDENTITY_DISCRIMINATOR_KEYS = new Set(['provider', 'registry', 'kind', 'type']);
+
 export function getAssetDisplayName(asset) {
   if (!asset) return 'Unknown';
 
@@ -20,8 +26,9 @@ export function getAssetDisplayName(asset) {
   if (asset.asset_type && asset.asset_type !== 'host' && asset.asset_identity) {
     const id = asset.asset_identity;
     if (id.display_name) return id.display_name;
-    // Use first meaningful identity value
-    const firstVal = Object.values(id).find(v => v && typeof v === 'string');
+    // Use first meaningful identity value, skipping generic discriminators
+    const firstVal = Object.entries(id)
+      .find(([k, v]) => v && typeof v === 'string' && !IDENTITY_DISCRIMINATOR_KEYS.has(k))?.[1];
     if (firstVal) return firstVal;
   }
 
@@ -39,9 +46,13 @@ export function getAssetSecondaryInfo(asset) {
   const secondary = [];
 
   if (asset.asset_type && asset.asset_type !== 'host' && asset.asset_identity) {
-    // For non-host: show remaining identity fields that differ from primary
-    for (const [, val] of Object.entries(asset.asset_identity)) {
-      if (val && typeof val === 'string' && val !== primary && !secondary.includes(val)) {
+    // For non-host: show remaining identity fields that differ from primary,
+    // skipping the generic discriminator keys (e.g. "github" provider)
+    for (const [key, val] of Object.entries(asset.asset_identity)) {
+      if (
+        val && typeof val === 'string' && val !== primary
+        && !secondary.includes(val) && !IDENTITY_DISCRIMINATOR_KEYS.has(key)
+      ) {
         secondary.push(val);
       }
     }
@@ -69,7 +80,10 @@ export function getFindingAssetDisplay(finding) {
   // If the finding carries asset_identity (from enriched API responses), use it
   if (finding.asset_type && finding.asset_type !== 'host' && finding.asset_identity) {
     const id = finding.asset_identity;
-    return id.display_name || Object.values(id).find(v => v && typeof v === 'string') || 'Unknown';
+    if (id.display_name) return id.display_name;
+    const firstVal = Object.entries(id)
+      .find(([k, v]) => v && typeof v === 'string' && !IDENTITY_DISCRIMINATOR_KEYS.has(k))?.[1];
+    return firstVal || 'Unknown';
   }
   return finding.asset_hostname || finding.asset_ip || 'Unknown';
 }

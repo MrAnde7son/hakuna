@@ -32,6 +32,7 @@ from app.ingest.liveness import (
     validate_and_update_assets,
 )
 from app.ingest.wildcard import detect_wildcard, filter_wildcard_results
+from app.ingest.chaos import query_chaos
 from app.ingest.crtsh import query_crtsh
 from app.ingest.otx_passive_dns import query_otx_passive_dns
 from app.ingest.shodan_discovery import query_shodan
@@ -405,6 +406,33 @@ async def _do_otx(sf, org_id: str, target_scope: str | None = None) -> dict:
     return {"hosts_found": len(all_hosts), "upserted": total, "new": len(new_ids)}
 
 
+async def _do_chaos(sf, org_id: str, target_scope: str | None = None) -> dict:
+    """Query ProjectDiscovery Chaos for curated bug-bounty subdomains.
+
+    Distinct from crt.sh (CT-only) and OTX (resolved-only): Chaos pools
+    subdomains seen across years of bug-bounty recon, often catching names
+    no other free source surfaces. No-op when chaos_api_key is unset.
+    """
+    if not settings.chaos_api_key:
+        return {"hosts_found": 0, "upserted": 0, "new": 0, "skipped": "no_api_key"}
+
+    domains = await _get_target_domains(sf, org_id, target_scope=target_scope)
+    all_hosts: list[dict] = []
+    for domain in domains:
+        hostnames = await query_chaos(domain, settings.chaos_api_key)
+        for h in hostnames:
+            all_hosts.append({"host": h})
+
+    if not all_hosts:
+        return {"hosts_found": 0, "upserted": 0, "new": 0}
+
+    async with sf() as db:
+        total, new_ids = await upsert_discovered_hosts(db, uuid.UUID(org_id), all_hosts, "chaos")
+        await emit_new_asset_events(db, uuid.UUID(org_id), new_ids)
+
+    return {"hosts_found": len(all_hosts), "upserted": total, "new": len(new_ids)}
+
+
 async def _do_dnsx(sf, org_id: str, target_scope: str | None = None) -> dict:
     # Staleness filter: skip assets that were already enriched within the last
     # 24h. First-ever discovery still runs because last_enriched is NULL.
@@ -667,6 +695,11 @@ def run_shodan(self, org_id: str, target_scope: str | None = None) -> dict:
     return _run_async(_do_shodan(get_task_session(), org_id, target_scope=target_scope))
 
 
+@celery.task(bind=True, name="discovery.run_chaos")
+def run_chaos(self, org_id: str, target_scope: str | None = None) -> dict:
+    return _run_async(_do_chaos(get_task_session(), org_id, target_scope=target_scope))
+
+
 @celery.task(bind=True, name="discovery.run_dnsx")
 def run_dnsx(self, org_id: str, target_scope: str | None = None) -> dict:
     return _run_async(_do_dnsx(get_task_session(), org_id, target_scope=target_scope))
@@ -687,7 +720,7 @@ def run_liveness_gate(self, org_id: str, target_scope: str | None = None) -> dic
 def run_discovery_chain(self, org_id: str, scan_run_id: str | None = None) -> dict:
     """Full discovery chain, organized into parallel groups.
 
-    Group 1 (parallel): subfinder, wildcard_bruteforce, uncover, crtsh, shodan
+    Group 1 (parallel): subfinder, wildcard_bruteforce, uncover, crtsh, otx, chaos, shodan
         All three read target_domains and append to assets via idempotent
         upserts. No inter-step dependency, so they run concurrently.
 
@@ -716,6 +749,7 @@ def run_discovery_chain(self, org_id: str, scan_run_id: str | None = None) -> di
                 ("uncover", _do_uncover),
                 ("crtsh", _do_crtsh),
                 ("otx", _do_otx),
+                ("chaos", _do_chaos),
                 ("shodan", _do_shodan),
             ],
             [

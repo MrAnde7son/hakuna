@@ -222,6 +222,7 @@ class Settings(BaseSettings):
     fofa_email: str = ""
     fofa_key: str = ""
     otx_api_key: str = ""
+    chaos_api_key: str = ""
 
     # Cloud-provider IP-range matching (app.ingest.cloud_ranges). The
     # refresh task (app.tasks.cloud_ranges) writes per-provider JSON files
