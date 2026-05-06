@@ -13,7 +13,7 @@ import {
   getCampaign, updateCampaign, runCampaign,
   previewCampaignQuery, updateCampaignFinding,
   getWorkflows, createWorkflowFromTemplate, createWorkflow, deleteWorkflow,
-  executeWorkflow, getWorkflowTemplates, authListUsers,
+  getWorkflowTemplates, authListUsers,
   getCampaignTickets, syncFindingTickets, createCampaignSlackChannel,
   createException,
   listCampaignCollaborators, inviteCampaignCollaborator,
@@ -1372,8 +1372,6 @@ function CampaignWorkflows({ campaignId, hasResults, onWorkflowsChange }) {
   const [loading, setLoading] = useState(true)
   const [wfError, setWfError] = useState(null)
   const [showAdd, setShowAdd] = useState(false)
-  const [executing, setExecuting] = useState(null)
-  const [execResults, setExecResults] = useState({})
 
   const loadWorkflows = () => {
     setLoading(true)
@@ -1416,20 +1414,6 @@ function CampaignWorkflows({ campaignId, hasResults, onWorkflowsChange }) {
     setWorkflows(prev => prev.filter(w => w.id !== wfId))
   }
 
-  const handleRun = async (wfId) => {
-    setExecuting(wfId)
-    try {
-      const result = await executeWorkflow(wfId)
-      setExecResults(prev => ({ ...prev, [wfId]: result }))
-      // Refresh workflow data
-      const updated = await getWorkflows(campaignId)
-      setWorkflows(updated)
-    } catch (e) {
-      setExecResults(prev => ({ ...prev, [wfId]: { status: 'failed', error: e.message } }))
-    }
-    setExecuting(null)
-  }
-
   if (loading) return <Spinner />
   if (wfError) return <ErrorBanner error={wfError} onRetry={loadWorkflows} />
 
@@ -1448,16 +1432,6 @@ function CampaignWorkflows({ campaignId, hasResults, onWorkflowsChange }) {
         </Button>
       </div>
 
-      {!hasResults && (
-        <div style={{
-          padding: '12px 16px', marginBottom: 16, borderRadius: 8,
-          background: '#78350f11', border: '1px solid #78350f33',
-          fontSize: 12, color: '#f59e0b',
-        }}>
-          {t('campaigns.runCampaignFirst')}
-        </div>
-      )}
-
       {/* Workflow list */}
       {workflows.length === 0 ? (
           <EmptyState
@@ -1470,7 +1444,6 @@ function CampaignWorkflows({ campaignId, hasResults, onWorkflowsChange }) {
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {workflows.map(wf => {
-              const result = execResults[wf.id]
               return (
                 <Card key={wf.id} style={{ padding: '14px 18px' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -1496,26 +1469,12 @@ function CampaignWorkflows({ campaignId, hasResults, onWorkflowsChange }) {
                         <span>{t('campaigns.runs', { count: wf.run_count || 0 })}</span>
                         {wf.last_run_at && <span>{t('campaigns.lastRunDate', { date: new Date(wf.last_run_at).toLocaleString() })}</span>}
                       </div>
-                      {result && (
-                        <div style={{ marginTop: 6 }}>
-                          <Pill color={result.status === 'completed' ? '#22c55e' : '#ef4444'}>
-                            {result.status === 'completed'
-                              ? t('campaigns.completedItems', { count: result.items_processed })
-                              : t('campaigns.failedError', { error: result.error || t('campaigns.unknownError') })}
-                          </Pill>
-                        </div>
-                      )}
                     </div>
 
                     <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
                       <Button size="sm" variant="ghost"
                         onClick={() => navigate(`/workflows/${wf.id}`)}>
                         <Edit2 size={12} /> {t('common.edit')}
-                      </Button>
-                      <Button size="sm" variant="primary"
-                        onClick={() => handleRun(wf.id)}
-                        disabled={executing === wf.id || !hasResults}>
-                        <Play size={12} /> {executing === wf.id ? t('campaigns.running') : t('campaigns.run')}
                       </Button>
                       <button onClick={() => handleDelete(wf.id)}
                         style={{ padding: '4px 6px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', display: 'flex' }}>

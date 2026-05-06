@@ -25,6 +25,7 @@ from models.models import (
     User, Scan, Asset, Finding, FindingTicket,
     Campaign, CampaignFinding, CampaignCollaborator, AssetOwnership,
     CampaignComplianceControl, ComplianceControl, ComplianceFramework,
+    Workflow,
 )
 import services.campaign_query as cq
 import services.tags as tag_engine
@@ -614,7 +615,36 @@ def run_campaign(
                     metadata={"count": added, "campaign_name": camp.name})
 
             db2.commit()
-            return {"ok": True, "finding_count": added, "asset_count": len(results)}
+
+            # Trigger attached automation workflows. Only active workflows run;
+            # draft/paused ones are skipped so a half-built workflow doesn't fire.
+            workflow_results = []
+            attached = (
+                db2.query(Workflow)
+                .filter(Workflow.campaign_id == campaign_id, Workflow.status == "active")
+                .all()
+            )
+            for wf in attached:
+                try:
+                    wf_result = workflow_engine.execute_workflow(db2, wf.id)
+                    workflow_results.append({
+                        "id": wf.id, "name": wf.name,
+                        "status": wf_result.get("status", "completed"),
+                        "items_processed": wf_result.get("items_processed", 0),
+                    })
+                except Exception as e:
+                    logger.exception("Workflow %s failed during campaign run", wf.id)
+                    workflow_results.append({
+                        "id": wf.id, "name": wf.name,
+                        "status": "failed", "error": str(e),
+                    })
+
+            return {
+                "ok": True,
+                "finding_count": added,
+                "asset_count": len(results),
+                "workflows": workflow_results,
+            }
         finally:
             db2.close()
 
