@@ -883,6 +883,13 @@ async def delete_org(
 
     # ── Agent children ───────────────────────────────────────────────
     db.execute(text("DELETE FROM agent_approvals  WHERE org_id = :oid"), p)
+    db.execute(text("DELETE FROM llm_interaction_outcomes WHERE org_id = :oid"), p)
+    db.execute(text("DELETE FROM llm_interactions WHERE org_id = :oid"), p)
+    # Tables with nullable FK -> agent_runs.id; clear org-scoped rows so the
+    # subsequent agent_runs delete doesn't trip the FK constraint.
+    db.execute(text("DELETE FROM org_memory_facts WHERE org_id = :oid"), p)
+    db.execute(text("DELETE FROM agent_leads      WHERE org_id = :oid"), p)
+    db.execute(text("DELETE FROM org_feed_entries WHERE org_id = :oid"), p)
     db.execute(text("DELETE FROM agent_runs       WHERE agent_id IN (SELECT id FROM agents WHERE org_id = :oid)"), p)
     db.execute(text("DELETE FROM agent_documents  WHERE agent_id IN (SELECT id FROM agents WHERE org_id = :oid)"), p)
     db.execute(text("DELETE FROM agent_schedules  WHERE agent_id IN (SELECT id FROM agents WHERE org_id = :oid)"), p)
@@ -954,6 +961,10 @@ async def delete_org(
     # ── Findings and assets (scoped through scans) ───────────────────
     db.execute(text("DELETE FROM findings WHERE scan_id IN (SELECT id FROM scans WHERE org_id = :oid)"), p)
     db.execute(text("DELETE FROM assets   WHERE scan_id IN (SELECT id FROM scans WHERE org_id = :oid)"), p)
+
+    # ── custom_roles children (no org_id; scoped via role_id) ────────
+    db.execute(text("DELETE FROM tag_permissions   WHERE role_id IN (SELECT id FROM custom_roles WHERE org_id = :oid)"), p)
+    db.execute(text("DELETE FROM user_custom_roles WHERE role_id IN (SELECT id FROM custom_roles WHERE org_id = :oid)"), p)
 
     # ── Org-scoped tables (all have org_id directly) ─────────────────
     for table in [

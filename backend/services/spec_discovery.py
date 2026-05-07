@@ -214,10 +214,17 @@ async def _try_known_registry(base_url: str) -> Optional[DiscoveryResult]:
 # ── LLM-assisted parsing (called externally via route) ──
 
 async def parse_docs_with_llm(content: str, base_url: str = "") -> DiscoveryResult:
-    """Send documentation text to Claude for structured extraction."""
+    """Send documentation text to the configured LLM for structured extraction.
+
+    Routes through the central LLM router so the system default
+    (Vertex Gemini, covered by GCP credits) is used unless the
+    operator has configured a different provider.
+    """
     try:
-        import anthropic
-        client = anthropic.AsyncAnthropic()
+        import asyncio
+
+        from core.database import SessionLocal
+        from core.llm_router import router as llm_router
 
         prompt = f"""Extract structured API connector configuration from the following documentation.
 Respond ONLY with valid JSON. No preamble, no markdown fences, no explanation.
@@ -244,13 +251,16 @@ If a field cannot be determined, omit it. Extract up to 20 most useful endpoints
 Documentation:
 {content[:80000]}"""
 
-        message = await client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=4000,
-            messages=[{"role": "user", "content": prompt}],
-        )
+        def _sync_call() -> str:
+            with SessionLocal() as db:
+                text, _model = llm_router.call(
+                    db,
+                    user=prompt,
+                    max_tokens=4000,
+                )
+                return text
 
-        response_text = message.content[0].text.strip()
+        response_text = (await asyncio.to_thread(_sync_call)).strip()
         # Strip markdown fences if present
         if response_text.startswith("```"):
             response_text = re.sub(r'^```\w*\n?', '', response_text)

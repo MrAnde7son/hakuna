@@ -916,53 +916,231 @@ async def get_easm_scan_runs(hakuna_org_id: str, limit: int = 20, domain: str = 
 
 # ── Registration hook ───────────────────────────────────────────────
 
+def _mark_scan_failed(db: Session, scan: Scan, reason: str, *, stage: str = None) -> None:
+    """Stamp a Scan row as failed with a human-readable reason. The reason
+    flows into ``raw_metadata.error`` (consumed by the Scans page UI and
+    by the welcome_narrator's prompt) and ``raw_metadata.failed_stage``
+    (machine tag the retry path uses to decide what to re-attempt).
+
+    Sets ``raw_metadata.status`` in addition to ``scan.status`` so the
+    existing ``EasmStatusBadge`` (which reads from raw_metadata) renders
+    the failure without needing a UI-side fallback.
+    """
+    from sqlalchemy.orm.attributes import flag_modified
+    scan.status = "failed"
+    meta = dict(scan.raw_metadata or {})
+    meta["error"] = reason
+    meta["status"] = "failed"
+    if stage:
+        meta["failed_stage"] = stage
+    scan.raw_metadata = meta
+    flag_modified(scan, "raw_metadata")
+    db.commit()
+    logger.warning(
+        "EASM scan %d marked failed at stage=%s: %s", scan.id, stage, reason,
+    )
+
+
+async def _setup_easm_scan_for_domain(
+    db: Session, org: Organization, domain: str, *, scan: Scan = None,
+) -> Scan:
+    """Run the external EASM setup for ``domain`` — create scanner org,
+    register the domain, trigger the scan — recording outcome on a Scan
+    row that's created up-front. The Scan row is the durable source of
+    truth: any failure mode leaves a row visible in the Scans page with
+    a clear reason in ``raw_metadata.error``, and the retry path can
+    re-run this function with ``scan=<existing failed row>``.
+
+    Stages:
+      1. create_org   — POST scanner /orgs to get a UUID
+      2. add_domain   — POST scanner /domains under that org
+      3. trigger_scan — handled inside ``scan_domain`` (which has its
+                        own self-heal for stale UUIDs and writes
+                        status/raw_metadata directly)
+
+    Returns the (possibly-failed) Scan row. Never raises — caller may
+    inspect ``scan.status`` to decide what to emit / log.
+    """
+    if scan is None:
+        scan = _create_easm_scan(db, org, domain, scan_type="full")
+        scan.status = "pending"
+        # Stage tag survives until each external op overwrites it on success
+        # or _mark_scan_failed stamps it on failure.
+        scan.raw_metadata = {**(scan.raw_metadata or {}), "stage": "create_org"}
+        db.commit()
+    else:
+        # Reset a previously-failed scan to pending for retry. Preserve
+        # other raw_metadata fields so the operator can see history.
+        scan.status = "pending"
+        meta = dict(scan.raw_metadata or {})
+        meta.pop("error", None)
+        meta.pop("failed_stage", None)
+        meta["stage"] = "create_org"
+        scan.raw_metadata = meta
+        from sqlalchemy.orm.attributes import flag_modified
+        flag_modified(scan, "raw_metadata")
+        db.commit()
+
+    # Stage 1: create the scanner-side org (idempotent only if we already have an id).
+    hakuna_org_id = org.easm_org_id
+    if not hakuna_org_id:
+        hakuna_org_id = await create_easm_org(org.name)
+        if not hakuna_org_id:
+            _mark_scan_failed(
+                db, scan,
+                "Scanner unreachable: could not create EASM org. "
+                "Check that the hakuna-scanner container is running and reachable.",
+                stage="create_org",
+            )
+            return scan
+        org.easm_org_id = hakuna_org_id
+        db.commit()
+
+    # Stage 2: register the domain on the scanner side.
+    if not await add_easm_domain(hakuna_org_id, domain):
+        _mark_scan_failed(
+            db, scan,
+            f"Scanner accepted the org but could not register domain '{domain}'.",
+            stage="add_domain",
+        )
+        return scan
+
+    # Stage 3: trigger the scan. ``scan_domain`` finds our existing Scan row
+    # via ``_find_existing_easm_scan`` and updates its status (running on
+    # success, failed on a trigger-side error). It also self-heals stale
+    # easm_org_id by re-creating the scanner org and retrying once.
+    result = await scan_domain(db, org, domain, scan_type="full")
+    db.refresh(scan)
+    if result is None and scan.status != "failed":
+        # Defensive — scan_domain returns None only when easm_org_id is missing,
+        # which we just guaranteed above, but keep a clean failure record.
+        _mark_scan_failed(
+            db, scan,
+            "scan_domain returned no result unexpectedly.",
+            stage="trigger_scan",
+        )
+        return scan
+
+    return scan
+
+
 async def trigger_easm_for_new_org(db: Session, org: Organization, email: str):
     """
     Called after registration. Extracts corporate domain from email,
     creates hakuna org + domain, triggers full scan with weekly schedule.
-    Non-blocking — failures are logged but don't break registration.
+    Non-blocking — failures don't break registration AND are visible in
+    the Scans page (a Scan row is created up-front and stamped 'failed'
+    with a reason when any external stage fails).
     """
     domain = extract_corporate_domain(email)
     if not domain:
         logger.info(f"Skipping EASM for org '{org.name}': free/personal email domain")
-        return
+        return None
 
-    # Persist the domain immediately so the frontend can show it even if the scanner is unreachable
+    # Persist the domain so the frontend can show it even if the scanner
+    # is unreachable. The Scan row created below is the actual artifact
+    # the welcome_narrator + Scans page key off of.
     org.easm_domain = domain
     db.commit()
 
     logger.info(f"Triggering EASM discovery for org '{org.name}' domain '{domain}'")
 
-    hakuna_org_id = await create_easm_org(org.name)
-    if not hakuna_org_id:
-        logger.warning(f"Failed to create EASM org for '{org.name}'")
-        return
+    scan = await _setup_easm_scan_for_domain(db, org, domain)
+    if scan.status == "failed":
+        # The Scan row is now visible in the Scans page with the failure
+        # reason in raw_metadata.error. The welcome_narrator will read
+        # it and post an honest entry. No scan_started event — the scan
+        # never actually started.
+        return scan
 
-    if not await add_easm_domain(hakuna_org_id, domain):
-        logger.warning(f"Failed to add domain '{domain}' to EASM org {hakuna_org_id}")
-        return
-
-    # Persist hakuna org reference now that scanner confirmed it
-    org.easm_org_id = hakuna_org_id
+    # Apply weekly schedule (every Monday at 02:00 UTC). Only when the
+    # scan actually launched.
+    schedule = "0 2 * * 1"
+    scan.schedule = schedule
     db.commit()
+    from services.easm_scheduler import register_scan
+    register_scan(scan.id, schedule)
+    logger.info(f"Weekly EASM schedule registered for scan {scan.id}")
 
-    # Create local Scan record, trigger scan, and set weekly schedule
-    result = await scan_domain(db, org, domain, scan_type="full")
-    if not result:
-        logger.warning(f"Failed to trigger EASM scan for org {hakuna_org_id}")
-        return
+    # Fire ``scan_started`` so the user lands on the feed with a narrative
+    # entry waiting for them.
+    try:
+        from services.event_bus import emit
+        emit(
+            db,
+            event_type="scan_started",
+            org_id=org.id,
+            payload={
+                "scan_id": scan.id,
+                "domain": domain,
+                "scan_type": "full",
+                "trigger": "auto_register",
+            },
+            dedup_key=scan.id,
+        )
+    except Exception:
+        logger.exception(
+            "trigger_easm_for_new_org: scan_started emit failed for scan=%s",
+            scan.id,
+        )
 
-    logger.info(f"EASM scan triggered: org={hakuna_org_id}, scan={result.get('scan_id')}, run={result.get('run_id')}")
+    return scan
 
-    # Apply weekly schedule (every Monday at 02:00 UTC)
-    scan = db.query(Scan).filter(Scan.id == result["scan_id"]).first()
-    if scan:
-        schedule = "0 2 * * 1"
-        scan.schedule = schedule
-        db.commit()
-        from services.easm_scheduler import register_scan
-        register_scan(scan.id, schedule)
-        logger.info(f"Weekly EASM schedule registered for scan {scan.id}")
+
+async def retry_easm_scan(db: Session, org: Organization, scan_id: int) -> Scan:
+    """Re-run the EASM setup for a previously-failed Scan row. Reuses the
+    existing Scan (resets status to 'pending', clears the error fields,
+    re-runs the external ops). Idempotent for already-running scans.
+
+    Raises ValueError on a missing or wrong-org scan id; KeyError when
+    the scan has no domain in raw_metadata (shouldn't happen for rows
+    created by ``_setup_easm_scan_for_domain``).
+    """
+    scan = (
+        db.query(Scan)
+        .filter(Scan.id == scan_id, Scan.org_id == org.id)
+        .first()
+    )
+    if scan is None:
+        raise ValueError(f"Scan {scan_id} not found for org {org.id}")
+    if scan.source_type != "easm":
+        raise ValueError(f"Scan {scan_id} is not an EASM scan")
+    domain = (scan.raw_metadata or {}).get("domain") or org.easm_domain
+    if not domain:
+        raise KeyError(f"Scan {scan_id} has no domain to retry")
+
+    # Already running or completed — no-op so idempotent retry doesn't
+    # disturb in-flight work.
+    if scan.status in ("running", "completed"):
+        return scan
+
+    scan = await _setup_easm_scan_for_domain(db, org, domain, scan=scan)
+
+    # Re-fire scan_started on successful retry so the feed reflects the
+    # fresh attempt. Safe vs. debounce — different scan_id won't collide,
+    # same scan_id within the window debounces (we want that — don't
+    # narrate twice on a quick double-click).
+    if scan.status not in ("failed",):
+        try:
+            from services.event_bus import emit
+            emit(
+                db,
+                event_type="scan_started",
+                org_id=org.id,
+                payload={
+                    "scan_id": scan.id,
+                    "domain": domain,
+                    "scan_type": "full",
+                    "trigger": "retry",
+                },
+                dedup_key=scan.id,
+            )
+        except Exception:
+            logger.exception(
+                "retry_easm_scan: scan_started emit failed for scan=%s", scan.id,
+            )
+
+    return scan
 
 
 # ── Asset import (EASM → main platform) ────────────────────────────

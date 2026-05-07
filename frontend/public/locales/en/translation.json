@@ -13,6 +13,7 @@
   },
   "nav": {
     "intelligence": "Intelligence",
+    "feed": "Feed",
     "exposure": "Exposure",
     "response": "Response",
     "reports": "Reports",
@@ -1282,6 +1283,73 @@
       "confirmTitle": "Delete {{framework}}?",
       "confirmBody": "This removes the imported framework, its controls, mappings, and any per-control compliance state for your org. Subscriptions to this framework will be deleted. Built-in packs are not affected. This cannot be undone.",
       "success": "Deleted {{framework}}"
+    }
+  },
+  "feed": {
+    "title": "Activity Feed",
+    "subtitle": "What your agents observed, decided, and did. Newest first.",
+    "loading": "Loading…",
+    "loadFailed": "Couldn't load the feed.",
+    "actionFailed": "Action failed.",
+    "rejectedFromFeed": "Rejected from the feed.",
+    "viewTrace": "View reasoning →",
+    "approve": "Approve",
+    "reject": "Reject",
+    "open": "Open",
+    "refresh": "Refresh",
+    "unread": "Unread",
+    "unknownAgent": "Agent",
+    "justNow": "just now",
+    "minutesAgo_one": "{{count}} min ago",
+    "minutesAgo_other": "{{count}} min ago",
+    "hoursAgo_one": "{{count}}h ago",
+    "hoursAgo_other": "{{count}}h ago",
+    "daysAgo_one": "{{count}}d ago",
+    "daysAgo_other": "{{count}}d ago",
+    "kind": {
+      "observation": "observation",
+      "decision": "decision",
+      "action": "action",
+      "question": "needs input",
+      "brief": "brief"
+    },
+    "severity": {
+      "critical": "Critical",
+      "high": "High",
+      "medium": "Medium",
+      "low": "Low",
+      "info": "Info"
+    },
+    "filter": {
+      "open": "Open",
+      "acted": "Acted",
+      "dismissed": "Dismissed",
+      "all": "All"
+    },
+    "status": {
+      "open": "Open",
+      "acted": "You acted on this.",
+      "dismissed": "Dismissed.",
+      "expired": "No longer applies."
+    },
+    "empty": {
+      "title": "Nothing in the feed yet.",
+      "body": "Your agents will post here as scans complete, assets are discovered, and attack chains are validated. Run a scan to see the first entries."
+    },
+    "chat": {
+      "title": "Ask about your feed",
+      "subtitle": "Follow up on recent entries, ask for detail, or have me draft an action.",
+      "placeholder": "Ask about a recent finding, scan, or chain — or ask me to draft a campaign.",
+      "send": "Send",
+      "thinking": "Thinking…",
+      "clear": "Clear",
+      "failed": "Couldn't reach the assistant.",
+      "viewTrace": "View reasoning →",
+      "draftedAction": "Drafted action",
+      "approve": "Approve",
+      "reject": "Reject",
+      "expand": "Open chat",
+      "collapse": "Hide chat"
     }
   }
 }

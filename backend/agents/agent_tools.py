@@ -23,12 +23,13 @@ from models.models import (
     IntegrationConfig, AutoTagRule, OwnershipRule,
     Integration, IntegrationRun,
     Workflow, WorkflowNode, WorkflowEdge, WorkflowExecution, WorkflowExecutionLog,
-    Agent, AgentRun, AgentSchedule,
+    Agent, AgentRun, AgentSchedule, AgentApproval,
     CustomRole, ExternalTagSource,
     AuditLog, CopilotAttachment, CustomFieldDefinition,
     RelayAgent, ComplianceFramework, ComplianceControl,
     ComplianceControlStatus, ComplianceControlMapping,
     OrgFrameworkSubscription,
+    OrgFeedEntry,
 )
 from services.ownership_inference import resolve_finding_owner
 from models.threat_intel_models import (
@@ -734,6 +735,743 @@ def tag_assets(db: Session, params: dict):
             created += 1
     db.commit()
     return {"tagged": created, "tag": f"{tag.category}:{tag.value}"}
+
+
+_FEED_ENTRY_KINDS = {"observation", "decision", "action", "question", "brief"}
+_FEED_ENTRY_SEVERITIES = {"critical", "high", "medium", "low", "info"}
+
+
+@action(
+    "post_feed_entry",
+    RiskTier.SOFT_WRITE,
+    scopes=["feed:write"],
+    description="Post a narrative entry to the org's activity feed.",
+    confirmation_required=False,
+)
+@agent_tool(
+    "post_feed_entry",
+    "Post a narrative entry to the org's activity feed — the surface where users see "
+    "what the agents observed, concluded, and did. Use this as your *primary* output "
+    "when an event triggered your run. Write in voice: state what you saw, what you "
+    "concluded, what you did or want to do. Keep the headline under 280 characters; "
+    "put the reasoning in body_md (markdown). "
+    "WHEN TO CALL: after you've finished reasoning over an event, post one entry that "
+    "summarizes the outcome for the user. Don't post multiple short entries — one "
+    "well-written entry per event is the goal. "
+    "ACTIONS: when you've drafted something the user should approve (a campaign, an "
+    "owner notification, a ticket), pass an `approval_id` from the AgentApproval row "
+    "you created so the entry renders an inline approve button.",
+    {
+        "kind": {
+            "type": "string",
+            "enum": ["observation", "decision", "action", "question", "brief"],
+            "description": (
+                "observation = something happened, here's what it means; "
+                "decision = I made a call you should know about; "
+                "action = I did something on your behalf; "
+                "question = I need input to proceed; "
+                "brief = scheduled summary (e.g. daily digest)."
+            ),
+        },
+        "headline": {
+            "type": "string",
+            "description": "One-line summary, ≤280 chars. Plain text, no markdown.",
+        },
+        "body_md": {
+            "type": "string",
+            "description": "Markdown body — your reasoning, what you saw, what you did. Optional.",
+        },
+        "severity": {
+            "type": "string",
+            "enum": ["critical", "high", "medium", "low", "info"],
+            "description": "How prominently to surface this. Default 'info'.",
+        },
+        "event_type": {
+            "type": "string",
+            "description": "What triggered this entry (e.g. 'scan_complete', 'asset_created'). Optional.",
+        },
+        "event_ref": {
+            "type": "object",
+            "description": "Pointers to entities ({scan_id, asset_id, finding_id, ...}). Optional.",
+        },
+        "proposed_actions": {
+            "type": "array",
+            "description": (
+                "Inline buttons. Each item: {label, kind, approval_id?, href?, tool_name?}. "
+                "kind='approve_action' pairs with approval_id to show an inline approve button. "
+                "kind='navigate' uses href for a deep link."
+            ),
+            "items": {"type": "object"},
+        },
+    },
+)
+def post_feed_entry(db: Session, params: dict):
+    """Insert one feed entry. Idempotent over (org_id, agent_id, headline)
+    within a 5-minute window — if the agent re-runs and tries to post the
+    same headline twice, the second call is a no-op rather than spamming
+    the feed."""
+    org_id = params.get("_org_id")
+    agent_id = params.get("_agent_id")
+    if not org_id:
+        return {"error": "no org context — feed entries require an org-scoped agent"}
+
+    kind = (params.get("kind") or "observation").lower()
+    if kind not in _FEED_ENTRY_KINDS:
+        return {"error": f"kind must be one of {sorted(_FEED_ENTRY_KINDS)}"}
+
+    headline = (params.get("headline") or "").strip()
+    if not headline:
+        return {"error": "headline is required"}
+    if len(headline) > 280:
+        headline = headline[:277] + "…"
+
+    severity = (params.get("severity") or "info").lower()
+    if severity not in _FEED_ENTRY_SEVERITIES:
+        severity = "info"
+
+    proposed_actions = params.get("proposed_actions") or []
+    if not isinstance(proposed_actions, list):
+        proposed_actions = []
+    # Trim to a sane bound — the LLM occasionally generates long lists.
+    proposed_actions = proposed_actions[:10]
+
+    event_ref = params.get("event_ref") or {}
+    if not isinstance(event_ref, dict):
+        event_ref = {}
+
+    # Idempotency window: same agent + same headline within 5 minutes is
+    # treated as a duplicate. Defends against the engine retrying a tool
+    # call on transient errors and against agents that loop.
+    from datetime import timedelta as _td
+    cutoff = datetime.utcnow() - _td(minutes=5)
+    dup_q = db.query(OrgFeedEntry).filter(
+        OrgFeedEntry.org_id == org_id,
+        OrgFeedEntry.headline == headline,
+        OrgFeedEntry.created_at >= cutoff,
+    )
+    if agent_id is not None:
+        dup_q = dup_q.filter(OrgFeedEntry.agent_id == agent_id)
+    existing = dup_q.first()
+    if existing is not None:
+        return {
+            "id": existing.id,
+            "duplicate": True,
+            "note": "An identical entry was posted in the last 5 minutes — skipped.",
+        }
+
+    entry = OrgFeedEntry(
+        org_id=org_id,
+        agent_id=agent_id,
+        agent_run_id=params.get("_agent_run_id"),
+        kind=kind,
+        headline=headline,
+        body_md=params.get("body_md"),
+        event_type=params.get("event_type"),
+        event_ref=event_ref,
+        proposed_actions=proposed_actions,
+        severity=severity,
+        status="open",
+    )
+    db.add(entry)
+    db.commit()
+    return {
+        "id": entry.id,
+        "kind": entry.kind,
+        "headline": entry.headline,
+        "severity": entry.severity,
+        "status": entry.status,
+    }
+
+
+@agent_tool(
+    "list_feed_entries",
+    "List recent entries from the org's activity feed — the timeline where agents post "
+    "observations, decisions, actions, questions, and briefs. Use this when the user is on "
+    "the feed page (/, /feed) and asks about what's in their feed, what agents have been "
+    "saying, what's pending their approval, or how to triage.",
+    {
+        "kind": {
+            "type": "string",
+            "enum": ["observation", "decision", "action", "question", "brief"],
+            "description": "Filter by entry kind. Optional.",
+        },
+        "severity": {
+            "type": "string",
+            "enum": ["critical", "high", "medium", "low", "info"],
+            "description": "Filter by severity. Optional.",
+        },
+        "status": {
+            "type": "string",
+            "enum": ["open", "acted", "expired"],
+            "description": "Filter by entry status. Defaults to all.",
+        },
+        "event_type": {
+            "type": "string",
+            "description": "Filter by event_type (e.g. 'scan_complete'). Optional.",
+        },
+        "has_pending_approval": {
+            "type": "boolean",
+            "description": "If true, only entries with at least one approve_action proposed_action (something waiting on the user).",
+        },
+        "limit": {
+            "type": "integer",
+            "description": "Max results, default 20, max 100.",
+        },
+    },
+)
+def list_feed_entries(db: Session, params: dict):
+    org_id = params.get("_org_id")
+    if not org_id:
+        return {"error": "no org context"}
+
+    q = db.query(OrgFeedEntry).filter(OrgFeedEntry.org_id == org_id)
+    if params.get("kind"):
+        q = q.filter(OrgFeedEntry.kind == params["kind"])
+    if params.get("severity"):
+        q = q.filter(OrgFeedEntry.severity == params["severity"])
+    if params.get("status"):
+        q = q.filter(OrgFeedEntry.status == params["status"])
+    if params.get("event_type"):
+        q = q.filter(OrgFeedEntry.event_type == params["event_type"])
+
+    limit = min(params.get("limit") or 20, 100)
+    rows = q.order_by(OrgFeedEntry.created_at.desc()).limit(limit).all()
+
+    only_pending = bool(params.get("has_pending_approval"))
+    out = []
+    for r in rows:
+        actions = r.proposed_actions or []
+        pending = [a for a in actions if isinstance(a, dict) and a.get("kind") == "approve_action"]
+        if only_pending and not pending:
+            continue
+        out.append({
+            "id": r.id,
+            "kind": r.kind,
+            "headline": r.headline,
+            "body_md": r.body_md,
+            "severity": r.severity,
+            "status": r.status,
+            "event_type": r.event_type,
+            "event_ref": r.event_ref or {},
+            "agent_id": r.agent_id,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+            "proposed_actions": actions,
+            "pending_approval_count": len(pending),
+        })
+    return out
+
+
+@action(
+    "draft_campaign",
+    RiskTier.SOFT_WRITE,
+    scopes=["campaigns:write"],
+    description="Draft a remediation campaign that the user can approve from the feed.",
+    confirmation_required=False,
+)
+@agent_tool(
+    "draft_campaign",
+    "Draft a remediation campaign for a set of findings and pair it with a pending "
+    "approval. The campaign is created with status='draft' (invisible until activated) "
+    "AND an AgentApproval row of source='agent_draft', tool_name='activate_campaign'. "
+    "The agent does NOT pause — this returns immediately with both ids. "
+    "Include the approval_id in post_feed_entry's proposed_actions as kind='approve_action' "
+    "so the user can approve from the feed; the existing approval-decision endpoint "
+    "flips the campaign to 'active' on approve and leaves it as 'draft' on reject. "
+    "WHEN TO CALL: when the agent has identified a coherent group of findings worth "
+    "remediating together (e.g. 'all KEV findings on internet-facing assets', 'all "
+    "Confluence CVE findings'). Don't draft for low-confidence groups — under-drafting "
+    "is better than spamming the user with rejected campaigns.",
+    {
+        "name": {
+            "type": "string",
+            "description": "Short campaign name. Lead with the pattern, not 'Campaign for...'. Example: 'KEV findings on internet-facing assets'.",
+        },
+        "description": {
+            "type": "string",
+            "description": "1–2 sentences. Why this campaign exists, what it's solving.",
+        },
+        "finding_ids": {
+            "type": "array",
+            "items": {"type": "integer"},
+            "description": "Findings to include. Cap at 100; pick the most relevant if you have more.",
+        },
+    },
+)
+def draft_campaign(db: Session, params: dict):
+    """Create a draft Campaign + paired AgentApproval. Returns the ids
+    so the agent can stitch them into a feed entry."""
+    org_id = params.get("_org_id")
+    agent_id = params.get("_agent_id")
+    if not org_id:
+        return {"error": "no org context — draft_campaign requires an org-scoped agent"}
+
+    name = (params.get("name") or "").strip()
+    if not name:
+        return {"error": "name is required"}
+    if len(name) > 200:
+        name = name[:200]
+
+    description = (params.get("description") or "").strip()
+    finding_ids = list(params.get("finding_ids") or [])
+    if not finding_ids:
+        return {"error": "finding_ids must contain at least one id"}
+    finding_ids = finding_ids[:100]
+
+    # Validate findings belong to this org. Filter by Scan.org_id since
+    # the column is canonical there.
+    valid_findings = (
+        db.query(Finding)
+        .join(Scan, Finding.scan_id == Scan.id)
+        .filter(Finding.id.in_(finding_ids), Scan.org_id == org_id)
+        .all()
+    )
+    if not valid_findings:
+        return {"error": "none of the supplied finding_ids are in this org"}
+    valid_ids = {f.id for f in valid_findings}
+
+    campaign = Campaign(
+        org_id=org_id,
+        name=name,
+        description=description,
+        status="draft",
+        finding_count=len(valid_ids),
+    )
+    db.add(campaign)
+    db.flush()
+    for fid in valid_ids:
+        db.add(CampaignFinding(campaign_id=campaign.id, finding_id=fid))
+
+    # The activation approval. Mirrors migration 066's MCP pattern:
+    # source='agent_draft', agent_run_id NULL — the agent has already
+    # finished writing the feed entry by the time the user approves, so
+    # there's no run to resume. Approval-decision endpoint reads the
+    # source and activates the campaign on 'approved'.
+    approval = AgentApproval(
+        org_id=org_id,
+        agent_id=agent_id,
+        agent_run_id=None,
+        source="agent_draft",
+        tool_name="activate_campaign",
+        tool_input={
+            "campaign_id": campaign.id,
+            "campaign_name": name,
+            "finding_count": len(valid_ids),
+        },
+        status="pending",
+        messages_snapshot=[],
+        assistant_content=[],
+        provider=None,
+        model_name=None,
+        current_step=0,
+        tool_use_id=None,
+    )
+    db.add(approval)
+    db.commit()
+    db.refresh(campaign)
+    db.refresh(approval)
+
+    return {
+        "campaign_id": campaign.id,
+        "approval_id": approval.id,
+        "draft_url": f"/campaigns/{campaign.id}",
+        "finding_count": len(valid_ids),
+    }
+
+
+@action(
+    "draft_owner_notification",
+    RiskTier.SOFT_WRITE,
+    scopes=["notifications:write"],
+    description="Draft a message to the owner of an asset/finding that the user can approve from the feed.",
+    confirmation_required=False,
+)
+@agent_tool(
+    "draft_owner_notification",
+    "Draft a message to the inferred owner of a finding's asset and pair it with "
+    "a pending approval. The agent does NOT pause — this returns immediately with "
+    "the approval id. Include the approval_id in post_feed_entry's proposed_actions "
+    "as kind='approve_action'; the existing approval-decision endpoint sends the "
+    "message on approve (Slack first if configured, otherwise an in-app notification "
+    "the org admins see in the bell). Reject = no-op. "
+    "WHEN TO CALL: when the agent has identified a finding worth flagging directly "
+    "to the owner — typically a high-severity asset where ownership inference is "
+    "confident (manual ownership or strong inferred team signal). Don't draft for "
+    "every high-severity row; the goal is targeted nudges, not a flood.",
+    {
+        "finding_id": {
+            "type": "integer",
+            "description": "The finding to notify about. Owner is inferred from this finding's asset via the standard ownership chain (manual → asset-level → inferred team → inferred user).",
+        },
+        "message_md": {
+            "type": "string",
+            "description": "The message body in markdown. Be terse and factual — what's wrong, where, why it matters. The user is going to read this before approving so don't be wordy.",
+        },
+    },
+)
+def draft_owner_notification(db: Session, params: dict):
+    """Create a draft notification + paired AgentApproval. Returns the
+    approval id so the agent can stitch it into a feed entry."""
+    org_id = params.get("_org_id")
+    agent_id = params.get("_agent_id")
+    if not org_id:
+        return {"error": "no org context — draft_owner_notification requires an org-scoped agent"}
+
+    finding_id = params.get("finding_id")
+    if not finding_id:
+        return {"error": "finding_id is required"}
+
+    message_md = (params.get("message_md") or "").strip()
+    if not message_md:
+        return {"error": "message_md is required"}
+    if len(message_md) > 4000:
+        message_md = message_md[:4000]
+
+    # Look up finding within this org. Reuse the Scan→org_id link since
+    # Finding's own org_id is denormalized and not always populated.
+    finding = (
+        db.query(Finding)
+        .join(Scan, Finding.scan_id == Scan.id)
+        .filter(Finding.id == finding_id, Scan.org_id == org_id)
+        .first()
+    )
+    if finding is None:
+        return {"error": f"finding {finding_id} not found in this org"}
+
+    asset = db.query(Asset).filter(Asset.id == finding.asset_id).first()
+
+    # Resolve owner up-front so the user can see who'd be notified before
+    # approving. Empty/null fields are fine — the activation handler
+    # falls back to org admins via in-app notification.
+    from services.ownership_inference import resolve_finding_owner
+    try:
+        owner = resolve_finding_owner(finding, asset, db)
+    except Exception:
+        owner = {}
+
+    approval = AgentApproval(
+        org_id=org_id,
+        agent_id=agent_id,
+        agent_run_id=params.get("_agent_run_id"),
+        source="agent_draft",
+        tool_name="send_owner_notification",
+        tool_input={
+            "finding_id": finding.id,
+            "asset_id": finding.asset_id,
+            "owner": owner or {},
+            "message_md": message_md,
+            "context": {
+                "plugin_name": finding.plugin_name,
+                "severity_label": finding.severity_label,
+                "asset_hostname": (asset.hostname if asset else None),
+            },
+        },
+        status="pending",
+        messages_snapshot=[],
+        assistant_content=[],
+        provider=None,
+        model_name=None,
+        current_step=0,
+        tool_use_id=None,
+    )
+    db.add(approval)
+    db.commit()
+    db.refresh(approval)
+
+    return {
+        "approval_id": approval.id,
+        "owner_name": (owner or {}).get("owner_name"),
+        "owner_team": (owner or {}).get("owner_team"),
+        "owner_email": (owner or {}).get("owner_email"),
+        "owner_source": (owner or {}).get("source"),
+    }
+
+
+_VALID_EXCEPTION_TYPES = {"accepted_risk", "false_positive", "compensating_control"}
+
+
+@action(
+    "draft_finding_exception",
+    RiskTier.SOFT_WRITE,
+    scopes=["findings:write"],
+    description="Draft a finding exception (FP, accepted-risk, or compensating-control) that the user can approve from the feed.",
+    confirmation_required=False,
+)
+@agent_tool(
+    "draft_finding_exception",
+    "Draft a FindingException for a finding the agent believes is a false positive, "
+    "an accepted risk, or covered by a compensating control. The agent does NOT pause — "
+    "this returns the approval id immediately. Stitch it into post_feed_entry's "
+    "proposed_actions as kind='approve_action'; the existing approval-decision "
+    "endpoint creates the exception on approve (scoped by plugin_id + asset_ip) and "
+    "leaves a no-op on reject. "
+    "WHEN TO CALL: when you have evidence the finding shouldn't count against the org's "
+    "exposure — e.g. plugin reports an outdated component but the asset's banner data "
+    "shows a patched build, or the affected service isn't actually running. Don't draft "
+    "exceptions speculatively; if you're not sure, post an observation entry asking the "
+    "operator to confirm.",
+    {
+        "finding_id": {
+            "type": "integer",
+            "description": "The finding to except. The exception scopes by the finding's plugin_id + asset_ip so it persists across rescans.",
+        },
+        "exception_type": {
+            "type": "string",
+            "enum": ["accepted_risk", "false_positive", "compensating_control"],
+            "description": "false_positive when you believe the finding is wrong. accepted_risk when it's real but the org should accept it (set expires_at). compensating_control when an existing control mitigates it.",
+        },
+        "reason": {
+            "type": "string",
+            "description": "Why this exception is justified. 1–2 sentences. The user reads this before approving — be specific.",
+        },
+        "expires_at": {
+            "type": "string",
+            "description": "Optional ISO date (YYYY-MM-DD). Required for accepted_risk (don't accept risk forever). Omit for false_positive / compensating_control where the exception is structural.",
+        },
+    },
+)
+def draft_finding_exception(db: Session, params: dict):
+    """Create a draft FindingException + paired AgentApproval. The
+    exception itself isn't created until approval — we just stash the
+    params on the approval row."""
+    org_id = params.get("_org_id")
+    agent_id = params.get("_agent_id")
+    if not org_id:
+        return {"error": "no org context — draft_finding_exception requires an org-scoped agent"}
+
+    finding_id = params.get("finding_id")
+    if not finding_id:
+        return {"error": "finding_id is required"}
+
+    exception_type = (params.get("exception_type") or "").strip()
+    if exception_type not in _VALID_EXCEPTION_TYPES:
+        return {"error": f"exception_type must be one of {sorted(_VALID_EXCEPTION_TYPES)}"}
+
+    reason = (params.get("reason") or "").strip()
+    if not reason:
+        return {"error": "reason is required"}
+    if len(reason) > 2000:
+        reason = reason[:2000]
+
+    expires_at = (params.get("expires_at") or "").strip() or None
+    if exception_type == "accepted_risk" and not expires_at:
+        return {"error": "accepted_risk exceptions must include expires_at (don't accept risk forever)"}
+    if expires_at:
+        try:
+            datetime.strptime(expires_at, "%Y-%m-%d")
+        except ValueError:
+            return {"error": "expires_at must be an ISO date (YYYY-MM-DD)"}
+
+    # Verify finding belongs to this org. We need plugin_id + asset_ip
+    # at activation time to build the FindingException — capture both now.
+    finding = (
+        db.query(Finding)
+        .join(Scan, Finding.scan_id == Scan.id)
+        .filter(Finding.id == finding_id, Scan.org_id == org_id)
+        .first()
+    )
+    if finding is None:
+        return {"error": f"finding {finding_id} not found in this org"}
+
+    asset = db.query(Asset).filter(Asset.id == finding.asset_id).first()
+    asset_ip = asset.ip if asset else None
+
+    approval = AgentApproval(
+        org_id=org_id,
+        agent_id=agent_id,
+        agent_run_id=params.get("_agent_run_id"),
+        source="agent_draft",
+        tool_name="create_finding_exception",
+        tool_input={
+            "finding_id": finding.id,
+            "plugin_id": finding.plugin_id,
+            "plugin_name": finding.plugin_name,
+            "asset_ip": asset_ip,
+            "asset_hostname": (asset.hostname if asset else None),
+            "exception_type": exception_type,
+            "reason": reason,
+            "expires_at": expires_at,
+        },
+        status="pending",
+        messages_snapshot=[],
+        assistant_content=[],
+        provider=None,
+        model_name=None,
+        current_step=0,
+        tool_use_id=None,
+    )
+    db.add(approval)
+    db.commit()
+    db.refresh(approval)
+
+    return {
+        "approval_id": approval.id,
+        "exception_type": exception_type,
+        "scope": {"plugin_id": finding.plugin_id, "asset_ip": asset_ip},
+        "expires_at": expires_at,
+    }
+
+
+_VALID_JIRA_PRIORITIES = {"highest", "high", "medium", "low", "lowest"}
+
+
+@action(
+    "draft_jira_ticket",
+    RiskTier.SOFT_WRITE,
+    scopes=["integrations:write"],
+    description="Draft a Jira ticket for a set of findings that the user can approve from the feed.",
+    confirmation_required=False,
+)
+@agent_tool(
+    "draft_jira_ticket",
+    "Draft a Jira ticket for one or more findings and pair it with a pending "
+    "approval. The ticket is NOT created until the user approves — at draft time we "
+    "just snapshot the finding context onto an AgentApproval(source='agent_draft', "
+    "tool_name='create_jira_ticket'). The agent does NOT pause — this returns the "
+    "approval id immediately. Stitch it into post_feed_entry's proposed_actions as "
+    "kind='approve_action'; the existing approval-decision endpoint calls the Jira "
+    "integration on approve and stamps the resulting ticket key/url onto the "
+    "approval for audit. "
+    "WHEN TO CALL: when the agent has decided a finding (or coherent group of findings) "
+    "warrants tracking in Jira — typically high-severity items the org's process is to "
+    "ticket. Don't draft for every finding; if the user already has a campaign or "
+    "exception path that fits better, prefer that. "
+    "REQUIREMENT: a Jira integration must be configured. The tool returns an error "
+    "if not, so the agent can fall back to draft_owner_notification or post_feed_entry "
+    "without an approve_action.",
+    {
+        "finding_ids": {
+            "type": "array",
+            "items": {"type": "integer"},
+            "description": "Findings to include. Cap at 50; the integration groups them per its configured group_by rule. Pick the most relevant if you have more.",
+        },
+        "title": {
+            "type": "string",
+            "description": "Optional explicit title. If omitted, the integration's title_template is used (typically '[<severity>] <plugin_name>').",
+        },
+        "description_md": {
+            "type": "string",
+            "description": "Optional explicit ticket body in markdown. If omitted, the integration's description_template is used.",
+        },
+        "priority": {
+            "type": "string",
+            "enum": ["highest", "high", "medium", "low", "lowest"],
+            "description": "Optional Jira priority. If omitted, the integration default applies.",
+        },
+        "assignee": {
+            "type": "string",
+            "description": "Optional Jira accountId or email. Overrides the integration default.",
+        },
+        "labels": {
+            "type": "string",
+            "description": "Optional comma-separated Jira labels (e.g. 'agent-drafted,kev').",
+        },
+    },
+)
+def draft_jira_ticket(db: Session, params: dict):
+    """Create a draft Jira-ticket approval. The actual Jira API call
+    happens on approve via ``_create_jira_ticket`` in agent_routes."""
+    org_id = params.get("_org_id")
+    agent_id = params.get("_agent_id")
+    if not org_id:
+        return {"error": "no org context — draft_jira_ticket requires an org-scoped agent"}
+
+    finding_ids = list(params.get("finding_ids") or [])
+    if not finding_ids:
+        return {"error": "finding_ids must contain at least one id"}
+    finding_ids = finding_ids[:50]
+
+    priority = (params.get("priority") or "").strip().lower() or None
+    if priority and priority not in _VALID_JIRA_PRIORITIES:
+        return {"error": f"priority must be one of {sorted(_VALID_JIRA_PRIORITIES)}"}
+
+    # Fail fast if Jira isn't configured — the agent can choose a different
+    # path rather than drafting an approval that's guaranteed to fail.
+    cfg = (
+        db.query(IntegrationConfig)
+        .filter(
+            IntegrationConfig.provider == "jira",
+            IntegrationConfig.is_enabled == True,  # noqa: E712
+        )
+        .first()
+    )
+    if cfg is None or not (cfg.config or {}).get("base_url"):
+        return {"error": "jira integration not configured for this deployment"}
+
+    # Validate findings belong to this org and snapshot the context
+    # the integration's _render() needs. We capture per-finding so the
+    # activation handler doesn't re-resolve (defends against the finding
+    # being deleted between draft and approval).
+    rows = (
+        db.query(Finding, Asset)
+        .join(Scan, Finding.scan_id == Scan.id)
+        .outerjoin(Asset, Finding.asset_id == Asset.id)
+        .filter(Finding.id.in_(finding_ids), Scan.org_id == org_id)
+        .all()
+    )
+    if not rows:
+        return {"error": "none of the supplied finding_ids are in this org"}
+
+    items = []
+    for f, a in rows:
+        items.append({
+            "finding_id": f.id,
+            "plugin_id": f.plugin_id,
+            "plugin_name": f.plugin_name,
+            "severity": f.severity,
+            "severity_label": f.severity_label,
+            "asset_id": f.asset_id,
+            "asset_ip": (a.ip if a else None),
+            "asset_hostname": (a.hostname if a else None),
+            "remediation": (f.solution or "") if hasattr(f, "solution") else "",
+        })
+
+    title = (params.get("title") or "").strip() or None
+    if title and len(title) > 255:
+        title = title[:255]
+    description_md = (params.get("description_md") or "").strip() or None
+    if description_md and len(description_md) > 8000:
+        description_md = description_md[:8000]
+
+    labels = (params.get("labels") or "").strip() or None
+    assignee = (params.get("assignee") or "").strip() or None
+
+    approval = AgentApproval(
+        org_id=org_id,
+        agent_id=agent_id,
+        agent_run_id=params.get("_agent_run_id"),
+        source="agent_draft",
+        tool_name="create_jira_ticket",
+        tool_input={
+            "items": items,
+            "config_overrides": {
+                "title_template": title,  # None → integration default applies in _render
+                "description_template": description_md,
+                "priority": priority,
+                "assignee": assignee,
+                "labels": labels,
+            },
+        },
+        status="pending",
+        messages_snapshot=[],
+        assistant_content=[],
+        provider=None,
+        model_name=None,
+        current_step=0,
+        tool_use_id=None,
+    )
+    db.add(approval)
+    db.commit()
+    db.refresh(approval)
+
+    return {
+        "approval_id": approval.id,
+        "finding_count": len(items),
+        "preview": {
+            "title": title or f"[{items[0].get('severity_label')}] {items[0].get('plugin_name')}",
+            "priority": priority,
+            "labels": labels,
+        },
+    }
 
 
 @agent_tool(

@@ -19,9 +19,10 @@ from sqlalchemy.orm import Session
 
 from core.database import get_db
 from core.auth import get_current_user, get_accessible_org_ids
-from models.models import Organization
+from models.models import Organization, Scan
 from services.onboarding_packages import (
     INDUSTRIES, TEAM_FUNCTIONS, OBJECTIVES, NOTIFICATION_OPTIONS,
+    TEAM_OBJECTIVE_DEFAULTS,
     get_recommendations, apply_packages,
 )
 
@@ -58,6 +59,7 @@ async def get_onboarding_options():
         "industries": INDUSTRIES,
         "team_functions": TEAM_FUNCTIONS,
         "objectives": OBJECTIVES,
+        "team_objective_defaults": TEAM_OBJECTIVE_DEFAULTS,
         "notification_options": NOTIFICATION_OPTIONS,
         "org_sizes": [
             {"id": "1-50", "label": "1-50 employees"},
@@ -143,6 +145,60 @@ async def apply_onboarding_packages(
         profile=profile,
         notification_prefs=body.notification_prefs or None,
     )
+
+    # Fire ``org_onboarded`` so the user lands on the feed with a welcome
+    # narrative as their first entry. The narrator references what was
+    # provisioned (counts in `created`) and orients them toward the
+    # in-progress EASM scan. dedup_key=org_id ensures a re-submitted
+    # wizard doesn't double-post.
+    #
+    # ``easm_domain`` was set earlier by ``trigger_easm_for_new_org`` at
+    # registration time. Now that ``trigger_easm_for_new_org`` always
+    # creates a Scan row up-front (even when the scanner is unreachable),
+    # the latest EASM scan's *status* is the authoritative signal — the
+    # narrator branches on it to either celebrate, warn, or stay quiet.
+    try:
+        from services.event_bus import emit
+        org = db.query(Organization).filter(Organization.id == org_id).first()
+        easm_domain = org.easm_domain if org is not None else None
+        latest_easm_scan = (
+            db.query(Scan)
+            .filter(Scan.org_id == org_id, Scan.source_type == "easm")
+            .order_by(Scan.id.desc())
+            .first()
+        )
+        easm_scan_status = latest_easm_scan.status if latest_easm_scan else None
+        easm_scan_id = latest_easm_scan.id if latest_easm_scan else None
+        easm_scan_error = (
+            (latest_easm_scan.raw_metadata or {}).get("error")
+            if latest_easm_scan and latest_easm_scan.status == "failed"
+            else None
+        )
+        emit(
+            db,
+            event_type="org_onboarded",
+            org_id=org_id,
+            payload={
+                "org_id": org_id,
+                "easm_domain": easm_domain,
+                "easm_scan_status": easm_scan_status,   # pending|queued|running|completed|failed|None
+                "easm_scan_id": easm_scan_id,           # for the retry deep-link
+                "easm_scan_error": easm_scan_error,     # human-readable reason on failure
+                "objectives": objectives,
+                "industry": body.industry,
+                "team_size": body.team_size,
+                "team_functions": body.team_functions,
+                "provisioning": created,
+            },
+            dedup_key=org_id,
+        )
+    except Exception:
+        # Non-fatal — onboarding success doesn't depend on the welcome
+        # entry, and lazy-create may fail if the templates file is broken.
+        import logging
+        logging.getLogger(__name__).exception(
+            "apply_onboarding_packages: org_onboarded emit failed for org=%d", org_id,
+        )
 
     return {
         "success": True,

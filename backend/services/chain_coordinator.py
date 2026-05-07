@@ -49,11 +49,11 @@ from models.asset_edges import (
     LOCAL_ROOT,
 )
 from models.models import (
+    AgentApproval,
     AgentLead,
     Asset,
     AssetRelationship,
     AttackPath,
-    CoordinatorPendingApproval,
     Finding,
     Organization,
     Scan,
@@ -98,8 +98,11 @@ def tick(db: Session, *, org_id: int, scan_id: int | None = None) -> dict:
 
     closures = detect_closures(db, org_id, affected)
     validated = 0
+    emitted_findings: list[Finding] = []
     for chain in closures:
-        if _emit_validated_chain(db, org_id, chain) is not None:
+        f = _emit_validated_chain(db, org_id, chain)
+        if f is not None:
+            emitted_findings.append(f)
             validated += 1
 
     if dispatched or validated:
@@ -108,6 +111,51 @@ def tick(db: Session, *, org_id: int, scan_id: int | None = None) -> dict:
         except Exception:
             db.rollback()
             raise
+
+    # Fire ``validated_chain`` events AFTER the commit so the agent's
+    # background session can actually find the rows we just wrote. The
+    # dispatcher queues run_agent on the job manager — bus calls return
+    # immediately, so this doesn't slow tick(). Failures are logged and
+    # don't roll back the validated chain itself.
+    for f in emitted_findings:
+        try:
+            from services.event_bus import emit as _emit
+            chain_meta = (f.custom_fields or {}).get("chain") or {}
+            _emit(
+                db,
+                event_type="validated_chain",
+                org_id=org_id,
+                payload={
+                    "finding_id": f.id,
+                    "scan_id": f.scan_id,
+                    "asset_id": f.asset_id,
+                    "severity_label": f.severity_label,
+                    "priority_score": f.priority_score,
+                    # Pass a *summary* of the chain — entry/target ids,
+                    # source systems, score, signature. The narrator can
+                    # call query_findings(finding_id) to fetch the full
+                    # custom_fields["chain"] (edge summaries, CVEs, TTPs)
+                    # if it needs them.
+                    "chain_summary": {
+                        "entry_asset_id": chain_meta.get("entry_asset_id"),
+                        "target_asset_id": chain_meta.get("target_asset_id"),
+                        "asset_ids": chain_meta.get("asset_ids") or [],
+                        "edge_count": len(chain_meta.get("edge_ids") or []),
+                        "source_systems": chain_meta.get("source_systems") or [],
+                        "score": chain_meta.get("score"),
+                        "signature": chain_meta.get("signature"),
+                    },
+                },
+                # finding_id keys debounce so two chains validated in
+                # the same tick each get their own narrator run. The
+                # default per-event-type debounce would have collapsed
+                # them.
+                dedup_key=f.id,
+            )
+        except Exception:
+            logger.exception(
+                "chain_coordinator: validated_chain emit failed finding=%d", f.id,
+            )
 
     logger.info(
         "chain_coordinator: org=%d scan=%s hyp=%d dispatched=%d validated=%d",
@@ -1874,28 +1922,44 @@ def _mark_lead_dispatched(
 # ── Approval queue helpers ─────────────────────────────────────────
 
 
+def _hyp_dedup_key(hyp: Hypothesis) -> str:
+    """Stable string id used to find the matching ``AgentApproval`` row
+    for a hypothesis. Stored in ``tool_input.dedup_key`` so the lookup
+    is a cheap exact match against ``tool_input->>'dedup_key'`` instead
+    of four separate JSON field comparisons. Empty asset_id renders as
+    an empty string so non-asset-keyed patterns still get a stable key.
+    """
+    return f"{hyp.asset_id or ''}|{hyp.pattern}|{hyp.protocol}|{hyp.mission}"
+
+
+def _approval_query(db: Session, org_id: int, dedup_key: str):
+    """Base query for coordinator approvals — filters by org, source, and
+    the precomputed dedup_key. Callers add status filters on top. The
+    column is indexed (mig 068) so this is an O(1) lookup regardless of
+    queue size.
+    """
+    return db.query(AgentApproval).filter(
+        AgentApproval.org_id == org_id,
+        AgentApproval.source == "coordinator",
+        AgentApproval.dedup_key == dedup_key,
+    )
+
+
 def _resolve_approval(
     db: Session, org_id: int, hyp: Hypothesis,
 ) -> str | None:
     """Return the existing approval status for this hypothesis, or None
     if no row exists yet.
 
-    Looked up by `(org_id, asset_id, pattern, protocol, mission)` —
-    matches the dedup index on the table. Stale `consumed` rows are
-    ignored so the coordinator can re-prompt after the previous
-    dispatch's cooldown expires.
+    Looked up by ``(org_id, source='coordinator', dedup_key)`` —
+    dedup_key encodes the legacy ``(asset_id, pattern, protocol, mission)``
+    tuple. Stale ``consumed`` rows are ignored so the coordinator can
+    re-prompt after the previous dispatch's cooldown expires.
     """
     row = (
-        db.query(CoordinatorPendingApproval)
-        .filter(
-            CoordinatorPendingApproval.org_id == org_id,
-            CoordinatorPendingApproval.asset_id == hyp.asset_id,
-            CoordinatorPendingApproval.pattern == hyp.pattern,
-            CoordinatorPendingApproval.protocol == hyp.protocol,
-            CoordinatorPendingApproval.mission == hyp.mission,
-            CoordinatorPendingApproval.status.in_(("pending", "approved", "rejected")),
-        )
-        .order_by(CoordinatorPendingApproval.created_at.desc())
+        _approval_query(db, org_id, _hyp_dedup_key(hyp))
+        .filter(AgentApproval.status.in_(("pending", "approved", "rejected")))
+        .order_by(AgentApproval.requested_at.desc())
         .first()
     )
     return row.status if row is not None else None
@@ -1903,74 +1967,85 @@ def _resolve_approval(
 
 def _upsert_pending_approval(
     db: Session, org_id: int, hyp: Hypothesis,
-) -> CoordinatorPendingApproval:
-    """Create or refresh a pending row for this hypothesis.
+) -> AgentApproval:
+    """Create or refresh a pending coordinator approval row.
 
-    Idempotent on `(org_id, asset_id, pattern, protocol, mission)`. Re-
-    enumeration just bumps `last_seen_at` and refreshes `score` /
-    `rationale` so the operator sees the latest reasoning when they
+    Idempotent on the hypothesis's dedup_key. Re-enumeration just bumps
+    ``last_seen_at`` (inside ``tool_input``) and refreshes ``score`` /
+    ``rationale`` so the operator sees the latest reasoning when they
     revisit the queue.
     """
     now = datetime.utcnow()
+    dedup_key = _hyp_dedup_key(hyp)
     row = (
-        db.query(CoordinatorPendingApproval)
-        .filter(
-            CoordinatorPendingApproval.org_id == org_id,
-            CoordinatorPendingApproval.asset_id == hyp.asset_id,
-            CoordinatorPendingApproval.pattern == hyp.pattern,
-            CoordinatorPendingApproval.protocol == hyp.protocol,
-            CoordinatorPendingApproval.mission == hyp.mission,
-            CoordinatorPendingApproval.status == "pending",
-        )
+        _approval_query(db, org_id, dedup_key)
+        .filter(AgentApproval.status == "pending")
         .first()
     )
+    payload = {
+        "dedup_key": dedup_key,
+        "asset_id": hyp.asset_id,
+        "pattern": hyp.pattern,
+        "protocol": hyp.protocol,
+        "mission": hyp.mission,
+        "rationale": hyp.rationale,
+        "score": float(hyp.score) if hyp.score is not None else 0.0,
+        "score_factors": dict(hyp.score_factors or {}),
+        "last_seen_at": now.isoformat(),
+    }
     if row is None:
-        row = CoordinatorPendingApproval(
+        row = AgentApproval(
             org_id=org_id,
-            asset_id=hyp.asset_id,
-            pattern=hyp.pattern,
-            protocol=hyp.protocol,
-            mission=hyp.mission,
-            rationale=hyp.rationale,
-            score=hyp.score,
-            score_factors=dict(hyp.score_factors or {}),
+            agent_id=None,
+            agent_run_id=None,
+            source="coordinator",
+            tool_name="dispatch_chain_hypothesis",
+            tool_input=payload,
+            dedup_key=dedup_key,
+            messages_snapshot=[],
+            assistant_content=[],
+            provider=None,
+            model_name=None,
+            current_step=0,
+            tool_use_id=None,
             status="pending",
-            created_at=now,
-            last_seen_at=now,
+            requested_at=now,
         )
         db.add(row)
         db.flush()
     else:
-        row.rationale = hyp.rationale
-        row.score = hyp.score
-        row.score_factors = dict(hyp.score_factors or {})
-        row.last_seen_at = now
+        # Preserve the original requested_at (queue ordering). Just
+        # refresh the live fields the operator reads.
+        from sqlalchemy.orm.attributes import flag_modified
+        existing = dict(row.tool_input or {})
+        existing.update(payload)
+        row.tool_input = existing
+        flag_modified(row, "tool_input")
     return row
 
 
 def _mark_approval_consumed(
     db: Session, org_id: int, hyp: Hypothesis, scan_id: int | None,
 ) -> None:
-    """Flip the matching `approved` row to `consumed` after dispatch.
+    """Flip the matching ``approved`` coordinator row to ``consumed``
+    after dispatch.
 
     Without this the same approved hypothesis would re-fire every tick
     until its 24h cooldown stamp expired. Marking consumed forces the
-    operator to explicitly re-approve once the cooldown clears.
+    operator to explicitly re-approve once the cooldown clears. The
+    consumed_by_scan_id is stamped onto ``tool_input`` for audit.
     """
     row = (
-        db.query(CoordinatorPendingApproval)
-        .filter(
-            CoordinatorPendingApproval.org_id == org_id,
-            CoordinatorPendingApproval.asset_id == hyp.asset_id,
-            CoordinatorPendingApproval.pattern == hyp.pattern,
-            CoordinatorPendingApproval.protocol == hyp.protocol,
-            CoordinatorPendingApproval.mission == hyp.mission,
-            CoordinatorPendingApproval.status == "approved",
-        )
-        .order_by(CoordinatorPendingApproval.decided_at.desc())
+        _approval_query(db, org_id, _hyp_dedup_key(hyp))
+        .filter(AgentApproval.status == "approved")
+        .order_by(AgentApproval.decided_at.desc())
         .first()
     )
     if row is None:
         return
+    from sqlalchemy.orm.attributes import flag_modified
     row.status = "consumed"
-    row.consumed_by_scan_id = int(scan_id) if scan_id else None
+    ti = dict(row.tool_input or {})
+    ti["consumed_by_scan_id"] = int(scan_id) if scan_id else None
+    row.tool_input = ti
+    flag_modified(row, "tool_input")

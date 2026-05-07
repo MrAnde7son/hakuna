@@ -5,7 +5,7 @@ import {
   Building2, Users, Target, Wrench, Bot, Route, BarChart3, Link,
   ShieldCheck, ArrowRight, ArrowLeft, Check, Loader2, Sparkles,
   ChevronRight, Globe, Bell, TrendingUp, Shield,
-  Mail, MessageSquare,
+  Mail, MessageSquare, Package,
 } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext.jsx'
 import {
@@ -28,6 +28,22 @@ const ICON_MAP = {
   link: Link,
   'shield-check': ShieldCheck,
   building: Building2,
+  globe: Globe,
+  package: Package,
+}
+
+// Pick up to `limit` objective IDs suggested by the selected team functions.
+// Mirrors backend `suggest_objectives_for_teams` in onboarding_packages.py.
+function suggestObjectives(teamFunctions, defaults, limit = 3) {
+  if (!teamFunctions?.length || !defaults) return []
+  const out = []
+  for (const fn of teamFunctions) {
+    for (const objId of (defaults[fn] || [])) {
+      if (!out.includes(objId)) out.push(objId)
+      if (out.length >= limit) return out
+    }
+  }
+  return out
 }
 
 const NOTIF_ICONS = {
@@ -257,19 +273,25 @@ function StepObjectives({ data, onChange, options }) {
     onChange({ ...data, objectives: next })
   }
 
+  const suggestedIds = suggestObjectives(data.team_functions, options?.team_objective_defaults)
+  const hasSuggestions = suggestedIds.length > 0
+
   return (
     <div>
       <h2 style={{ fontSize: 22, fontWeight: 800, marginBottom: 4, color: 'var(--text-primary)' }}>
         What are you trying to achieve?
       </h2>
       <p style={{ color: 'var(--text-muted)', fontSize: 14, marginBottom: 24 }}>
-        Select your goals and we'll configure Hakuna with the right tools, reports, and automations.
+        {hasSuggestions
+          ? "We've pre-selected the goals that fit your team. Adjust as needed — we'll configure Hakuna accordingly."
+          : "Select your goals and we'll configure Hakuna with the right tools, reports, and automations."}
       </p>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 10 }}>
         {(options?.objectives || []).map(obj => {
           const Icon = ICON_MAP[obj.icon] || Target
           const selected = (data.objectives || []).includes(obj.id)
+          const isSuggested = suggestedIds.includes(obj.id)
           return (
             <SelectCard
               key={obj.id}
@@ -286,9 +308,18 @@ function StepObjectives({ data, onChange, options }) {
                 }}>
                   <Icon size={18} color={selected ? '#fff' : 'var(--text-muted)'} />
                 </div>
-                <div>
-                  <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 4, color: 'var(--text-primary)' }}>
-                    {obj.label}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4, flexWrap: 'wrap' }}>
+                    <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-primary)' }}>
+                      {obj.label}
+                    </div>
+                    {isSuggested && (
+                      <span style={{
+                        fontSize: 10, fontWeight: 600,
+                        padding: '2px 6px', borderRadius: 4,
+                        background: 'var(--bg-secondary)', color: 'var(--text-muted)',
+                      }}>Suggested</span>
+                    )}
                   </div>
                   <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.5 }}>
                     {obj.description}
@@ -696,6 +727,14 @@ export default function OnboardingWizard() {
       step_id: currentStepId,
       total_steps: STEPS.length,
     })
+    if (step === 1 && (data.objectives || []).length === 0) {
+      // Moving from team → objectives: pre-check 2-3 objectives based on team functions.
+      // Only seed when the user hasn't already touched objectives (e.g. via Back navigation).
+      const suggested = suggestObjectives(data.team_functions, options?.team_objective_defaults)
+      if (suggested.length > 0) {
+        setData(d => ({ ...d, objectives: suggested }))
+      }
+    }
     if (step === 3) {
       // Moving from notifications → packages: fetch recommendations
       await fetchRecommendations()

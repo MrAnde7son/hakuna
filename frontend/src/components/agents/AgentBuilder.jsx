@@ -166,8 +166,7 @@ export default function AgentBuilder() {
     if (approvalsFromQuery) {
       setShowApprovals(true)
       setShowTemplates(false)
-      setSelected(null)
-      setEditing(null)
+      clearSelection()
     }
   }, [approvalsFromQuery])
 
@@ -182,7 +181,49 @@ export default function AgentBuilder() {
     getAgentRuns(agent.id).then(setRuns).catch(() => setRuns([]))
     getAgentSchedules().then(setSchedules).catch(() => {})
     getAgentDocuments(agent.id).then(setDocuments).catch(() => setDocuments([]))
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev)
+      if (next.get('agent') !== String(agent.id)) next.set('agent', String(agent.id))
+      return next
+    }, { replace: true })
   }
+
+  const clearSelection = () => {
+    setSelected(null)
+    setEditing(null)
+    setSearchParams(prev => {
+      if (!prev.has('agent')) return prev
+      const next = new URLSearchParams(prev)
+      next.delete('agent')
+      return next
+    }, { replace: true })
+  }
+
+  // Auto-select an agent when ?agent=<id> is present in the URL. Runs once
+  // the agent list has loaded and skips when the approvals deep-link has
+  // taken over the panel.
+  const agentIdFromQuery = searchParams.get('agent')
+  useEffect(() => {
+    if (!agentIdFromQuery || approvalsFromQuery) return
+    if (agents.length === 0) return
+    if (selected && String(selected.id) === agentIdFromQuery) return
+    const found = agents.find(a => String(a.id) === agentIdFromQuery)
+    if (found) selectAgent(found)
+  }, [agentIdFromQuery, agents, approvalsFromQuery])
+
+  // Deep-link from the feed's "View reasoning" link: ?agent=<id>&run=<id>
+  // selects the agent (above) and then loads the specific run's trace into
+  // the runs panel. Skipped when approvals=1 owns the run filter.
+  useEffect(() => {
+    if (approvalsFromQuery || !approvalRunFilter) return
+    if (!selected || runs.length === 0) return
+    if (activeRun && String(activeRun.id) === approvalRunFilter) return
+    const found = runs.find(r => String(r.id) === approvalRunFilter)
+    if (!found) return
+    getAgentRun(selected.id, found.id)
+      .then(setActiveRun)
+      .catch(() => setActiveRun(found))
+  }, [approvalRunFilter, approvalsFromQuery, selected, runs])
 
   const handleNew = async () => {
     const agent = await createAgent({
@@ -272,8 +313,7 @@ export default function AgentBuilder() {
     if (!selected) return
     if (!await confirm(`Delete agent "${selected.name}"?`)) return
     await deleteAgent(selected.id)
-    setSelected(null)
-    setEditing(null)
+    clearSelection()
     refresh()
     toast.success('Agent deleted')
   }
@@ -410,7 +450,7 @@ export default function AgentBuilder() {
           )}
           <div style={{ display: 'flex', gap: 4 }}>
             <button
-              onClick={() => { setShowTemplates(v => !v); setShowApprovals(false); setSelected(null); setEditing(null) }}
+              onClick={() => { setShowTemplates(v => !v); setShowApprovals(false); clearSelection() }}
               title="Create from template"
               style={{
                 display: 'flex', alignItems: 'center', gap: 4, flex: 1, justifyContent: 'center',
@@ -611,7 +651,7 @@ export default function AgentBuilder() {
 
         {/* Approvals button */}
         <button
-          onClick={() => { setShowApprovals(v => !v); setShowTemplates(false); setSelected(null); setEditing(null) }}
+          onClick={() => { setShowApprovals(v => !v); setShowTemplates(false); clearSelection() }}
           style={{
             display: 'flex', alignItems: 'center', gap: 6, marginTop: 8,
             width: '100%', padding: '7px 10px', borderRadius: 6,
@@ -1833,6 +1873,22 @@ const TOOL_CATEGORIES = [
   { id: 'reports', label: 'Reports & Documents', match: ['build_report', 'search_documents', 'suggest_tagging_schema'] },
   { id: 'siem', label: 'SIEM & Alerts', match: ['query_events', 'get_event_context', 'list_alerts', 'get_alert_with_events', 'update_alert_status', 'run_detection_rule_now', 'triage_alert', 'query_siem_events', 'get_exposure_context'] },
   { id: 'utility', label: 'Utility', match: ['read_scratchpad', 'write_scratchpad', 'clear_scratchpad', 'request_clarification', 'search_web', 'fetch_url', 'run_sql_query'] },
+  { id: 'feed', label: 'Agent Feed & Narration', match: ['post_feed_entry', 'draft_campaign', 'emit_finding', 'emit_edge', 'emit_lead'] },
+  { id: 'scan_planning', label: 'Scan Planning & Ingest', match: ['compute_scan_plan', 'explain_scan_plan', 'execute_scan_plan', 'upload_scan', 'correlate_software_to_cves', 'update_finding_validation'] },
+  { id: 'web_probes', label: 'HTTP & Web Probes', match: ['probe_url_status', 'probe_tcp_connect', 'fetch_response_headers', 'check_response_body'] },
+  { id: 'users_access', label: 'Users & Access', match: ['list_users', 'invite_user', 'update_user', 'delete_user', 'assign_user_role'] },
+  { id: 'relay_agents', label: 'Relay Agents', match: ['list_relay_agents', 'get_relay_agent', 'create_relay_agent', 'delete_relay_agent', 'rotate_relay_agent_token'] },
+  { id: 'custom_fields', label: 'Custom Fields', match: ['list_custom_fields', 'create_custom_field', 'update_custom_field', 'delete_custom_field'] },
+  { id: 'compliance', label: 'Compliance', match: ['list_compliance_frameworks', 'subscribe_to_compliance_framework', 'list_compliance_controls', 'get_compliance_control'] },
+  { id: 'audit_paths', label: 'Audit Log & Attack Paths', match: ['query_audit_log', 'list_attack_paths', 'get_attack_path'] },
+  { id: 'ad_windows', label: 'Active Directory & Windows (LDAP/SMB/WMI)', match: ['wmi_query', 'wmi_invoke_method', 'wmi_registry_read', 'ldap_search', 'ldap_get_object_acl', 'ldap_modify', 'ldap_add', 'ldap_delete', 'smb_get_server_info', 'smb_list_shares', 'smb_list_share_contents', 'smb_read_file', 'smb_check_null_session', 'smb_samr_enum_users_anonymous', 'smb_check_guest_access', 'smb_check_named_pipe', 'smb_samr_password_policy', 'smb_registry_read', 'smb_write_file', 'smb_service_control'] },
+  { id: 'snmp_ssh', label: 'SNMP & SSH', match: ['snmp_probe_default_communities', 'snmp_get', 'snmp_walk', 'snmp_set', 'ssh_run_command', 'ssh_read_file', 'ssh_list_directory'] },
+  { id: 'network_probes', label: 'Network Service Probes', match: ['ftp_anon_probe', 'vnc_anon_probe', 'dns_axfr_probe', 'kerberos_anon_probe', 'tftp_anon_probe', 'nbns_probe', 'llmnr_probe', 'mdns_probe', 'ipmi_cipher_zero_probe', 'ipmi_rakp_hash_probe'] },
+  { id: 'cloud_containers', label: 'Cloud & Containers', match: ['cloud_list_operations', 'cloud_invoke', 'cloud_inspect', 'docker_api_probe', 'k8s_api_probe', 'kubelet_probe', 'etcd_probe'] },
+  { id: 'db_probes', label: 'Database & Cache Probes', match: ['redis_probe', 'mongo_probe', 'elastic_probe', 'memcached_probe', 'kibana_probe', 'couchdb_probe'] },
+  { id: 'ai_ml_probes', label: 'AI/ML Service Probes', match: ['jupyter_check_auth', 'ray_dashboard_info', 'mlflow_list_experiments', 'tensorboard_list_runs', 'tgi_info', 'lmstudio_models', 'openwebui_status', 'langfuse_status', 'ollama_capability_probe', 'vllm_capability_probe', 'mcp_enumerate_tools'] },
+  { id: 'ot_ics', label: 'OT/ICS Probes', match: ['modbus_read_device_id', 'modbus_read_holding', 's7_read_szl', 'enip_list_identity', 'bacnet_read_property', 'opcua_hello', 'melsec_read_cpu_info', 'omron_fins_read_cpu_unit', 'iec104_interrogate', 'profinet_dcp_unicast', 'ot_passive_listen'] },
+  { id: 'org_memory', label: 'Organization Memory', match: ['recall_org_memory', 'remember_org_memory'] },
 ]
 
 function categorizeTools(toolCatalog) {
@@ -1853,8 +1909,24 @@ function ToolSelector({ tools, toolCatalog, toggleTool, setEditing, editing }) {
   const [search, setSearch] = useState('')
   const [collapsed, setCollapsed] = useState({})
   const [showSelected, setShowSelected] = useState(false)
+  const [didInitCollapsed, setDidInitCollapsed] = useState(false)
 
   const categories = useMemo(() => categorizeTools(toolCatalog), [toolCatalog])
+
+  useEffect(() => {
+    if (didInitCollapsed || categories.length === 0) return
+    const initial = {}
+    categories.forEach(c => { initial[c.id] = true })
+    setCollapsed(initial)
+    setDidInitCollapsed(true)
+  }, [categories, didInitCollapsed])
+
+  const allCollapsed = categories.length > 0 && categories.every(c => collapsed[c.id])
+  const toggleAll = () => {
+    const next = {}
+    categories.forEach(c => { next[c.id] = !allCollapsed })
+    setCollapsed(next)
+  }
 
   const filtered = useMemo(() => {
     const q = search.toLowerCase()
@@ -1909,12 +1981,15 @@ function ToolSelector({ tools, toolCatalog, toggleTool, setEditing, editing }) {
         <button onClick={selectNone} style={{ padding: '5px 8px', borderRadius: 6, fontSize: 11, cursor: 'pointer', border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-muted)' }}>
           None
         </button>
+        <button onClick={toggleAll} title={allCollapsed ? 'Expand all categories' : 'Collapse all categories'} style={{ padding: '5px 8px', borderRadius: 6, fontSize: 11, cursor: 'pointer', border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+          {allCollapsed ? <><ChevronDown size={11} /> Expand all</> : <><ChevronRight size={11} /> Collapse all</>}
+        </button>
       </div>
 
       {/* Categories */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
         {filtered.map(cat => {
-          const isCollapsed = collapsed[cat.id]
+          const isCollapsed = search ? false : collapsed[cat.id]
           const selectedCount = cat.tools.filter(t => tools.includes(t.name)).length
           const allSelected = cat.tools.length > 0 && selectedCount === cat.tools.length
           return (

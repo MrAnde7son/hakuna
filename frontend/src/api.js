@@ -1187,6 +1187,7 @@ export const rebuildAggregatedSolutions = (scanId) => request(`/aggregated-solut
 export const getEasmStatus = () => request('/easm/status')
 export const scanEasmDomain = (domain, scanType = 'full', suppressAutoFollowup = false) => request(`/easm/scan-domain?domain=${encodeURIComponent(domain)}&scan_type=${scanType}&suppress_auto_followup=${suppressAutoFollowup ? 'true' : 'false'}`, { method: 'POST' })
 export const rescanEasmScan = (scanId, scanType = 'full') => request(`/easm/rescan/${scanId}?scan_type=${scanType}`, { method: 'POST' })
+export const retryEasmScan = (scanId) => request(`/easm/scans/${scanId}/retry`, { method: 'POST' })
 export const updateEasmScan = (scanId, patch) => request(`/easm/scans/${scanId}`, {
   method: 'PATCH',
   headers: { 'Content-Type': 'application/json' },
@@ -1219,6 +1220,26 @@ export const decideAgentApproval = (approvalId, decision, reason, { grantScope }
 })
 export const getRunApprovals = (agentId, runId) => request(`/agents/${agentId}/runs/${runId}/approvals`)
 
+// ── Org activity feed (agent narratives) ──────────────────
+export const getFeed = ({ status, severity, eventType, page = 1, pageSize = 50 } = {}) => {
+  const qs = new URLSearchParams()
+  if (status) qs.set('status', status)
+  if (severity) qs.set('severity', severity)
+  if (eventType) qs.set('event_type', eventType)
+  qs.set('page', String(page))
+  qs.set('page_size', String(pageSize))
+  return request(`/feed?${qs.toString()}`)
+}
+export const getFeedUnreadCount = () => request('/feed/unread-count')
+export const markFeedEntryRead = (entryId) => request(`/feed/${entryId}/read`, { method: 'POST' })
+export const recordFeedEntryDecision = (entryId, status) => request(`/feed/${entryId}/decision`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ status }),
+})
+export const getFeedChatContext = (size = 5) =>
+  request(`/feed/chat-context?size=${size}`)
+
 // ── Security Copilot ───────────────────────────────────────
 export const getCopilotConversations = () => request('/copilot/conversations')
 export const createCopilotConversation = () => request('/copilot/conversations', { method: 'POST' })
@@ -1239,6 +1260,56 @@ export function uploadCopilotAttachment(conversationId, file) {
 
 export const deleteCopilotAttachment = (conversationId, attachmentId) =>
   request(`/copilot/conversations/${conversationId}/attachments/${attachmentId}`, { method: 'DELETE' })
+
+// Stream a copilot message via SSE. ``onEvent`` receives each parsed event
+// ({type, ...}); the promise resolves with the accumulated final text once
+// the stream ends, or rejects on transport/HTTP errors.
+export async function streamCopilotMessage(conversationId, { message, context, attachmentIds, signal } = {}, onEvent) {
+  const token = getStoredToken()
+  const orgContext = getOrgContext()
+  const headers = { 'Content-Type': 'application/json' }
+  if (token) headers['Authorization'] = `Bearer ${token}`
+  if (orgContext) headers['X-Org-Context'] = orgContext
+
+  const resp = await fetch(`${API_ORIGIN}/api/copilot/conversations/${conversationId}/message`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      message,
+      context: context || undefined,
+      attachment_ids: attachmentIds && attachmentIds.length ? attachmentIds : undefined,
+    }),
+    signal,
+  })
+  if (!resp.ok || !resp.body) {
+    let detail = `Request failed: ${resp.status}`
+    try { const j = await resp.json(); detail = j.detail || j.message || detail } catch {}
+    throw new Error(detail)
+  }
+  const reader = resp.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let textAccum = ''
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split('\n')
+    buffer = lines.pop()
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue
+      const payload = line.slice(6).trim()
+      if (payload === '[DONE]') continue
+      try {
+        const ev = JSON.parse(payload)
+        if (ev.type === 'text') textAccum += ev.text || ''
+        if (ev.type === 'done' && ev.output) textAccum = ev.output
+        onEvent?.(ev)
+      } catch { /* ignore malformed line */ }
+    }
+  }
+  return textAccum
+}
 
 // ── VM Scanner API (via main backend) ─────────────────────
 export const startVmScan = (data) => request('/vm/scan', {

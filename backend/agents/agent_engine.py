@@ -330,11 +330,17 @@ def _coerce_params(params: dict, schema: dict) -> dict:
     return coerced
 
 
-def _execute_tool(agent: Agent, db: Session, tool_name: str, tool_input: Optional[dict], step: int, trace: list):
+def _execute_tool(agent: Agent, db: Session, tool_name: str, tool_input: Optional[dict], step: int, trace: list, run: Optional[AgentRun] = None):
     tool_input = tool_input or {}
     """Execute a tool call and return the result string.
 
-    Injects _agent_id for scratchpad tools and compresses output for LLM context.
+    Injects _agent_id, _org_id, and (when ``run`` is passed) _agent_run_id
+    into the tool's params so tools can write run-attributable state
+    (e.g. ``post_feed_entry`` stamping ``OrgFeedEntry.agent_run_id``).
+    Compresses output for LLM context.
+
+    ``run`` is optional for backwards compatibility — older callers and
+    tests can still invoke without it. New callers should pass it.
     """
     import time as _time
     from services import llm_feedback
@@ -369,6 +375,10 @@ def _execute_tool(agent: Agent, db: Session, tool_name: str, tool_input: Optiona
                 **coerced_input,
                 "_agent_id": agent.id,
                 "_org_id": agent.org_id,
+                # _agent_run_id may be None for legacy callers that didn't
+                # pass `run`; tools that need it (e.g. post_feed_entry) handle
+                # the null case gracefully (entry created with FK NULL).
+                "_agent_run_id": run.id if run is not None else None,
             }
             result = tool_def["fn"](db, enriched_input)
     except NeedsApproval:
@@ -815,7 +825,7 @@ def _run_anthropic(agent: Agent, user_input: str, db: Session, run: AgentRun, mo
                 raise ApprovalRequired(approval.id, block.name)
             tool_input = _maybe_inject_auto_approval(run, block.name, block.input or {})
             try:
-                result_str = _execute_tool(agent, db, block.name, tool_input, step, trace)
+                result_str = _execute_tool(agent, db, block.name, tool_input, step, trace, run)
             except NeedsApproval as exc:
                 _pause_for_per_call_approval(
                     agent=agent, run=run, db=db, exc=exc,
@@ -958,7 +968,7 @@ def _run_openai_compat(agent: Agent, user_input: str, db: Session, run: AgentRun
                 raise ApprovalRequired(approval.id, tc.function.name)
             tool_input = _maybe_inject_auto_approval(run, tc.function.name, tool_input)
             try:
-                result_str = _execute_tool(agent, db, tc.function.name, tool_input, step, trace)
+                result_str = _execute_tool(agent, db, tc.function.name, tool_input, step, trace, run)
             except NeedsApproval as exc:
                 _pause_for_per_call_approval(
                     agent=agent, run=run, db=db, exc=exc,
@@ -1126,7 +1136,7 @@ def _run_gemini(agent: Agent, user_input: str, db: Session, run: AgentRun, model
             tool_input = dict(fc.args) if fc.args else {}
             tool_input = _maybe_inject_auto_approval(run, fc.name, tool_input)
             try:
-                result_str = _execute_tool(agent, db, fc.name, tool_input, step, trace)
+                result_str = _execute_tool(agent, db, fc.name, tool_input, step, trace, run)
             except NeedsApproval as exc:
                 # Gemini's resume support is limited (see _resume entry point);
                 # we still persist the approval so it surfaces in the UI.
@@ -1459,7 +1469,7 @@ def _stream_anthropic(agent, user_input, db, run, model, *, conversation_message
                 raise ApprovalRequired(approval.id, block.name)
             tool_input = _maybe_inject_auto_approval(run, block.name, block.input or {})
             try:
-                result_str = _execute_tool(agent, db, block.name, tool_input, step, trace)
+                result_str = _execute_tool(agent, db, block.name, tool_input, step, trace, run)
             except NeedsApproval as exc:
                 _pause_for_per_call_approval(
                     agent=agent, run=run, db=db, exc=exc,
@@ -1577,7 +1587,7 @@ def _stream_openai_compat(agent, user_input, db, run, model, provider, *, conver
                 raise ApprovalRequired(approval.id, tc.function.name)
             tool_input = _maybe_inject_auto_approval(run, tc.function.name, tool_input)
             try:
-                result_str = _execute_tool(agent, db, tc.function.name, tool_input, step, trace)
+                result_str = _execute_tool(agent, db, tc.function.name, tool_input, step, trace, run)
             except NeedsApproval as exc:
                 _pause_for_per_call_approval(
                     agent=agent, run=run, db=db, exc=exc,
@@ -1677,7 +1687,7 @@ def _stream_gemini(agent, user_input, db, run, model, *, conversation_messages=N
             tool_input = dict(fc.args) if fc.args else {}
             tool_input = _maybe_inject_auto_approval(run, fc.name, tool_input)
             try:
-                result_str = _execute_tool(agent, db, fc.name, tool_input, step, trace)
+                result_str = _execute_tool(agent, db, fc.name, tool_input, step, trace, run)
             except NeedsApproval as exc:
                 _pause_for_per_call_approval(
                     agent=agent, run=run, db=db, exc=exc,
@@ -1930,7 +1940,7 @@ def _resume_anthropic(agent, run, approval, decision, reason, model, trace, db):
             # to skip their NeedsApproval check; harmless for static-HITL tools.
             if decision == "approved":
                 try:
-                    result_str = _execute_tool(agent, db, tool_name, {**tool_input, "confirmed": True, "_approved": True}, approval.current_step, trace)
+                    result_str = _execute_tool(agent, db, tool_name, {**tool_input, "confirmed": True, "_approved": True}, approval.current_step, trace, run)
                 except NeedsApproval as exc:
                     _pause_for_per_call_approval(
                         agent=agent, run=run, db=db, exc=exc,
@@ -1953,7 +1963,7 @@ def _resume_anthropic(agent, run, approval, decision, reason, model, trace, db):
         else:
             # Other tool_use blocks in the same step — execute normally
             try:
-                result_str = _execute_tool(agent, db, tool_name, tool_input, approval.current_step, trace)
+                result_str = _execute_tool(agent, db, tool_name, tool_input, approval.current_step, trace, run)
             except NeedsApproval as exc:
                 _pause_for_per_call_approval(
                     agent=agent, run=run, db=db, exc=exc,
@@ -2048,7 +2058,7 @@ def _resume_anthropic(agent, run, approval, decision, reason, model, trace, db):
                 raise ApprovalRequired(new_approval.id, block.name)
             tool_input = _maybe_inject_auto_approval(run, block.name, block.input or {})
             try:
-                result_str = _execute_tool(agent, db, block.name, tool_input, step, trace)
+                result_str = _execute_tool(agent, db, block.name, tool_input, step, trace, run)
             except NeedsApproval as exc:
                 _pause_for_per_call_approval(
                     agent=agent, run=run, db=db, exc=exc,
@@ -2092,7 +2102,7 @@ def _resume_openai_compat(agent, run, approval, decision, reason, model, provide
         if block_id == approval.tool_use_id:
             if decision == "approved":
                 try:
-                    result_str = _execute_tool(agent, db, tool_name, {**tool_input, "confirmed": True, "_approved": True}, approval.current_step, trace)
+                    result_str = _execute_tool(agent, db, tool_name, {**tool_input, "confirmed": True, "_approved": True}, approval.current_step, trace, run)
                 except NeedsApproval as exc:
                     _pause_for_per_call_approval(
                         agent=agent, run=run, db=db, exc=exc,
@@ -2110,7 +2120,7 @@ def _resume_openai_compat(agent, run, approval, decision, reason, model, provide
                 trace.append({"role": "tool", "tool_name": tool_name, "input": tool_input, "output": result_str, "step": approval.current_step})
         else:
             try:
-                result_str = _execute_tool(agent, db, tool_name, tool_input, approval.current_step, trace)
+                result_str = _execute_tool(agent, db, tool_name, tool_input, approval.current_step, trace, run)
             except NeedsApproval as exc:
                 _pause_for_per_call_approval(
                     agent=agent, run=run, db=db, exc=exc,
@@ -2181,7 +2191,7 @@ def _resume_openai_compat(agent, run, approval, decision, reason, model, provide
                 raise ApprovalRequired(new_approval.id, tc.function.name)
             tool_input = _maybe_inject_auto_approval(run, tc.function.name, tool_input)
             try:
-                result_str = _execute_tool(agent, db, tc.function.name, tool_input, step, trace)
+                result_str = _execute_tool(agent, db, tc.function.name, tool_input, step, trace, run)
             except NeedsApproval as exc:
                 _pause_for_per_call_approval(
                     agent=agent, run=run, db=db, exc=exc,

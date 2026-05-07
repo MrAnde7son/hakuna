@@ -124,6 +124,18 @@ const CONTEXTUAL_PROMPTS = {
     { text: 'Which owners in this campaign have the most open items?', icon: 'zap' },
   ],
   '/': [
+    { text: 'Summarize what the agents have posted in my feed today', icon: 'clipboard' },
+    { text: 'What questions are agents asking me right now?', icon: 'shield-alert' },
+    { text: 'Show pending approvals waiting on me in the feed', icon: 'alarm' },
+    { text: 'Which feed items should I act on first?', icon: 'zap' },
+  ],
+  '/feed': [
+    { text: 'Summarize what the agents have posted in my feed today', icon: 'clipboard' },
+    { text: 'What questions are agents asking me right now?', icon: 'shield-alert' },
+    { text: 'Show pending approvals waiting on me in the feed', icon: 'alarm' },
+    { text: 'Which feed items should I act on first?', icon: 'zap' },
+  ],
+  '/reports': [
     { text: 'Give me an executive summary of our security posture', icon: 'briefcase' },
     { text: 'What changed since the last scan?', icon: 'clipboard' },
     { text: 'Find the top 10 risks I should focus on today', icon: 'shield-alert' },
@@ -268,7 +280,9 @@ const CONTEXTUAL_PROMPTS = {
 
 // Get the page label for context injection
 const PAGE_LABELS = {
-  '/': 'Dashboard / Reports',
+  '/': 'Activity Feed',
+  '/feed': 'Activity Feed',
+  '/reports': 'Dashboard / Reports',
   '/findings': 'Findings list',
   '/assets': 'Asset Inventory',
   '/campaigns': 'Campaigns',
@@ -412,7 +426,8 @@ Available app pages and their URL query parameters:
 - /compliance — Compliance Management. Lists subscribed frameworks and overall control status
 - /compliance/:slug — Compliance Framework detail. Shows controls and their status (passing|failing|partial|compensating_control|not_applicable|not_evaluated)
 - /compliance/:slug/control/:id — Compliance Control detail. Shows findings linked to the control
-- / — Dashboard / Reports
+- / and /feed — Activity Feed. The org's narrative timeline where agents post observations, decisions, actions, questions, and briefs. Entries can carry severity, kind (observation|decision|action|question|brief), event_type, event_ref, and inline proposed_actions (including approve_action buttons tied to AgentApproval rows). Users mark entries read and approve/reject pending actions here.
+- /reports — Dashboard / Reports
 - /settings — Settings. Tabs (via ?tab= param): upload (Scan Management), dedup (Deduplication), risk (Risk Scoring), tags (Tag Manager), sla (SLA Config), exceptions (Exceptions/Waivers), ownership (Ownership Rules), roles (RBAC Roles), users (User Management), integrations (Integrations), integration-builder (Integration Builder), audit-log (Audit Log)
 
 When suggesting navigation, provide markdown links like: [View critical findings](/findings?severity=Critical)
@@ -889,7 +904,9 @@ export default function CopilotPanel({ open, onClose, currentPath, currentSearch
         else if (currentPath.startsWith('/reports/')) contextPrefix += `\n[This is a saved report/dashboard. There is no report lookup tool — use query_findings, get_top_risky_assets, get_exploit_findings, get_quick_wins, get_sla_status, and other analysis tools to answer questions about the organization's security posture. Do NOT attempt to fetch a report by ID.]`
       }
       // Tool hints for pages whose URLs don't carry numeric entity IDs
-      if (currentPath === '/attack-paths') {
+      if (currentPath === '/' || currentPath === '/feed') {
+        contextPrefix += `\n[This is the org Activity Feed — the timeline where agents post observations, decisions, actions, questions, and briefs. Use list_feed_entries to read recent entries (filter by kind, severity, status, event_type, or has_pending_approval=true to surface items waiting on the user). Use post_feed_entry only when the user explicitly asks to publish a narrative entry on their behalf — do NOT post unsolicited entries.]`
+      } else if (currentPath === '/attack-paths') {
         contextPrefix += `\n[This page shows attack paths — exploitation chains from entry points to high-value targets, with pivot quality, severity, and recommended mitigations. Use query_findings and get_top_risky_assets to investigate the findings and assets that make up these paths, and reference get_quick_wins or aggregated solutions when proposing mitigations that break multiple paths at once.]`
       } else if (currentPath === '/compliance') {
         contextPrefix += `\n[This page lists compliance frameworks and overall control status. Use query_findings with the control_status filter to investigate failing or partial controls, and use get_quick_wins or aggregated solutions when recommending remediations that close multiple controls.]`

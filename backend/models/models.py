@@ -2028,6 +2028,13 @@ class AgentApproval(Base):
     # (Slack/email) so the periodic escalation job doesn't double-send.
     escalated_at = Column(DateTime, nullable=True)
 
+    # Stable external id used to dedup approvals that come from the same
+    # source-side entity. Coordinator approvals (mig 068) write the
+    # ``{asset_id}|{pattern}|{protocol}|{mission}`` tuple here so the
+    # hot-path lookup is an indexed exact match instead of a JSON probe.
+    # NULL for sources that don't dedup externally (paused agent runs).
+    dedup_key = Column(String(255), nullable=True, index=True)
+
     run = relationship("AgentRun")
     agent = relationship("Agent")
 
@@ -2165,6 +2172,68 @@ class CoordinatorPendingApproval(Base):
     __table_args__ = (
         Index("ix_coord_pending_org_status", "org_id", "status"),
         Index("ix_coord_pending_dedup", "org_id", "asset_id", "pattern", "protocol", "mission"),
+    )
+
+
+class OrgFeedEntry(Base):
+    """Agent-authored narrative entry in an org's activity feed.
+
+    The feed is the home surface for the "agent at the center of action"
+    UX: instead of pulling raw findings/dashboards, the user reads what
+    the agents observed, concluded, and did. Entries are written by
+    agents through the ``post_feed_entry`` tool and rendered chronologically.
+
+    ``proposed_actions`` is a list of inline buttons that pair the
+    narrative with a one-click decision. Items reference rows in
+    ``agent_approvals`` so the existing HITL queue stays the single
+    source of truth — the feed surface just renders the approval inline
+    with the reasoning that produced it::
+
+        [
+          {
+            "label": "Activate this campaign",
+            "kind": "approve_action",
+            "approval_id": 42,
+            "tool_name": "create_campaign"
+          },
+          {
+            "label": "Open the campaign in Builder",
+            "kind": "navigate",
+            "href": "/campaigns/15"
+          }
+        ]
+    """
+    __tablename__ = "org_feed_entries"
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    agent_id = Column(Integer, ForeignKey("agents.id"), nullable=True, index=True)
+    agent_run_id = Column(Integer, ForeignKey("agent_runs.id"), nullable=True, index=True)
+    # observation | decision | action | question | brief
+    kind = Column(String(32), nullable=False)
+    headline = Column(String(280), nullable=False)
+    body_md = Column(Text, nullable=True)
+    # What triggered the entry — useful for filtering ("show me everything
+    # the scan-triage agent wrote") and for downstream automation.
+    event_type = Column(String(64), nullable=True)
+    event_ref = Column(JSON, default=dict)
+    proposed_actions = Column(JSON, default=list)
+    # critical | high | medium | low | info — drives sort + visual treatment.
+    severity = Column(String(16), default="info")
+    # open → not yet acted on
+    # acted → user clicked through / approved / dismissed
+    # expired → the underlying state changed and the entry no longer applies
+    status = Column(String(32), nullable=False, default="open")
+    # User IDs who've seen the entry. Stored as JSON list rather than a
+    # join table because the read-set is tiny and the home feed needs
+    # an unread count without N joins.
+    read_by = Column(JSON, default=list)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        Index("ix_org_feed_entries_org_created", "org_id", "created_at"),
+        Index("ix_org_feed_entries_org_status", "org_id", "status"),
     )
 
 

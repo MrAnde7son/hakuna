@@ -91,6 +91,7 @@ from routes.internal_relay_routes import (
 from routes.integration_builder_routes import router as integration_builder_router
 from routes.discovery_routes import router as discovery_router
 from routes.mcp_routes import router as mcp_router
+from routes.feed_routes import router as feed_router
 from routes.api_token_routes import router as api_token_router
 from routes.org_memory_routes import router as org_memory_router
 from routes.billing_routes import router as billing_router
@@ -328,6 +329,7 @@ app.include_router(cloud_relay_ws_router)
 app.include_router(integration_builder_router)
 app.include_router(discovery_router)
 app.include_router(mcp_router)
+app.include_router(feed_router)
 app.include_router(api_token_router)
 app.include_router(org_memory_router)
 app.include_router(billing_router)

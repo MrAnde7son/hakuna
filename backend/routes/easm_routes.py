@@ -19,6 +19,7 @@ from models.models import Asset, Organization, Scan, User
 from services.easm import (
     extract_corporate_domain,
     trigger_easm_for_new_org,
+    retry_easm_scan,
     import_easm_assets_for_domain,
     scan_domain,
     refresh_easm_scan,
@@ -175,6 +176,34 @@ async def setup_easm(
         "domain": domain,
         "hakuna_org_id": hakuna_org_id,
         "scan_id": result.get("scan_id") if result else None,
+    }
+
+
+@router.post("/scans/{scan_id}/retry", dependencies=[Depends(check_scan_limit)])
+async def retry_failed_easm_scan(
+    scan_id: int,
+    db: Session = Depends(get_db),
+    org: Organization = Depends(get_active_org),
+):
+    """Re-attempt a previously-failed EASM scan. Reuses the existing Scan
+    row — resets status to 'pending', clears the error fields, re-runs
+    the create-org / add-domain / trigger-scan stages, and stamps the
+    outcome back on the same row. Idempotent for already-running scans.
+
+    Used by the welcome_narrator's failure-state CTA and by the Scans
+    page's "Retry" button on a failed row.
+    """
+    try:
+        scan = await retry_easm_scan(db, org, scan_id)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    except KeyError as e:
+        raise HTTPException(400, str(e))
+    return {
+        "scan_id": scan.id,
+        "status": scan.status,
+        "error": (scan.raw_metadata or {}).get("error"),
+        "domain": (scan.raw_metadata or {}).get("domain"),
     }
 
 

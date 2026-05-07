@@ -146,7 +146,7 @@ async def generate_scan_plan(
     db: Session,
     org_id: int,
     asset_id: int,
-    llm_provider: str = "anthropic",
+    llm_provider: str = "vertex_ai",
 ) -> ScanPlan:
     """Generate an adaptive scan plan for a single asset using LLM reasoning.
 
@@ -208,7 +208,7 @@ async def compute_and_persist_scan_plan(
     org_id: int,
     asset_id: int,
     force: bool = False,
-    llm_provider: str = "anthropic",
+    llm_provider: str = "vertex_ai",
 ) -> ScanPlan | None:
     """Compute a scan plan for an asset and persist it on the Asset row.
 
@@ -328,7 +328,7 @@ async def generate_batch_plans(
     org_id: int,
     asset_ids: list[int] | None = None,
     top_n: int = 50,
-    llm_provider: str = "anthropic",
+    llm_provider: str = "vertex_ai",
 ) -> list[ScanPlan]:
     """Generate scan plans for multiple assets, prioritized by risk.
 
@@ -673,63 +673,42 @@ def _deterministic_plan(context: dict) -> ScanPlan:
 async def _call_llm(
     system_prompt: str,
     user_prompt: str,
-    provider: str = "anthropic",
+    provider: str = "vertex_ai",
     model: str | None = None,
     max_tokens: int = 2000,
 ) -> str:
     """Lightweight LLM call for scan planning.
 
-    Tries the configured provider, falls back gracefully.
+    Routes through the central LLM router so the system default is
+    Vertex Gemini (covered by GCP credits). Customer-configured
+    providers (Anthropic, OpenAI, Gemini direct, Groq) are honoured
+    when explicitly selected via ``provider``.
     """
-    import httpx
+    import asyncio
 
-    if provider == "anthropic":
-        api_key = os.getenv("ANTHROPIC_API_KEY")
-        if not api_key:
-            raise RuntimeError("ANTHROPIC_API_KEY not set")
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={
-                    "x-api-key": api_key,
-                    "anthropic-version": "2023-06-01",
-                    "content-type": "application/json",
-                },
-                json={
-                    "model": model or "claude-sonnet-4-6",
-                    "max_tokens": max_tokens,
-                    "system": system_prompt,
-                    "messages": [{"role": "user", "content": user_prompt}],
-                },
-                timeout=60.0,
+    from core.database import SessionLocal
+    from core.llm_router import router as llm_router
+
+    if model is None and provider and provider != "vertex_ai":
+        # Map legacy provider hint → that provider's default fallback model.
+        # Lets callers say `provider="anthropic"` without picking a model.
+        provider_defaults = {
+            "anthropic": "claude-sonnet-4-6",
+            "openai": "gpt-4o-mini",
+            "google_gemini": "gemini-2.5-pro",
+            "groq": "llama-3.3-70b-versatile",
+        }
+        model = provider_defaults.get(provider)
+
+    def _sync_call() -> str:
+        with SessionLocal() as db:
+            text, _resolved = llm_router.call(
+                db,
+                system=system_prompt,
+                user=user_prompt,
+                max_tokens=max_tokens,
+                model=model,
             )
-            resp.raise_for_status()
-            data = resp.json()
-            return data["content"][0]["text"]
+            return text
 
-    if provider == "openai":
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            raise RuntimeError("OPENAI_API_KEY not set")
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": model or "gpt-4o-mini",
-                    "max_tokens": max_tokens,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                },
-                timeout=60.0,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            return data["choices"][0]["message"]["content"]
-
-    raise RuntimeError(f"Unsupported LLM provider: {provider}")
+    return await asyncio.to_thread(_sync_call)

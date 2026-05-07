@@ -12,7 +12,8 @@ import { test, expect } from '@playwright/test'
 // All authenticated routes and the lazy component they load.
 // Keep this list in sync with App.jsx <Route> definitions.
 const ROUTES = [
-  { path: '/', name: 'Reports' },
+  { path: '/', name: 'Activity Feed (landing)' },
+  { path: '/reports', name: 'Reports' },
   { path: '/reports/1', name: 'Report Detail' },
   { path: '/assets', name: 'Assets' },
   { path: '/assets/1', name: 'Asset Detail' },
@@ -24,6 +25,7 @@ const ROUTES = [
   { path: '/workflows/1', name: 'Workflow Builder' },
   { path: '/inventory', name: 'Inventory' },
   { path: '/agents', name: 'Agents' },
+  { path: '/feed', name: 'Activity Feed' },
   { path: '/settings?tab=org-memory', name: 'Settings → Org Memory' },
   { path: '/tags', name: 'Tags' },
   { path: '/custom-fields', name: 'Custom Fields' },

@@ -295,6 +295,15 @@ TOOL_CATEGORIES = {
         "keywords": ["search web", "fetch url", "advisory", "look up", "research"],
         "tools": ["search_web", "fetch_url"],
     },
+    "feed": {
+        "keywords": [
+            "feed", "activity feed", "timeline", "narrative",
+            "agents posted", "agent posted", "what did the agents",
+            "pending approval", "waiting on me", "approve action",
+            "observation", "observations", "brief", "briefs",
+        ],
+        "tools": ["list_feed_entries", "post_feed_entry"],
+    },
     "validation": {
         "keywords": [
             "validate", "validation", "exploitable", "exploitability", "reachable",

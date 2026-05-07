@@ -51,6 +51,7 @@ import {
   Plug,
   Network,
   ShieldCheck,
+  Sparkles,
 } from 'lucide-react'
 import { SUPPORTED_LANGUAGES } from './i18n/index.js'
 // Auth pages loaded eagerly (small, needed immediately)
@@ -67,7 +68,7 @@ import GettingStartedPanel from './components/onboarding/GettingStartedPanel.jsx
 import FirstScanBanner from './components/onboarding/FirstScanBanner.jsx'
 import { ThemeProvider, useTheme } from './contexts/ThemeContext.jsx'
 import NotificationBell from './components/notifications/NotificationBell.jsx'
-import { getScans, setOrgContext, authUpdateLocale, getFindings, getAssets, getCampaigns, getOnboardingStatus } from './api.js'
+import { getScans, setOrgContext, authUpdateLocale, getFindings, getAssets, getCampaigns, getOnboardingStatus, getFeedUnreadCount } from './api.js'
 import { ErrorBoundary, ToastProvider, ConfirmProvider } from './components/shared/ui.jsx'
 import { getAssetDisplayName, getFindingAssetDisplay } from './utils/assetDisplay.js'
 
@@ -92,6 +93,7 @@ const AggregatedSolutions = React.lazy(() => import('./components/remediation/Ag
 const UserManagement = React.lazy(() => import('./components/settings/UserManagement.jsx'))
 const UserDocs = React.lazy(() => import('./components/docs/UserDocs.jsx'))
 const CopilotPanel = React.lazy(() => import('./components/copilot/CopilotPanel.jsx'))
+const Feed = React.lazy(() => import('./components/feed/Feed.jsx'))
 const OnboardingWizard = React.lazy(() => import('./components/onboarding/OnboardingWizard.jsx'))
 const EventSearch = React.lazy(() => import('./components/siem/EventSearch.jsx'))
 const DetectionRules = React.lazy(() => import('./components/siem/DetectionRules.jsx'))
@@ -121,7 +123,8 @@ const NAV_GROUPS = [
   {
     labelKey: 'nav.intelligence',
     items: [
-      { path: '/', labelKey: 'nav.reports', icon: BarChart3, exact: true, alsoPaths: ['/reports'], permission: 'page_reports' },
+      { path: '/', labelKey: 'nav.feed', icon: Sparkles, exact: true, alsoPaths: ['/feed'], permission: 'page_reports' },
+      { path: '/reports', labelKey: 'nav.reports', icon: BarChart3, permission: 'page_reports' },
       { path: '/threat-intel', labelKey: 'nav.threatIntel', icon: ShieldAlert, permission: 'page_threat_intel' },
     ],
   },
@@ -380,9 +383,38 @@ function Sidebar({ collapsed, onToggle, isMobile, mobileOpen }) {
   const effectiveCollapsed = isMobile ? false : collapsed
   const width = isMobile ? 260 : (collapsed ? 56 : 220)
   const { scans, activeScanId, setActiveScanId } = useScan()
-  const { hasPermission, isPro, isAdmin } = useAuth()
+  const { hasPermission, isPro, isAdmin, isAuthenticated } = useAuth()
   const { t } = useTranslation()
   const navigate = useNavigate()
+  const [feedUnreadCount, setFeedUnreadCount] = useState(0)
+
+  // Poll the feed unread count for the badge next to the Feed nav item.
+  // Cheap server-side count over the user's accessible orgs; runs every
+  // 30s while the tab is visible. Refetches immediately on tab focus
+  // so a returning user doesn't wait for the next tick.
+  useEffect(() => {
+    if (!isAuthenticated) return
+    let cancelled = false
+    const fetchCount = async () => {
+      try {
+        const data = await getFeedUnreadCount()
+        if (!cancelled) setFeedUnreadCount(data?.count || 0)
+      } catch { /* non-fatal — sidebar just won't badge */ }
+    }
+    fetchCount()
+    const interval = setInterval(() => {
+      if (document.visibilityState === 'visible') fetchCount()
+    }, 30_000)
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') fetchCount()
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      cancelled = true
+      clearInterval(interval)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
+  }, [isAuthenticated])
 
   const sidebarStyle = isMobile
     ? {
@@ -593,10 +625,34 @@ function Sidebar({ collapsed, onToggle, isMobile, mobileOpen }) {
                     boxShadow: active ? '0 1px 2px rgba(0,0,0,0.12)' : 'none',
                     transition: 'background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease',
                     justifyContent: effectiveCollapsed ? 'center' : 'flex-start',
+                    position: 'relative',
                   }}}
                 >
-                  <Icon size={18} />
-                  {!effectiveCollapsed && <span style={{ fontSize: 13, fontWeight: 500 }}>{t(labelKey)}</span>}
+                  <span style={{ position: 'relative', display: 'inline-flex' }}>
+                    <Icon size={18} />
+                    {labelKey === 'nav.feed' && feedUnreadCount > 0 && effectiveCollapsed && (
+                      <span style={{
+                        position: 'absolute', top: -4, right: -6, minWidth: 14, height: 14,
+                        padding: '0 4px', borderRadius: 7,
+                        background: 'var(--accent)', color: '#fff',
+                        fontSize: 9, fontWeight: 700, lineHeight: '14px',
+                        textAlign: 'center', display: 'inline-block',
+                      }}>{feedUnreadCount > 99 ? '99+' : feedUnreadCount}</span>
+                    )}
+                  </span>
+                  {!effectiveCollapsed && (
+                    <>
+                      <span style={{ fontSize: 13, fontWeight: 500, flex: 1 }}>{t(labelKey)}</span>
+                      {labelKey === 'nav.feed' && feedUnreadCount > 0 && (
+                        <span style={{
+                          minWidth: 18, height: 18, padding: '0 6px',
+                          borderRadius: 9, background: 'var(--accent)', color: '#fff',
+                          fontSize: 11, fontWeight: 700, lineHeight: '18px',
+                          textAlign: 'center', flexShrink: 0,
+                        }}>{feedUnreadCount > 99 ? '99+' : feedUnreadCount}</span>
+                      )}
+                    </>
+                  )}
                 </NavLink>
               )})}
             </div>
@@ -770,7 +826,7 @@ function MobileBottomTabs({ onOpenCopilot, copilotOpen }) {
   const location = useLocation()
 
   const tabs = [
-    { path: '/', label: t('nav.reports'), icon: BarChart3, permission: 'page_reports', exact: true },
+    { path: '/', label: t('nav.feed'), icon: Sparkles, permission: 'page_reports', exact: true },
     { path: '/findings', label: t('nav.findings'), icon: Bug, permission: 'page_findings' },
     { key: 'copilot', label: 'Copilot', icon: Bot, primary: true },
     { path: '/assets', label: t('nav.assets'), icon: Server, permission: 'page_assets' },
@@ -1270,7 +1326,9 @@ function AppShell() {
             <ErrorBoundary fullPage title="Page failed to load">
             <Suspense fallback={<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '60vh', color: 'var(--muted)' }}>Loading...</div>}>
               <Routes>
-                <Route path="/" element={<Reports />} />
+                <Route path="/" element={<Feed />} />
+                <Route path="/feed" element={<Feed />} />
+                <Route path="/reports" element={<Reports />} />
                 <Route path="/reports/:reportId" element={<Reports />} />
                 <Route path="/assets" element={<AssetInventory />} />
                 <Route path="/assets/:id" element={<AssetDetail />} />

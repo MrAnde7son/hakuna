@@ -95,12 +95,56 @@ OBJECTIVES = [
         "icon": "shield-check",
     },
     {
+        "id": "easm",
+        "label": "Discover external attack surface",
+        "description": "Find unknown internet-facing assets, monitor exposed services, and triage shadow IT before attackers do.",
+        "icon": "globe",
+    },
+    {
+        "id": "sbom",
+        "label": "Track software inventory and supply chain risk",
+        "description": "Ingest SBOMs, map installed software to CVEs, and consolidate fixes behind a single upgrade.",
+        "icon": "package",
+    },
+    {
         "id": "mssp",
         "label": "Manage multiple client environments (MSSP)",
         "description": "Multi-tenant isolation, per-client dashboards, parent-child org hierarchy, and aggregated reporting.",
         "icon": "building",
     },
 ]
+
+# ── Default objective suggestions per team function ─────────────
+# When the user picks team functions in step 2, we pre-check 2-3
+# objectives in step 3. Order matters — earlier entries take priority
+# when multiple team functions are selected.
+
+TEAM_OBJECTIVE_DEFAULTS: dict[str, list[str]] = {
+    "secops": ["prioritize_vulns", "ai_agents", "integrations"],
+    "vuln_mgmt": ["prioritize_vulns", "drive_remediation", "board_reporting"],
+    "it_ops": ["drive_remediation", "integrations"],
+    "devops": ["drive_remediation", "sbom", "easm"],
+    "appsec": ["sbom", "drive_remediation", "prioritize_vulns"],
+    "grc": ["compliance", "board_reporting"],
+    "executive": ["board_reporting", "prioritize_vulns", "compliance"],
+    "network": ["attack_path", "easm", "prioritize_vulns"],
+    "helpdesk": ["drive_remediation"],
+}
+
+
+def suggest_objectives_for_teams(team_functions: list[str], limit: int = 3) -> list[str]:
+    """Return up to `limit` objective IDs suggested for the given team functions.
+
+    Picks across teams in selection order, deduping, capped at `limit`.
+    """
+    suggested: list[str] = []
+    for fn in team_functions or []:
+        for obj_id in TEAM_OBJECTIVE_DEFAULTS.get(fn, []):
+            if obj_id not in suggested:
+                suggested.append(obj_id)
+            if len(suggested) >= limit:
+                return suggested
+    return suggested
 
 # ── Notification preference options ─────────────────────────────
 
@@ -1052,6 +1096,27 @@ OBJECTIVE_PACKAGES: dict[str, dict[str, Any]] = {
             "reports": ["executive_summary", "team_dashboard"],
             "roles": ["security_analyst", "executive_viewer"],
             "sla_preset": "standard",
+        },
+    },
+    "easm": {
+        "label": "External Attack Surface",
+        "description": "Internet-facing asset discovery, exposure monitoring, and shadow IT triage",
+        "provisions": {
+            "tags": ["base", "network"],
+            "campaigns": ["internet_facing_alerts", "critical_path"],
+            "agents": ["threat_intel_analyst"],
+            "reports": ["executive_summary"],
+        },
+    },
+    "sbom": {
+        "label": "Software Inventory & Supply Chain",
+        "description": "SBOM ingestion, software-to-CVE correlation, and consolidated upgrade campaigns",
+        "provisions": {
+            "tags": ["base"],
+            "auto_tag_rules": ["exploitable_findings"],
+            "campaigns": ["patch_tuesday", "quick_wins"],
+            "agents": ["vuln_analyst", "remediation_advisor"],
+            "reports": ["team_dashboard"],
         },
     },
 }

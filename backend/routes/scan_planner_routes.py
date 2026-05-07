@@ -25,7 +25,7 @@ router = APIRouter(prefix="/api/scan-planner", tags=["Scan Planner"])
 @router.get("/plan/{asset_id}")
 async def get_plan(
     asset_id: int,
-    provider: str = Query("anthropic", description="LLM provider for plan generation"),
+    provider: str = Query("vertex_ai", description="LLM provider for plan generation"),
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
     org_ids: list = Depends(get_accessible_org_ids),
@@ -41,7 +41,7 @@ async def get_plan(
 @router.get("/plans")
 async def get_batch_plans(
     top_n: int = Query(50, le=200, description="Number of top-risk assets to plan for"),
-    provider: str = Query("anthropic", description="LLM provider for plan generation"),
+    provider: str = Query("vertex_ai", description="LLM provider for plan generation"),
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
     org_ids: list = Depends(get_accessible_org_ids),
@@ -57,7 +57,7 @@ async def get_batch_plans(
 @router.post("/execute/{asset_id}")
 async def execute_plan(
     asset_id: int,
-    provider: str = Query("anthropic", description="LLM provider"),
+    provider: str = Query("vertex_ai", description="LLM provider"),
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
     org_ids: list = Depends(get_accessible_org_ids),

@@ -11,7 +11,7 @@ import {
 import { useScan } from '../../App.jsx'
 import useURLFilters from '../../hooks/useURLFilters.js'
 import {
-  uploadScan, deleteScan, cancelScan, getScanStatus, getEasmStatus, scanEasmDomain, rescanEasmScan, updateEasmScan, refreshEasmScan, setupEasm,
+  uploadScan, deleteScan, cancelScan, getScanStatus, getEasmStatus, scanEasmDomain, rescanEasmScan, retryEasmScan, updateEasmScan, refreshEasmScan, setupEasm,
   getEasmScanRuns, startVmScan, refreshVmScan, rescanVmScan, getAssets, updateScanSchedule,
   getCredentials, createCredential, getRelayAgents,
   listAuditProtocols, startAuditRun, getBillingUsage,
@@ -3448,8 +3448,15 @@ function ScanCard({ scan, onDelete, deleting, onSelect, onRescan, onRefresh, onC
   const easmStatus = scanStatus  // keep compat
   const isRunning = scanStatus === 'running' || scanStatus === 'queued'
   const canCancel = isRunning && (isEasm || isVm || isAudit)
+  // EASM-specific: failed scans should show the reason + a Retry button.
+  // The pre-created-Scan-row refactor means a failed scan exists as a
+  // first-class row here (with raw_metadata.error set by _mark_scan_failed),
+  // so we light it up rather than hiding it.
+  const isFailed = isEasm && (scanStatus === 'failed' || scan.status === 'failed')
+  const failureReason = isFailed ? scan.raw_metadata?.error : null
   const [showHistory, setShowHistory] = useState(false)
   const [rescanning, setRescanning] = useState(false)
+  const [retrying, setRetrying] = useState(false)
   const [editOpen, setEditOpen] = useState(false)
   const toast = useToast()
 
@@ -3498,6 +3505,20 @@ function ScanCard({ scan, onDelete, deleting, onSelect, onRescan, onRefresh, onC
                 <span>Next: {formatAge(scan.next_run_at)}</span>
               )}
             </div>
+            {isFailed && failureReason && (
+              <div
+                style={{
+                  marginTop: 6, padding: '6px 10px',
+                  background: 'rgba(220,38,38,0.06)', border: '1px solid rgba(220,38,38,0.25)',
+                  borderRadius: 6, color: '#dc2626', fontSize: 12,
+                  display: 'flex', alignItems: 'flex-start', gap: 6,
+                }}
+                title={failureReason}
+              >
+                <AlertCircle size={13} style={{ flexShrink: 0, marginTop: 1 }} />
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{failureReason}</span>
+              </div>
+            )}
           </div>
 
           <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0 }}>
@@ -3523,7 +3544,32 @@ function ScanCard({ scan, onDelete, deleting, onSelect, onRescan, onRefresh, onC
                 {showHistory ? <ChevronUp size={10} /> : <ChevronDown size={10} />}
               </button>
             )}
-            {isEasm && !isRunning && (
+            {isFailed && (
+              <button
+                disabled={retrying}
+                onClick={async () => {
+                  setRetrying(true)
+                  try {
+                    await retryEasmScan(scan.id)
+                    if (onRefresh) await onRefresh()
+                    toast.success('Retry queued')
+                  } catch (err) {
+                    toast.error(err?.message || 'Retry failed')
+                  } finally { setRetrying(false) }
+                }}
+                title={`Retry scan${domain ? ` for ${domain}` : ''}`}
+                style={{
+                  background: 'rgba(220,38,38,0.06)', border: '1px solid rgba(220,38,38,0.4)',
+                  borderRadius: 6, padding: '5px 10px', cursor: retrying ? 'wait' : 'pointer',
+                  color: '#dc2626', display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, fontWeight: 600,
+                  transition: 'all 0.15s', opacity: retrying ? 0.5 : 1,
+                }}
+              >
+                <RefreshCw size={12} style={retrying ? { animation: 'spin 1s linear infinite' } : undefined} />
+                {retrying ? 'Retrying…' : 'Retry'}
+              </button>
+            )}
+            {isEasm && !isRunning && !isFailed && (
               <button
                 onClick={() => setEditOpen(true)}
                 title="Edit scan (target, type, follow-ups)"
@@ -3539,7 +3585,7 @@ function ScanCard({ scan, onDelete, deleting, onSelect, onRescan, onRefresh, onC
                 <Edit2 size={12} />
               </button>
             )}
-            {isEasm && domain && onRescan && !isRunning && (
+            {isEasm && domain && onRescan && !isRunning && !isFailed && (
               <button
                 disabled={rescanning}
                 onClick={async () => {
@@ -3820,6 +3866,37 @@ export default function ScanManagement() {
   // Refresh scans on mount to avoid stale-context race on first login
   useEffect(() => {
     refreshScans()
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Auto-retry deep-link from the welcome_narrator's "Retry the scan" CTA.
+  // The narrator points users at /settings?tab=scans&retry=<scan_id>; we
+  // fire the retry, refresh, surface a toast, and strip the param so a
+  // page refresh doesn't re-trigger.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const retryId = params.get('retry')
+    if (!retryId) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        await retryEasmScan(parseInt(retryId, 10))
+        if (cancelled) return
+        toast.success('Retry queued — the scan should appear running shortly.')
+        await refreshScans()
+      } catch (err) {
+        if (cancelled) return
+        toast.error(err?.message || 'Retry failed')
+      } finally {
+        if (cancelled) return
+        params.delete('retry')
+        const next = params.toString()
+        const url = next
+          ? `${window.location.pathname}?${next}`
+          : window.location.pathname
+        window.history.replaceState({}, '', url)
+      }
+    })()
+    return () => { cancelled = true }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Load EASM status on mount

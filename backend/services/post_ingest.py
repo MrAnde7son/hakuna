@@ -112,7 +112,57 @@ def finalize_batch(
         lambda: _fire_data_triggers(db, scan_id, new_asset_ids, new_finding_ids),
     )
 
+    # Emit ``scan_batch_complete`` so the narrator can post a progress
+    # entry while the scan is still running. Skip if the batch is empty
+    # (nothing new to narrate) or org_id is unknown (can't route). The
+    # dedup_key uses the first new id in the batch — auto-incrementing
+    # ids guarantee per-batch uniqueness, so consecutive batches each
+    # dispatch their own narrator run.
+    if org_id and ((new_asset_ids or new_finding_ids)):
+        results["scan_batch_complete_event"] = _step(
+            db, "scan_batch_complete event emit",
+            lambda: _emit_scan_batch_complete(
+                db, org_id=org_id, scan_id=scan_id,
+                new_asset_ids=new_asset_ids, new_finding_ids=new_finding_ids,
+            ),
+        )
+
     return results
+
+
+def _emit_scan_batch_complete(db, *, org_id, scan_id, new_asset_ids, new_finding_ids):
+    """Fire ``scan_batch_complete`` with the batch's new ids. Dedup keys
+    on the first new id in the batch so consecutive batches dispatch
+    independently while a re-fired identical batch is suppressed.
+    """
+    asset_ids = list(new_asset_ids or [])
+    finding_ids = list(new_finding_ids or [])
+    # Choose a stable, monotonically-distinct key. Auto-increment ids
+    # guarantee a different ``min`` per batch even when batches overlap
+    # in counts; falls back to a millisecond timestamp when both lists
+    # are empty (shouldn't happen because the caller pre-checks).
+    if finding_ids:
+        key = f"{scan_id}:f:{min(finding_ids)}"
+    elif asset_ids:
+        key = f"{scan_id}:a:{min(asset_ids)}"
+    else:
+        from datetime import datetime as _dt
+        key = f"{scan_id}:t:{int(_dt.utcnow().timestamp() * 1000)}"
+
+    from services.event_bus import emit
+    return emit(
+        db,
+        event_type="scan_batch_complete",
+        org_id=org_id,
+        payload={
+            "scan_id": scan_id,
+            "new_asset_count": len(asset_ids),
+            "new_finding_count": len(finding_ids),
+            "new_asset_ids": asset_ids[:50],
+            "new_finding_ids": finding_ids[:50],
+        },
+        dedup_key=key,
+    )
 
 
 def finalize_scan(
@@ -333,7 +383,121 @@ def finalize_scan(
         lambda: _fire_data_triggers(db, scan_id, new_asset_ids, new_finding_ids),
     )
 
+    # 15. Emit scan_complete to the agent dispatcher. If the org has an
+    # agent named ``triage_scan_results`` configured, it'll wake up,
+    # reason over the new data, and post a feed entry. No-op for orgs
+    # that haven't opted in.
+    if org_id:
+        results["scan_complete_event"] = _step(
+            db, "scan_complete event emit",
+            lambda: _emit_scan_complete(
+                db, org_id=org_id, scan_id=scan_id,
+                new_asset_ids=new_asset_ids, new_finding_ids=new_finding_ids,
+            ),
+        )
+
+    # 16. Emit asset_created for the SINGLE most notable newly-discovered
+    # asset in this scan. We deliberately fire at most one event per
+    # finalize so the per-(agent, event_type) debounce doesn't drop the
+    # second one and so the feed stays high-signal. The "most notable"
+    # ranking prefers internet-facing + high-criticality assets.
+    if org_id and new_asset_ids:
+        results["asset_created_event"] = _step(
+            db, "asset_created event emit",
+            lambda: _emit_notable_asset_created(
+                db, org_id=org_id, scan_id=scan_id, new_asset_ids=new_asset_ids,
+            ),
+        )
+
     return results
+
+
+def _emit_scan_complete(db, *, org_id, scan_id, new_asset_ids, new_finding_ids):
+    """Fire ``scan_complete`` on the event bus. The dispatcher queues an
+    agent run on the job manager — this returns immediately.
+
+    Payload is the small set the triage agent needs to ground its
+    reasoning without reloading the whole scan: scan id, counts of new
+    rows, and the IDs themselves (capped) so the agent can call
+    ``query_findings`` / ``query_assets`` on a tight scope.
+    """
+    from services.event_bus import emit
+    return emit(
+        db,
+        event_type="scan_complete",
+        org_id=org_id,
+        payload={
+            "scan_id": scan_id,
+            "new_asset_count": len(new_asset_ids or []),
+            "new_finding_count": len(new_finding_ids or []),
+            # Cap so a giant ingest doesn't bloat the agent's input.
+            "new_asset_ids": (new_asset_ids or [])[:50],
+            "new_finding_ids": (new_finding_ids or [])[:50],
+        },
+        # scan_id keys debounce so two different scans for the same
+        # org within the window each get their own narrator run.
+        dedup_key=scan_id,
+    )
+
+
+def _pick_most_notable_asset_id(db, asset_ids):
+    """Pick the single most-narrate-worthy asset from a batch.
+
+    Ranking: ``is_internet_facing DESC, criticality DESC, id DESC``. Falls
+    back to the highest id if none of the rankings differentiate. Returns
+    ``None`` if no asset rows exist for the given ids (shouldn't happen,
+    but defensive — finalize_scan is non-fatal per step).
+    """
+    from models.models import Asset
+    rows = (
+        db.query(Asset)
+        .filter(Asset.id.in_(asset_ids))
+        .all()
+    )
+    if not rows:
+        return None
+    rows.sort(
+        key=lambda a: (
+            1 if getattr(a, "is_internet_facing", False) else 0,
+            int(getattr(a, "criticality", 0) or 0),
+            a.id,
+        ),
+        reverse=True,
+    )
+    return rows[0].id
+
+
+def _emit_notable_asset_created(db, *, org_id, scan_id, new_asset_ids):
+    """Fire ``asset_created`` for the single most notable new asset.
+
+    Why one event instead of N: the dispatcher debounces per-(agent,
+    event_type) for 90s, so emitting N events back-to-back would have
+    only the first one queue a run anyway. Picking the most notable
+    upfront means the narrator focuses on the asset that actually
+    matters — internet-facing + high-criticality — rather than the
+    arbitrary first id.
+
+    Returns the dispatcher status dict, or ``{"dispatched": False,
+    "reason": "no_asset"}`` when the picker can't find a row.
+    """
+    asset_id = _pick_most_notable_asset_id(db, new_asset_ids)
+    if asset_id is None:
+        return {"dispatched": False, "reason": "no_asset"}
+    from services.event_bus import emit
+    return emit(
+        db,
+        event_type="asset_created",
+        org_id=org_id,
+        payload={
+            "asset_id": asset_id,
+            "scan_id": scan_id,
+            "batch_size": len(new_asset_ids or []),
+        },
+        # asset_id keys debounce so each newly-discovered asset gets
+        # its own narrator run; same asset re-fired (rare) is correctly
+        # suppressed.
+        dedup_key=asset_id,
+    )
 
 
 def _step(db: Session, name: str, fn):

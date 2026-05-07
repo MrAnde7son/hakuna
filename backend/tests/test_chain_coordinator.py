@@ -1027,26 +1027,43 @@ class TestPatternCredFound:
         assert outcome["dispatched"] is False
         assert outcome["reason"] == "requires_approval"
         # And the pending row was persisted so the operator can act.
-        from models.models import CoordinatorPendingApproval
-        pending = db_session.query(CoordinatorPendingApproval).filter(
-            CoordinatorPendingApproval.org_id == test_org.id,
-            CoordinatorPendingApproval.asset_id == host.id,
-            CoordinatorPendingApproval.pattern == "cred_found",
+        # Coordinator approvals live in agent_approvals (source='coordinator')
+        # since mig 068; lookup is by the indexed dedup_key column.
+        from models.models import AgentApproval
+        expected_key = f"{host.id}|cred_found|ssh|exposure_audit"
+        pending = db_session.query(AgentApproval).filter(
+            AgentApproval.org_id == test_org.id,
+            AgentApproval.source == "coordinator",
+            AgentApproval.dedup_key == expected_key,
         ).all()
         assert len(pending) == 1
         assert pending[0].status == "pending"
+        assert (pending[0].tool_input or {}).get("pattern") == "cred_found"
 
     def test_approved_row_lets_dispatch_proceed(
         self, db_session, test_org, test_assets,
     ):
-        from models.models import CoordinatorPendingApproval, RelayAgent
+        from models.models import AgentApproval, RelayAgent
         host = test_assets[0]
         # Operator already approved this hypothesis on a prior tick.
-        approval = CoordinatorPendingApproval(
-            org_id=test_org.id, asset_id=host.id,
-            pattern="cred_found", protocol="ssh", mission="exposure_audit",
+        # Approvals live in agent_approvals with source='coordinator'.
+        # dedup_key mirrors what chain_coordinator._hyp_dedup_key computes.
+        approval = AgentApproval(
+            org_id=test_org.id,
+            agent_id=None, agent_run_id=None,
+            source="coordinator",
+            tool_name="dispatch_chain_hypothesis",
+            dedup_key=f"{host.id}|cred_found|ssh|exposure_audit",
+            tool_input={
+                "asset_id": host.id,
+                "pattern": "cred_found",
+                "protocol": "ssh",
+                "mission": "exposure_audit",
+                "score": 0.0,
+                "score_factors": {},
+            },
+            messages_snapshot=[], assistant_content=[],
             status="approved",
-            decided_by="operator@example.com",
             decided_at=datetime.utcnow(),
         )
         db_session.add(approval)
@@ -1079,18 +1096,29 @@ class TestPatternCredFound:
         # Don't `refresh` — that would clobber the pending mutation with the
         # last-committed state.
         assert approval.status == "consumed"
-        assert approval.consumed_by_scan_id == 4242
+        # consumed_by_scan_id moved into tool_input JSON when the table
+        # was folded into agent_approvals.
+        assert (approval.tool_input or {}).get("consumed_by_scan_id") == 4242
 
     def test_rejected_row_blocks_dispatch(
         self, db_session, test_org, test_assets,
     ):
-        from models.models import CoordinatorPendingApproval
+        from models.models import AgentApproval
         host = test_assets[0]
-        db_session.add(CoordinatorPendingApproval(
-            org_id=test_org.id, asset_id=host.id,
-            pattern="cred_found", protocol="ssh", mission="exposure_audit",
+        db_session.add(AgentApproval(
+            org_id=test_org.id,
+            agent_id=None, agent_run_id=None,
+            source="coordinator",
+            tool_name="dispatch_chain_hypothesis",
+            dedup_key=f"{host.id}|cred_found|ssh|exposure_audit",
+            tool_input={
+                "asset_id": host.id,
+                "pattern": "cred_found",
+                "protocol": "ssh",
+                "mission": "exposure_audit",
+            },
+            messages_snapshot=[], assistant_content=[],
             status="rejected",
-            decided_by="operator@example.com",
             decided_at=datetime.utcnow(),
         ))
         db_session.flush()

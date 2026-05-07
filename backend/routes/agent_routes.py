@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from core.database import get_db, SessionLocal
 from core.limiter import limiter
 from core.time_utils import iso_utc
-from models.models import Agent, AgentRun, AgentSchedule, AgentDocument, AgentApproval, LLMInteraction, User
+from models.models import Agent, AgentRun, AgentSchedule, AgentDocument, AgentApproval, Asset, Campaign, Finding, FindingException, LLMInteraction, Scan, User
 from core.auth import get_current_user, get_accessible_org_ids, apply_org_filter
 from agents.agent_tools import get_tool_catalog
 from agents.agent_engine import (
@@ -523,6 +523,256 @@ def get_approval(
     return _approval_to_dict(approval, include_snapshot=True)
 
 
+def _activate_agent_draft(
+    db: Session, approval: AgentApproval, deciding_user: Optional[User] = None,
+) -> None:
+    """Server-side action triggered when an ``agent_draft`` approval is
+    approved. Branches on ``approval.tool_name`` — each draft tool the
+    agent can call has a matching activation handler here.
+
+    ``deciding_user`` is the operator who clicked Approve. Some handlers
+    (e.g. the exception path) need the email for audit fields like
+    ``FindingException.approved_by``.
+
+    Non-fatal: errors here shouldn't undo the user's approval decision
+    (already committed). Logged and returned-to.
+    """
+    if approval.tool_name == "activate_campaign":
+        _activate_campaign_draft(db, approval)
+    elif approval.tool_name == "send_owner_notification":
+        _send_owner_notification(db, approval)
+    elif approval.tool_name == "create_finding_exception":
+        _create_finding_exception(db, approval, deciding_user)
+    elif approval.tool_name == "create_jira_ticket":
+        _create_jira_ticket(db, approval)
+
+
+def _activate_campaign_draft(db: Session, approval: AgentApproval) -> None:
+    """Flip the draft Campaign to active. Idempotent — leaves a
+    completed/already-active campaign alone."""
+    cid = (approval.tool_input or {}).get("campaign_id")
+    if not cid:
+        return
+    campaign = (
+        db.query(Campaign)
+        .filter(Campaign.id == cid, Campaign.org_id == approval.org_id)
+        .first()
+    )
+    if campaign is None:
+        return
+    if campaign.status != "draft":
+        return
+    campaign.status = "active"
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        import logging
+        logging.getLogger(__name__).exception(
+            "agent_draft activation failed for campaign=%s approval=%s",
+            cid, approval.id,
+        )
+
+
+def _create_finding_exception(
+    db: Session, approval: AgentApproval, deciding_user: Optional[User],
+) -> None:
+    """Create a ``FindingException`` from a draft approval. Scopes the
+    exception by ``plugin_id`` + ``asset_ip`` so it persists across
+    rescans (matches the MCP ``request_exception`` shape and the
+    operator-facing exception UI). Non-fatal — errors don't roll back
+    the approve decision."""
+    import logging
+    log = logging.getLogger(__name__)
+    payload = approval.tool_input or {}
+
+    plugin_id = payload.get("plugin_id")
+    if not plugin_id:
+        log.warning("agent_draft: create_finding_exception missing plugin_id approval=%s", approval.id)
+        return
+
+    expires_at = None
+    if payload.get("expires_at"):
+        try:
+            from datetime import datetime as _dt
+            expires_at = _dt.strptime(payload["expires_at"], "%Y-%m-%d")
+        except ValueError:
+            log.warning("agent_draft: invalid expires_at on approval=%s", approval.id)
+
+    approved_by = (deciding_user.email if deciding_user else None) or "agent_draft:approver_unknown"
+
+    exc = FindingException(
+        org_id=approval.org_id,
+        plugin_id=plugin_id,
+        plugin_name=payload.get("plugin_name"),
+        asset_ip=payload.get("asset_ip"),
+        exception_type=payload.get("exception_type") or "accepted_risk",
+        reason=payload.get("reason") or "",
+        approved_by=approved_by,
+        expires_at=expires_at,
+        is_active=True,
+    )
+    db.add(exc)
+    try:
+        db.commit()
+        db.refresh(exc)
+        # Stamp outcome onto the approval for audit visibility.
+        from sqlalchemy.orm.attributes import flag_modified
+        ti = dict(approval.tool_input or {})
+        ti["created_exception_id"] = exc.id
+        approval.tool_input = ti
+        flag_modified(approval, "tool_input")
+        db.commit()
+    except Exception:
+        db.rollback()
+        log.exception(
+            "agent_draft: create_finding_exception failed for approval=%s", approval.id,
+        )
+
+
+def _send_owner_notification(db: Session, approval: AgentApproval) -> None:
+    """Send the drafted owner notification. Tries Slack first (if a Slack
+    integration is configured for the org), otherwise falls back to an
+    in-app notification visible to org admins. Logs the outcome onto the
+    approval's tool_input so the operator can see what happened from
+    the queue UI later."""
+    import logging
+    log = logging.getLogger(__name__)
+    payload = approval.tool_input or {}
+    message_md = payload.get("message_md") or ""
+    finding_id = payload.get("finding_id")
+    owner = payload.get("owner") or {}
+    context = payload.get("context") or {}
+
+    items = [{
+        "finding_id": finding_id,
+        "plugin_name": context.get("plugin_name"),
+        "severity_label": context.get("severity_label"),
+        "asset_ip": context.get("asset_hostname"),  # send_slack_notification reads asset_ip
+    }]
+
+    sent_via = None
+    sent_error = None
+    try:
+        from services.integrations import get_integration_config, send_slack_notification
+        slack_cfg = get_integration_config(db, "slack")
+        if slack_cfg and slack_cfg.get("webhook_url"):
+            owner_tag = owner.get("owner_name") or owner.get("owner_team") or "asset owner"
+            send_slack_notification(
+                db,
+                config={
+                    "message_template": (
+                        f":mega: Agent-drafted alert for *{owner_tag}*\n\n{message_md}"
+                    ),
+                    "include_summary": True,
+                },
+                items=items,
+            )
+            sent_via = "slack"
+    except Exception as e:
+        sent_error = f"slack: {e}"
+        log.warning("agent_draft: slack send failed for approval=%s: %s", approval.id, e)
+
+    if sent_via is None:
+        # In-app fallback so the message lands somewhere visible even
+        # when no external integration is configured.
+        try:
+            from services.notifications import create_notification
+            owner_tag = owner.get("owner_name") or owner.get("owner_team") or "asset owner"
+            create_notification(
+                db,
+                org_id=approval.org_id,
+                category="agent_draft_notification",
+                title=f"Agent message for {owner_tag}",
+                body=message_md[:1000],
+                link=f"/findings/{finding_id}" if finding_id else None,
+                entity_type="finding",
+                entity_id=finding_id,
+                metadata={"approval_id": approval.id, "owner": owner},
+            )
+            sent_via = "in_app"
+            db.commit()
+        except Exception as e:
+            sent_error = f"{sent_error or ''} | in_app: {e}".strip(" |")
+            log.exception("agent_draft: in-app notification fallback failed")
+
+    # Stamp the outcome onto the approval row for audit visibility.
+    try:
+        from sqlalchemy.orm.attributes import flag_modified
+        ti = dict(approval.tool_input or {})
+        ti["sent_via"] = sent_via
+        if sent_error:
+            ti["sent_error"] = sent_error
+        approval.tool_input = ti
+        flag_modified(approval, "tool_input")
+        db.commit()
+    except Exception:
+        db.rollback()
+        log.exception("agent_draft: failed to stamp send outcome on approval=%s", approval.id)
+
+
+def _create_jira_ticket(db: Session, approval: AgentApproval) -> None:
+    """Create a Jira ticket from a draft approval. Calls the existing
+    ``services.integrations.create_jira_ticket`` with the snapshot of
+    finding items captured at draft time and the operator-supplied
+    overrides. Stamps the resulting ticket key/url/error onto the
+    approval's tool_input for audit. Non-fatal — errors don't roll back
+    the approve decision."""
+    import logging
+    log = logging.getLogger(__name__)
+    payload = approval.tool_input or {}
+    items = payload.get("items") or []
+    overrides = payload.get("config_overrides") or {}
+
+    if not items:
+        log.warning("agent_draft: create_jira_ticket missing items approval=%s", approval.id)
+        return
+
+    # Build the per-call config the integration's create_jira_ticket
+    # expects. None values let the integration's defaults take over.
+    cfg = {k: v for k, v in {
+        "title_template": overrides.get("title_template"),
+        "description_template": overrides.get("description_template"),
+        "priority": overrides.get("priority"),
+        "assignee": overrides.get("assignee"),
+        "labels": overrides.get("labels"),
+        "group_by": overrides.get("group_by") or "one_per_finding",
+    }.items() if v is not None}
+
+    result = None
+    error = None
+    try:
+        from services.integrations import create_jira_ticket
+        result = create_jira_ticket(db, cfg, items)
+    except Exception as e:
+        error = str(e)
+        log.exception("agent_draft: create_jira_ticket failed for approval=%s", approval.id)
+
+    # Stamp outcome onto approval. The result shape from create_jira_ticket
+    # is {"tickets_created": N, "results": [{"key", "url", ...}]}; surface
+    # the first ticket's key/url at the top level for the queue UI.
+    try:
+        from sqlalchemy.orm.attributes import flag_modified
+        ti = dict(approval.tool_input or {})
+        if result is not None:
+            ti["jira_result"] = result
+            first = next(
+                (r for r in (result.get("results") or []) if r.get("key")),
+                None,
+            )
+            if first:
+                ti["created_ticket_key"] = first.get("key")
+                ti["created_ticket_url"] = first.get("url")
+        if error:
+            ti["create_error"] = error
+        approval.tool_input = ti
+        flag_modified(approval, "tool_input")
+        db.commit()
+    except Exception:
+        db.rollback()
+        log.exception("agent_draft: failed to stamp jira outcome on approval=%s", approval.id)
+
+
 @router.post("/approvals/{approval_id}/decide")
 def decide_approval(
     approval_id: int,
@@ -565,6 +815,14 @@ def decide_approval(
     from services.approval_lifecycle import clear_approval_notification
     if clear_approval_notification(db, approval_id_for_cleanup):
         db.commit()
+
+    # ``agent_draft`` approvals carry a server-side action to perform on
+    # approve. The agent already finished its run when it created the
+    # draft, so there's no run to resume — we just execute the activation
+    # here and return. Reject = leave the draft as-is (operator can
+    # delete it from the campaigns page or activate manually later).
+    if approval.source == "agent_draft" and body.decision == "approved":
+        _activate_agent_draft(db, approval, deciding_user=current_user)
 
     # External MCP approvals have no run/agent to resume — the decision row
     # is the whole story (and ``org_for_24h`` grants take effect on retry).
