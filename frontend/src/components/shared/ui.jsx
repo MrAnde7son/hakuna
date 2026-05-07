@@ -692,6 +692,7 @@ export function Button({ children, onClick, variant = 'primary', size = 'md', di
     border: 'none', borderRadius: 6, cursor: disabled ? 'not-allowed' : 'pointer',
     fontWeight: 600, transition: 'all 0.15s', fontSize: size === 'sm' ? 12 : 13,
     padding: size === 'sm' ? '5px 10px' : '8px 16px',
+    whiteSpace: 'nowrap',
     opacity: disabled ? 0.5 : 1, ...style
   }
   const variants = {
@@ -720,12 +721,12 @@ export function Pill({ label, color = 'var(--text-muted)', children }) {
 
 export function PageHeader({ title, subtitle, action }) {
   return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24 }}>
-      <div>
+    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16, marginBottom: 24 }}>
+      <div style={{ minWidth: 0, flex: 1 }}>
         <h1 style={{ fontSize: 22, fontWeight: 700, color: 'var(--text-primary)' }}>{title}</h1>
         {subtitle && <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 4 }}>{subtitle}</div>}
       </div>
-      {action}
+      {action && <div style={{ flexShrink: 0, whiteSpace: 'nowrap' }}>{action}</div>}
     </div>
   )
 }

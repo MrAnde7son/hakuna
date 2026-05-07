@@ -7,7 +7,7 @@ import {
   getIntegrations, getIntegration, saveIntegration,
   testIntegration, deleteIntegration,
 } from '../../api.js'
-import { Card, Button, Spinner, Pill, useToast, useConfirm } from '../shared/ui.jsx'
+import { Card, Button, Spinner, Pill, PageHeader, useToast, useConfirm } from '../shared/ui.jsx'
 
 // ── SVG Logos ────────────────────────────────────────────────────────
 
@@ -380,27 +380,25 @@ export default function IntegrationSettings() {
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 }}>
-        <div>
-          <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 4 }}>Integrations</div>
-          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-            Configure external services for workflow actions — ticketing, notifications, AI, and webhooks
+      <PageHeader
+        title="Integrations"
+        subtitle="Configure external services for workflow actions — ticketing, notifications, AI, and webhooks"
+        action={
+          <div style={{ position: 'relative' }}>
+            <Search size={14} color="#94a3b8" style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)' }} />
+            <input
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Search integrations..."
+              style={{
+                padding: '7px 11px 7px 30px', borderRadius: 8, fontSize: 13, width: 220,
+                border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)',
+                outline: 'none',
+              }}
+            />
           </div>
-        </div>
-        <div style={{ position: 'relative', flexShrink: 0 }}>
-          <Search size={14} color="#94a3b8" style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)' }} />
-          <input
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            placeholder="Search integrations..."
-            style={{
-              padding: '7px 11px 7px 30px', borderRadius: 8, fontSize: 13, width: 220,
-              border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)',
-              outline: 'none',
-            }}
-          />
-        </div>
-      </div>
+        }
+      />
 
       {CATEGORIES.map(cat => {
         const items = getForCategory(cat.key)

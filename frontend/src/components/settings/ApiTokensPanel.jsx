@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { Key, Copy, Check, Trash2, Plus, X } from 'lucide-react'
 import { listApiTokens, createApiToken, revokeApiToken } from '../../api.js'
+import { PageHeader, Button } from '../shared/ui.jsx'
 
 const SCOPE_OPTIONS = [
   { value: 'mcp:read',  label: 'MCP read',   help: 'Read findings, assets, campaigns via MCP' },
@@ -215,29 +216,17 @@ export default function ApiTokensPanel() {
 
   return (
     <div>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <Key size={16} color="var(--accent)" />
-          <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)' }}>API Tokens</span>
-        </div>
-        {!showForm && !created && (
-          <button
-            onClick={() => setShowForm(true)}
-            style={{
-              display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 14px',
-              borderRadius: 6, fontSize: 13, fontWeight: 500, border: 'none',
-              background: 'var(--accent)', color: 'white', cursor: 'pointer',
-            }}
-          >
-            <Plus size={13} /> New token
-          </button>
-        )}
-      </div>
-
-      <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '0 0 16px', maxWidth: 640 }}>
-        Long-lived bearer credentials for programmatic access. Use these to connect MCP clients
-        (Claude Desktop, Cursor) or scripts that call the REST API. Tokens inherit your role and org context.
-      </p>
+      <PageHeader
+        title="API Tokens"
+        subtitle="Long-lived bearer credentials for programmatic access. Use these to connect MCP clients (Claude Desktop, Cursor) or scripts that call the REST API. Tokens inherit your role and org context."
+        action={
+          !showForm && !created ? (
+            <Button onClick={() => setShowForm(true)}>
+              <Plus size={14} /> New token
+            </Button>
+          ) : null
+        }
+      />
 
       {created && (
         <CreatedTokenView

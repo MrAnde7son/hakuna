@@ -111,7 +111,7 @@ function EditOrgDialog({ org, onClose, onSave }) {
             </button>
             <button type="submit" disabled={loading} style={{
               padding: '7px 16px', borderRadius: 8, border: 'none',
-              background: 'var(--nav-active-bg)', color: 'var(--nav-active-text)', fontSize: 13, fontWeight: 600, cursor: 'pointer',
+              background: 'var(--accent)', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer',
             }}>
               {loading ? 'Saving…' : 'Save'}
             </button>
@@ -271,7 +271,7 @@ function InviteClientModal({ onClose, onInvited }) {
               </button>
               <button type="submit" disabled={loading} style={{
                 padding: '7px 16px', borderRadius: 8, border: 'none',
-                background: 'var(--nav-active-bg)', color: 'var(--nav-active-text)',
+                background: 'var(--accent)', color: '#fff',
                 fontSize: 13, fontWeight: 600, cursor: loading ? 'not-allowed' : 'pointer',
                 display: 'flex', alignItems: 'center', gap: 6,
               }}>
@@ -404,7 +404,7 @@ export default function OrgsPanel() {
               style={{
                 display: 'flex', alignItems: 'center', gap: 6,
                 padding: '6px 14px', borderRadius: 8, border: 'none',
-                background: 'var(--nav-active-bg)', color: 'var(--nav-active-text)', fontSize: 13, fontWeight: 600, cursor: 'pointer',
+                background: 'var(--accent)', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer',
               }}
             >
               <Plus size={14} /> New Organization
@@ -463,7 +463,7 @@ export default function OrgsPanel() {
                   </div>
                   <div style={{ gridColumn: '1 / -1', display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
                     <button type="button" onClick={() => setShowCreateOrg(false)} style={{ padding: '6px 14px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-card)', fontSize: 13, cursor: 'pointer' }}>Cancel</button>
-                    <button type="submit" disabled={loading} style={{ padding: '7px 14px', borderRadius: 8, border: 'none', background: 'var(--nav-active-bg)', color: 'var(--nav-active-text)', fontSize: 13, fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                    <button type="submit" disabled={loading} style={{ padding: '7px 14px', borderRadius: 8, border: 'none', background: 'var(--accent)', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap' }}>
                       {loading ? 'Creating…' : 'Create'}
                     </button>
                   </div>
@@ -562,7 +562,7 @@ export default function OrgsPanel() {
               style={{
                 display: 'flex', alignItems: 'center', gap: 6,
                 padding: '6px 14px', borderRadius: 8, border: 'none',
-                background: 'var(--nav-active-bg)', color: 'var(--nav-active-text)', fontSize: 13, fontWeight: 600, cursor: 'pointer',
+                background: 'var(--accent)', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer',
               }}
             >
               <Plus size={14} /> Invite Client

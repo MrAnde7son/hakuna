@@ -398,7 +398,7 @@ export default function RoleManager() {
             style={{
               display: 'flex', alignItems: 'center', gap: 6,
               padding: '6px 14px', borderRadius: 8, border: 'none',
-              background: 'var(--text)', color: 'var(--bg-card)', fontSize: 13, fontWeight: 600, cursor: 'pointer',
+              background: 'var(--accent)', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer',
             }}
           >
             <Plus size={14} /> New Role
@@ -436,7 +436,7 @@ export default function RoleManager() {
             />
           </div>
           <button type="submit" disabled={createLoading}
-            style={{ padding: '7px 16px', borderRadius: 8, border: 'none', background: 'var(--text)', color: 'var(--bg-card)', fontSize: 13, fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+            style={{ padding: '7px 16px', borderRadius: 8, border: 'none', background: 'var(--accent)', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap' }}>
             {createLoading ? 'Creating...' : 'Create'}
           </button>
           <button type="button" onClick={() => setShowCreate(false)}
@@ -486,7 +486,7 @@ export default function RoleManager() {
                   </div>
                   <div style={{ display: 'flex', gap: 8 }}>
                     <button onClick={handleSaveEdit}
-                      style={{ padding: '6px 14px', borderRadius: 8, border: 'none', background: 'var(--text)', color: 'var(--bg-card)', fontSize: 13, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4 }}>
+                      style={{ padding: '6px 14px', borderRadius: 8, border: 'none', background: 'var(--accent)', color: '#fff', fontSize: 13, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4 }}>
                       <Check size={13} /> Save
                     </button>
                     <button onClick={() => setEditing(false)}

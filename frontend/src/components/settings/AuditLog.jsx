@@ -232,11 +232,10 @@ export default function AuditLog() {
     <div>
       <PageHeader
         title="Audit Log"
-        subtitle={`${total.toLocaleString()} event${total !== 1 ? 's' : ''} recorded`}
-        icon={<ClipboardList size={20} />}
-        actions={
+        subtitle={`${total.toLocaleString()} event${total !== 1 ? 's' : ''} recorded across all admin actions`}
+        action={
           <Button variant="ghost" onClick={() => load(page)} title="Refresh">
-            <RefreshCw size={14} />
+            <RefreshCw size={14} /> Refresh
           </Button>
         }
       />
