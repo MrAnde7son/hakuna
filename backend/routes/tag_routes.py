@@ -10,7 +10,10 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from core.database import get_db
-from core.auth import get_current_user, get_accessible_org_ids, apply_org_filter, apply_scan_org_filter
+from core.auth import (
+    get_current_user, get_accessible_org_ids, apply_org_filter, apply_scan_org_filter,
+    resolve_active_org_id,
+)
 from core.audit import log_audit, diff as _diff
 from core.time_utils import iso_utc
 from models.models import (
@@ -74,16 +77,26 @@ class AutoTagRuleUpdate(BaseModel):
 # ─────────────────────────────────────────────
 
 @router.post("/api/tags")
-def create_tag(body: TagCreate, db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user)):
-    existing = db.query(Tag).filter(Tag.category == body.category, Tag.value == body.value).first()
-    if existing:
+def create_tag(
+    body: TagCreate,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    target_org = resolve_active_org_id(user, org_ids) if user else None
+    dup_q = db.query(Tag).filter(Tag.category == body.category, Tag.value == body.value)
+    if target_org is not None:
+        dup_q = dup_q.filter(Tag.org_id == target_org)
+    if dup_q.first():
         raise HTTPException(409, f"Tag '{body.category}:{body.value}' already exists")
     if body.parent_id:
-        parent = db.query(Tag).filter(Tag.id == body.parent_id).first()
-        if not parent:
+        parent_q = db.query(Tag).filter(Tag.id == body.parent_id)
+        if org_ids is not None:
+            parent_q = parent_q.filter(Tag.org_id.in_(org_ids))
+        if not parent_q.first():
             raise HTTPException(404, "Parent tag not found")
     tag = Tag(
-        org_id=user.org_id if user else None,
+        org_id=target_org,
         category=body.category,
         value=body.value,
         parent_id=body.parent_id,
@@ -304,11 +317,23 @@ def get_os_software_summary(
     }
 
 
-@router.get("/api/tags/{tag_id}")
-def get_tag(tag_id: int, db: Session = Depends(get_db)):
-    tag = db.query(Tag).filter(Tag.id == tag_id).first()
+def _get_tag_in_orgs(db, tag_id, org_ids):
+    q = db.query(Tag).filter(Tag.id == tag_id)
+    if org_ids is not None:
+        q = q.filter(Tag.org_id.in_(org_ids))
+    tag = q.first()
     if not tag:
         raise HTTPException(404, "Tag not found")
+    return tag
+
+
+@router.get("/api/tags/{tag_id}")
+def get_tag(
+    tag_id: int,
+    db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    tag = _get_tag_in_orgs(db, tag_id, org_ids)
     d = tag_engine._tag_to_dict(tag, db=db, include_counts=True)
     d["ancestors"] = tag_engine.get_ancestors(tag_id, db)
     descendant_ids = tag_engine.get_descendant_ids(tag_id, db)
@@ -317,16 +342,22 @@ def get_tag(tag_id: int, db: Session = Depends(get_db)):
 
 
 @router.patch("/api/tags/{tag_id}")
-def update_tag(tag_id: int, body: TagUpdate, db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user)):
-    tag = db.query(Tag).filter(Tag.id == tag_id).first()
-    if not tag:
-        raise HTTPException(404, "Tag not found")
+def update_tag(
+    tag_id: int, body: TagUpdate,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    tag = _get_tag_in_orgs(db, tag_id, org_ids)
     _old_tag = {"category": tag.category, "value": tag.value, "color": tag.color}
     if body.category is not None or body.value is not None:
         new_cat = body.category or tag.category
         new_val = body.value or tag.value
+        # Conflict check is scoped to the tag's own org so two tenants can
+        # have the same category:value without colliding.
         conflict = db.query(Tag).filter(
-            Tag.category == new_cat, Tag.value == new_val, Tag.id != tag_id
+            Tag.category == new_cat, Tag.value == new_val,
+            Tag.id != tag_id, Tag.org_id == tag.org_id,
         ).first()
         if conflict:
             raise HTTPException(409, f"Tag '{new_cat}:{new_val}' already exists")
@@ -354,10 +385,9 @@ def delete_tag(
     strategy: str = "reparent",  # "reparent" | "cascade"
     db: Session = Depends(get_db),
     user: Optional[User] = Depends(get_current_user),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
-    tag = db.query(Tag).filter(Tag.id == tag_id).first()
-    if not tag:
-        raise HTTPException(404, "Tag not found")
+    tag = _get_tag_in_orgs(db, tag_id, org_ids)
     _tag_name = f"{tag.category}:{tag.value}"
     _tag_org = tag.org_id
 
@@ -455,17 +485,35 @@ def list_auto_tag_rules(db: Session = Depends(get_db), org_ids: Optional[List[in
     return [_rule_to_dict(r) for r in rules]
 
 
+def _get_auto_tag_rule_in_orgs(db, rule_id, org_ids):
+    q = db.query(AutoTagRule).filter(AutoTagRule.id == rule_id)
+    if org_ids is not None:
+        q = q.filter(AutoTagRule.org_id.in_(org_ids))
+    rule = q.first()
+    if not rule:
+        raise HTTPException(404, "Rule not found")
+    return rule
+
+
 @router.post("/api/auto-tag-rules")
-def create_auto_tag_rule(body: AutoTagRuleCreate, db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user)):
+def create_auto_tag_rule(
+    body: AutoTagRuleCreate,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    target_org = resolve_active_org_id(user, org_ids) if user else None
     is_passthrough = any(c.get("op") == "passthrough" for c in (body.conditions or []))
     if body.tag_id is not None:
-        tag = db.query(Tag).filter(Tag.id == body.tag_id).first()
-        if not tag:
+        tag_q = db.query(Tag).filter(Tag.id == body.tag_id)
+        if org_ids is not None:
+            tag_q = tag_q.filter(Tag.org_id.in_(org_ids))
+        if not tag_q.first():
             raise HTTPException(404, "Tag not found")
     elif not is_passthrough:
         raise HTTPException(400, "tag_id is required for non-passthrough rules")
     rule = AutoTagRule(
-        org_id=user.org_id if user else None,
+        org_id=target_org,
         name=body.name,
         description=body.description,
         tag_id=body.tag_id,
@@ -481,17 +529,21 @@ def create_auto_tag_rule(body: AutoTagRuleCreate, db: Session = Depends(get_db),
 
 
 @router.patch("/api/auto-tag-rules/{rule_id}")
-def update_auto_tag_rule(rule_id: int, body: AutoTagRuleUpdate, db: Session = Depends(get_db)):
-    rule = db.query(AutoTagRule).filter(AutoTagRule.id == rule_id).first()
-    if not rule:
-        raise HTTPException(404, "Rule not found")
+def update_auto_tag_rule(
+    rule_id: int, body: AutoTagRuleUpdate,
+    db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    rule = _get_auto_tag_rule_in_orgs(db, rule_id, org_ids)
     if body.name is not None:
         rule.name = body.name
     if body.description is not None:
         rule.description = body.description
     if body.tag_id is not None:
-        tag = db.query(Tag).filter(Tag.id == body.tag_id).first()
-        if not tag:
+        tag_q = db.query(Tag).filter(Tag.id == body.tag_id)
+        if org_ids is not None:
+            tag_q = tag_q.filter(Tag.org_id.in_(org_ids))
+        if not tag_q.first():
             raise HTTPException(404, "Tag not found")
         rule.tag_id = body.tag_id
     if body.target_type is not None:
@@ -507,10 +559,12 @@ def update_auto_tag_rule(rule_id: int, body: AutoTagRuleUpdate, db: Session = De
 
 
 @router.delete("/api/auto-tag-rules/{rule_id}")
-def delete_auto_tag_rule(rule_id: int, db: Session = Depends(get_db)):
-    rule = db.query(AutoTagRule).filter(AutoTagRule.id == rule_id).first()
-    if not rule:
-        raise HTTPException(404, "Rule not found")
+def delete_auto_tag_rule(
+    rule_id: int,
+    db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    rule = _get_auto_tag_rule_in_orgs(db, rule_id, org_ids)
     db.delete(rule)
     db.commit()
     return {"message": "Rule deleted"}

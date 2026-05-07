@@ -226,17 +226,24 @@ def _compute_org_metrics(db: Session, org_ids: Optional[List[int]], scan_id: Opt
                 if c.is_enabled:
                     enabled_sevs.add(c.severity)
 
-    sla_q = finding_q.filter(Finding.severity.in_(list(enabled_sevs))) if enabled_sevs else finding_q.filter(False)
-    sla_findings = sla_q.all()
+    if enabled_sevs:
+        sla_q = db.query(Finding, Scan.org_id).join(Scan, Finding.scan_id == Scan.id)
+        sla_q = apply_scan_org_filter(sla_q, org_ids)
+        if scan_id:
+            sla_q = sla_q.filter(Finding.scan_id == scan_id)
+        sla_q = sla_q.filter(Finding.severity.in_(list(enabled_sevs)))
+        sla_findings = sla_q.all()
+    else:
+        sla_findings = []
 
     sla_counts = {"on_track": 0, "at_risk": 0, "breached": 0, "resolved": 0, "n/a": 0}
     mttr_by_sev = {4: [], 3: [], 2: [], 1: [], 0: []}
 
-    for f in sla_findings:
+    for f, f_org_id in sla_findings:
         status = f.sla_status or "n/a"
         sla_counts[status] = sla_counts.get(status, 0) + 1
         if f.resolved_at and f.sla_due_date:
-            cfg = _cfg_for(f.org_id).get(f.severity)
+            cfg = _cfg_for(f_org_id).get(f.severity)
             if cfg:
                 obs_date = f.sla_due_date - timedelta(days=cfg.days_to_remediate)
                 days = (f.resolved_at - obs_date).total_seconds() / 86400

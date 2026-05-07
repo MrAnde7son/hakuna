@@ -552,7 +552,7 @@ def get_risk_grade(
 
     # ── Gather SLA data ──
     from services.sla_engine import get_sla_configs_for_org
-    sla_q = db.query(Finding).join(Scan, Finding.scan_id == Scan.id)
+    sla_q = db.query(Finding, Scan.org_id).join(Scan, Finding.scan_id == Scan.id)
     sla_q = apply_scan_org_filter(sla_q, org_ids)
     if scan_id:
         sla_q = sla_q.filter(Finding.scan_id == scan_id)
@@ -580,11 +580,11 @@ def get_risk_grade(
 
     sla_counts = {"on_track": 0, "at_risk": 0, "breached": 0, "resolved": 0, "n/a": 0}
     mttr_vals = []
-    for f in sla_findings:
+    for f, f_org_id in sla_findings:
         status = f.sla_status or "n/a"
         sla_counts[status] = sla_counts.get(status, 0) + 1
         if f.resolved_at and f.sla_due_date:
-            cfg = _cfg_for(f.org_id).get(f.severity)
+            cfg = _cfg_for(f_org_id).get(f.severity)
             if cfg:
                 obs_date = f.sla_due_date - timedelta(days=cfg.days_to_remediate)
                 days = (f.resolved_at - obs_date).total_seconds() / 86400

@@ -23,6 +23,7 @@ from core.auth import (
     get_accessible_org_ids,
     get_current_user,
     require_permission,
+    resolve_active_org_id,
 )
 from core.database import get_db
 from core.time_utils import iso_utc
@@ -288,14 +289,14 @@ def list_frameworks(
     user: User = Depends(require_permission("page_compliance")),
     org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
-    """List frameworks visible to the caller's org.
+    """List frameworks visible to the active org.
 
-    Visible = built-in global packs (org_id IS NULL) + this org's imported
-    private packs. Other tenants' private packs are filtered out at the
-    query level. The per-org subscription layer adds the ``subscribed``
-    boolean for the caller's primary org.
+    Visible = built-in global packs (org_id IS NULL) + the active org's
+    imported private packs. Other tenants' private packs are filtered out
+    at the query level. The subscription layer adds ``subscribed`` for the
+    active org so MSSPs see the right state per child tenant.
     """
-    org_id = user.org_id
+    org_id = resolve_active_org_id(user, org_ids)
     fw_q = db.query(ComplianceFramework)
     if org_id is not None:
         fw_q = fw_q.filter(or_(
@@ -329,13 +330,14 @@ def subscribe_to_framework(
     body: SubscriptionCreate,
     db: Session = Depends(get_db),
     user: User = Depends(require_permission("page_compliance")),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
-    """Enable a framework for the user's org. Idempotent — re-calling with
+    """Enable a framework for the active org. Idempotent — re-calling with
     a new scope_rule updates the existing subscription rather than failing."""
-    fw = _get_framework_or_404(db, slug, org_id=user.org_id)
-    org_id = user.org_id
+    org_id = resolve_active_org_id(user, org_ids)
     if not org_id:
         raise HTTPException(400, "user has no org_id")
+    fw = _get_framework_or_404(db, slug, org_id=org_id)
 
     sub = (
         db.query(OrgFrameworkSubscription)
@@ -372,9 +374,10 @@ def unsubscribe_from_framework(
     slug: str,
     db: Session = Depends(get_db),
     user: User = Depends(require_permission("page_compliance")),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
-    fw = _get_framework_or_404(db, slug, org_id=user.org_id)
-    org_id = user.org_id
+    org_id = resolve_active_org_id(user, org_ids)
+    fw = _get_framework_or_404(db, slug, org_id=org_id)
     sub = (
         db.query(OrgFrameworkSubscription)
         .filter_by(org_id=org_id, framework_id=fw.id)
@@ -395,9 +398,10 @@ def update_scope(
     body: ScopeUpdate,
     db: Session = Depends(get_db),
     user: User = Depends(require_permission("page_compliance")),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
-    fw = _get_framework_or_404(db, slug, org_id=user.org_id)
-    org_id = user.org_id
+    org_id = resolve_active_org_id(user, org_ids)
+    fw = _get_framework_or_404(db, slug, org_id=org_id)
     sub = (
         db.query(OrgFrameworkSubscription)
         .filter_by(org_id=org_id, framework_id=fw.id)
@@ -437,6 +441,7 @@ def export_framework(
     slug: str,
     db: Session = Depends(get_db),
     user: User = Depends(require_permission("page_compliance")),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
     """Serialize a framework + controls + mappings back to YAML.
 
@@ -445,7 +450,7 @@ def export_framework(
     design (auditors often want to inspect the rules), and tenant-private
     packs are already org-scoped via _get_framework_or_404.
     """
-    fw = _get_framework_or_404(db, slug, org_id=user.org_id)
+    fw = _get_framework_or_404(db, slug, org_id=resolve_active_org_id(user, org_ids))
     yaml_body = framework_to_yaml(db, fw)
     filename = f"compliance_{fw.slug}_{fw.version}.yaml".replace(" ", "_")
     return PlainTextResponse(
@@ -460,15 +465,16 @@ def import_framework(
     body: FrameworkImport,
     db: Session = Depends(get_db),
     user: User = Depends(require_permission("page_compliance")),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
     """Load a tenant-private framework from YAML.
 
-    Imports always land at org_id=user.org_id; never as a global builtin.
+    Imports land in the active org context; never as a global builtin.
     Re-importing the same YAML (same SHA) under the same tenant is a
     no-op and returns status="skipped". Validation errors return 400 with
     the exact mapping/field that failed so the uploader can fix it.
     """
-    org_id = user.org_id
+    org_id = resolve_active_org_id(user, org_ids)
     if not org_id:
         raise HTTPException(400, "user has no org_id")
 
@@ -502,6 +508,7 @@ def delete_imported_framework(
     slug: str,
     db: Session = Depends(get_db),
     user: User = Depends(require_permission("page_compliance")),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
     """Delete a tenant-imported framework.
 
@@ -510,7 +517,7 @@ def delete_imported_framework(
     cascade on framework_id removes controls, mappings, releases, and via
     the tenant-tables' cascades the per-org status / report rows.
     """
-    org_id = user.org_id
+    org_id = resolve_active_org_id(user, org_ids)
     if not org_id:
         raise HTTPException(400, "user has no org_id")
 
@@ -549,10 +556,11 @@ def list_controls(
     page_size: int = Query(50, ge=1, le=500),
     db: Session = Depends(get_db),
     user: User = Depends(require_permission("page_compliance")),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
-    """List controls under a framework with the caller-org's status per row."""
-    fw = _get_framework_or_404(db, slug, org_id=user.org_id)
-    org_id = user.org_id
+    """List controls under a framework with the active-org's status per row."""
+    org_id = resolve_active_org_id(user, org_ids)
+    fw = _get_framework_or_404(db, slug, org_id=org_id)
 
     q = db.query(ComplianceControl).filter(ComplianceControl.framework_id == fw.id)
     if domain:
@@ -612,11 +620,12 @@ def get_control(
     control_id: int,
     db: Session = Depends(get_db),
     user: User = Depends(require_permission("page_compliance")),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
     ctrl = db.query(ComplianceControl).filter_by(id=control_id).first()
     if ctrl is None:
         raise HTTPException(404, "control not found")
-    org_id = user.org_id
+    org_id = resolve_active_org_id(user, org_ids)
     status = (
         db.query(ComplianceControlStatus)
         .filter_by(org_id=org_id, control_id=control_id)
@@ -829,12 +838,13 @@ def create_campaign_from_control(
     body: CampaignFromControlCreate,
     db: Session = Depends(get_db),
     user: User = Depends(require_permission("page_compliance")),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
     """Spin up a remediation campaign scoped to one compliance control —
     optionally bundling sibling controls via ``also_include_control_ids``.
     The campaign's finding set is frozen at creation time (point-in-time
     snapshot) from ``compliance_finding_status``."""
-    org_id = user.org_id
+    org_id = resolve_active_org_id(user, org_ids)
     if not org_id:
         raise HTTPException(400, "user has no org_id")
 
@@ -885,10 +895,11 @@ def create_campaign_from_framework(
     body: CampaignFromFrameworkCreate,
     db: Session = Depends(get_db),
     user: User = Depends(require_permission("page_compliance")),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
     """Bundle every failing control of a framework into a single campaign.
     Useful for "remediate all of HIPAA" style audit pushes."""
-    org_id = user.org_id
+    org_id = resolve_active_org_id(user, org_ids)
     if not org_id:
         raise HTTPException(400, "user has no org_id")
 
@@ -948,6 +959,7 @@ def create_compensating_control(
     body: CompensatingControlCreate,
     db: Session = Depends(get_db),
     user: User = Depends(require_permission("page_compliance")),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
     """Document a compensating control for a compliance control. Optionally
     bridges to an existing FindingException of type compensating_control —
@@ -956,7 +968,7 @@ def create_compensating_control(
     ctrl = db.query(ComplianceControl).filter_by(id=control_id).first()
     if ctrl is None:
         raise HTTPException(404, "control not found")
-    org_id = user.org_id
+    org_id = resolve_active_org_id(user, org_ids)
     if not org_id:
         raise HTTPException(400, "user has no org_id")
 
@@ -1006,15 +1018,15 @@ def delete_compensating_control(
     cc_id: int,
     db: Session = Depends(get_db),
     user: User = Depends(require_permission("page_compliance")),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
-    org_id = user.org_id
-    cc = (
-        db.query(ComplianceCompensatingControl)
-        .filter_by(id=cc_id, org_id=org_id)
-        .first()
-    )
+    cc_q = db.query(ComplianceCompensatingControl).filter_by(id=cc_id)
+    if org_ids is not None:
+        cc_q = cc_q.filter(ComplianceCompensatingControl.org_id.in_(org_ids))
+    cc = cc_q.first()
     if cc is None:
         raise HTTPException(404, "compensating control not found")
+    org_id = cc.org_id
     control_id = cc.control_id
     db.delete(cc)
     db.flush()
@@ -1102,6 +1114,7 @@ def create_report(
     body: ReportCreate,
     db: Session = Depends(get_db),
     user: User = Depends(require_permission("page_compliance")),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
     """Generate a compliance report. v1 supports csv | json.
 
@@ -1124,7 +1137,7 @@ def create_report(
             400,
             f"Unsupported format {fmt!r}; expected one of {sorted(REPORT_SUPPORTED_FORMATS)}",
         )
-    org_id = user.org_id
+    org_id = resolve_active_org_id(user, org_ids)
     if not org_id:
         raise HTTPException(400, "user has no org_id")
     fw = _get_framework_or_404(db, body.framework_slug, org_id=org_id)

@@ -14,7 +14,7 @@ from passlib.context import CryptContext
 from sqlalchemy.orm import Session
 
 from core.database import get_db
-from core.auth import get_current_user, require_auth, get_accessible_org_ids
+from core.auth import get_current_user, require_auth, get_accessible_org_ids, resolve_active_org_id
 from core.time_utils import iso_utc
 from models.models import Organization, RelayAgent, Integration
 from routes.internal_relay_routes import ensure_cloud_relay_for_org
@@ -141,9 +141,10 @@ async def create_agent(
     body: CreateAgentRequest,
     db: Session = Depends(get_db),
     current_user = Depends(get_current_user),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
     """Create a new relay agent and return the one-time token."""
-    org_id = current_user.org_id
+    org_id = resolve_active_org_id(current_user, org_ids)
 
     # Generate a secure token
     raw_token = TOKEN_PREFIX + secrets.token_urlsafe(48)
@@ -198,11 +199,12 @@ async def update_agent(
     body: UpdateAgentRequest,
     db: Session = Depends(get_db),
     current_user = Depends(get_current_user),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
-    org_id = current_user.org_id
-    agent = db.query(RelayAgent).filter(
-        RelayAgent.id == agent_id, RelayAgent.org_id == org_id
-    ).first()
+    q = db.query(RelayAgent).filter(RelayAgent.id == agent_id)
+    if org_ids is not None:
+        q = q.filter(RelayAgent.org_id.in_(org_ids))
+    agent = q.first()
     if not agent:
         raise HTTPException(404, "Relay agent not found")
     _reject_if_managed(agent, "modify")
@@ -227,11 +229,12 @@ async def delete_agent(
     agent_id: str,
     db: Session = Depends(get_db),
     current_user = Depends(get_current_user),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
-    org_id = current_user.org_id
-    agent = db.query(RelayAgent).filter(
-        RelayAgent.id == agent_id, RelayAgent.org_id == org_id
-    ).first()
+    q = db.query(RelayAgent).filter(RelayAgent.id == agent_id)
+    if org_ids is not None:
+        q = q.filter(RelayAgent.org_id.in_(org_ids))
+    agent = q.first()
     if not agent:
         raise HTTPException(404, "Relay agent not found")
     _reject_if_managed(agent, "delete")
@@ -256,12 +259,13 @@ async def rotate_token(
     agent_id: str,
     db: Session = Depends(get_db),
     current_user = Depends(get_current_user),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
     """Generate a new token for an agent (invalidates the old one)."""
-    org_id = current_user.org_id
-    agent = db.query(RelayAgent).filter(
-        RelayAgent.id == agent_id, RelayAgent.org_id == org_id
-    ).first()
+    q = db.query(RelayAgent).filter(RelayAgent.id == agent_id)
+    if org_ids is not None:
+        q = q.filter(RelayAgent.org_id.in_(org_ids))
+    agent = q.first()
     if not agent:
         raise HTTPException(404, "Relay agent not found")
     _reject_if_managed(agent, "rotate the token for")

@@ -12,8 +12,13 @@ from services import credential_vault
 logger = logging.getLogger(__name__)
 
 
-async def load_credentials(db, credentials_id: str, org_id: str) -> dict:
+async def load_credentials(db, credentials_id: str, org_scope) -> dict:
     """Decrypt credentials, auto-refreshing OAuth2 tokens if expired or near expiry.
+
+    `org_scope` accepts either a single org_id (legacy callers) or a list of
+    accessible org IDs (preferred — narrows by `org_id IN (...)`). Pass `None`
+    only for trusted internal callers (e.g. background workers) that have
+    already validated tenancy themselves.
 
     Handles two refresh strategies:
       - refresh_token grant (standard OAuth2)
@@ -21,10 +26,12 @@ async def load_credentials(db, credentials_id: str, org_id: str) -> dict:
     """
     from models.models import IntegrationCredential
 
-    cred = db.query(IntegrationCredential).filter(
-        IntegrationCredential.id == credentials_id,
-        IntegrationCredential.org_id == org_id,
-    ).first()
+    q = db.query(IntegrationCredential).filter(IntegrationCredential.id == credentials_id)
+    if isinstance(org_scope, (list, tuple, set)):
+        q = q.filter(IntegrationCredential.org_id.in_(list(org_scope)))
+    elif org_scope is not None:
+        q = q.filter(IntegrationCredential.org_id == org_scope)
+    cred = q.first()
     if not cred:
         return {}
 

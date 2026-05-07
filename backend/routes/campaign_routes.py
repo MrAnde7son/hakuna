@@ -13,6 +13,7 @@ from sqlalchemy import desc
 
 from core.database import get_db
 from core.auth import (
+    resolve_active_org_id,
     get_current_user, get_current_principal, get_accessible_org_ids, apply_org_filter,
     assert_can_access_campaign, CollaboratorPrincipal,
     generate_invite_token, hash_invite_token, create_collaborator_token,
@@ -414,10 +415,15 @@ def advanced_search(
 
 
 @router.post("/api/campaigns", dependencies=[Depends(check_campaign_limit)])
-def create_campaign(body: CampaignCreateBody, db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user)):
-    """Create a new remediation campaign."""
+def create_campaign(
+    body: CampaignCreateBody,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    """Create a new remediation campaign in the active org context."""
     campaign = Campaign(
-        org_id=user.org_id if user else None,
+        org_id=resolve_active_org_id(user, org_ids) if user else None,
         name=body.name,
         description=body.description,
         scan_id=body.scan_id,
@@ -546,11 +552,13 @@ def get_campaign(
 
 
 @router.patch("/api/campaigns/{campaign_id}")
-def update_campaign(campaign_id: int, body: CampaignUpdateBody, db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user)):
+def update_campaign(
+    campaign_id: int, body: CampaignUpdateBody,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user),
+):
     """Update campaign metadata or query."""
-    campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
-    if not campaign:
-        raise HTTPException(404, "Campaign not found")
+    campaign = assert_can_access_campaign(db, user, campaign_id)
     _old_c = {"name": campaign.name, "status": campaign.status, "description": campaign.description}
     if body.name is not None:
         campaign.name = body.name
@@ -572,11 +580,13 @@ def update_campaign(campaign_id: int, body: CampaignUpdateBody, db: Session = De
 
 
 @router.delete("/api/campaigns/{campaign_id}")
-def delete_campaign(campaign_id: int, db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user)):
+def delete_campaign(
+    campaign_id: int,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user),
+):
     """Delete a campaign and its finding associations."""
-    campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
-    if not campaign:
-        raise HTTPException(404, "Campaign not found")
+    campaign = assert_can_access_campaign(db, user, campaign_id)
     _c_name, _c_org = campaign.name, campaign.org_id
     db.delete(campaign)
     log_audit(db, "delete", "campaign", campaign_id, entity_name=_c_name, actor=user, org_id=_c_org)
@@ -764,11 +774,13 @@ def get_campaign_tickets(
 
 
 @router.post("/api/campaigns/{campaign_id}/slack-channel")
-def create_campaign_slack_channel(campaign_id: int, db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user)):
+def create_campaign_slack_channel(
+    campaign_id: int,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user),
+):
     """Create a Slack channel for a campaign and invite all collaborators."""
-    campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
-    if not campaign:
-        raise HTTPException(404, "Campaign not found")
+    campaign = assert_can_access_campaign(db, user, campaign_id)
 
     # Collect collaborator emails from campaign findings owner groups
     owner_groups = _group_findings_by_owner(campaign.findings)

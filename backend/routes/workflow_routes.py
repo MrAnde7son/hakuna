@@ -15,8 +15,9 @@ from sqlalchemy.orm import Session
 
 from core.database import get_db
 from core.auth import (
-    get_current_user, get_current_principal, get_accessible_org_ids, apply_org_filter,
-    CollaboratorPrincipal, user_can_access_org,
+    get_current_user, get_current_principal, get_accessible_org_ids,
+    get_principal_accessible_org_ids, apply_org_filter,
+    CollaboratorPrincipal, user_can_access_org, resolve_active_org_id,
 )
 from core.audit import log_audit, diff as _diff
 from core.time_utils import iso_utc
@@ -166,15 +167,20 @@ def create_workflow_from_template_endpoint(
     body: WorkflowCreateFromTemplate,
     db: Session = Depends(get_db),
     principal=Depends(get_current_principal),
+    org_ids: Optional[List[int]] = Depends(get_principal_accessible_org_ids),
 ):
     """Create a workflow from an OOTB template."""
     _assert_collaborator_can_target_campaign(principal, body.campaign_id)
     try:
         wf = workflow_engine.create_workflow_from_template(
             db, body.template_id, name=body.name, campaign_id=body.campaign_id)
+        # Land the workflow in the active org context (X-Org-Context for users,
+        # campaign org for collaborators).
         if isinstance(principal, CollaboratorPrincipal):
             wf.org_id = principal.org_id
-            db.commit()
+        elif principal is not None:
+            wf.org_id = resolve_active_org_id(principal, org_ids)
+        db.commit()
         d = _workflow_to_dict(wf)
         d["nodes"] = [_node_to_dict(n) for n in wf.nodes]
         d["edges"] = [_edge_to_dict(e) for e in wf.edges]
@@ -224,6 +230,7 @@ def create_workflow_from_generated(
     body: WorkflowFromGeneratedBody,
     db: Session = Depends(get_db),
     principal=Depends(get_current_principal),
+    org_ids: Optional[List[int]] = Depends(get_principal_accessible_org_ids),
 ):
     """Persist an LLM-generated workflow as a draft.
 
@@ -236,7 +243,7 @@ def create_workflow_from_generated(
         user = None
     else:
         user = principal
-        org_id = user.org_id if user else None
+        org_id = resolve_active_org_id(user, org_ids) if user else None
     wf = Workflow(
         org_id=org_id,
         name=body.name,
@@ -289,6 +296,7 @@ def create_workflow(
     body: WorkflowCreate,
     db: Session = Depends(get_db),
     principal=Depends(get_current_principal),
+    org_ids: Optional[List[int]] = Depends(get_principal_accessible_org_ids),
 ):
     _assert_collaborator_can_target_campaign(principal, body.campaign_id)
     if isinstance(principal, CollaboratorPrincipal):
@@ -296,7 +304,7 @@ def create_workflow(
         user = None
     else:
         user = principal
-        org_id = user.org_id if user else None
+        org_id = resolve_active_org_id(user, org_ids) if user else None
     wf = Workflow(
         org_id=org_id,
         name=body.name,
@@ -319,6 +327,7 @@ def list_workflows(
     campaign_id: Optional[int] = None,
     db: Session = Depends(get_db),
     principal=Depends(get_current_principal),
+    org_ids: Optional[List[int]] = Depends(get_principal_accessible_org_ids),
 ):
     if principal is None:
         raise HTTPException(401, "Authentication required")
@@ -329,22 +338,6 @@ def list_workflows(
         if campaign_id is not None and campaign_id != principal.campaign_id:
             return []
     else:
-        # Reuse get_accessible_org_ids inline to avoid double dependency.
-        from core.auth import get_accessible_org_ids as _gao  # noqa
-        # Build org_ids manually (synchronous)
-        if principal.role == "superadmin":
-            org_ids = None
-        else:
-            from models.models import Organization, MSSPOrgAccess
-            accessible = {principal.org_id}
-            org = db.query(Organization).filter(Organization.id == principal.org_id).first()
-            if org and org.org_type == "mssp":
-                links = db.query(MSSPOrgAccess.client_org_id).filter(
-                    MSSPOrgAccess.mssp_org_id == principal.org_id,
-                    MSSPOrgAccess.is_active == True,
-                ).all()
-                accessible.update(row[0] for row in links)
-            org_ids = list(accessible)
         q = apply_org_filter(q, Workflow, org_ids)
         if campaign_id is not None:
             q = q.filter(Workflow.campaign_id == campaign_id)

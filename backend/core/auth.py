@@ -569,6 +569,21 @@ async def get_principal_accessible_org_ids(
     return compute_accessible_org_ids(principal, db, x_org_context)
 
 
+def resolve_active_org_id(user: User, org_ids: Optional[List[int]]) -> int:
+    """Resolve which org a write should land in.
+
+    - X-Org-Context selected (or single accessible org) → that org.
+    - Multiple accessible orgs (MSSP unscoped) → home org.
+    - superadmin without X-Org-Context (`org_ids is None`) → home org.
+
+    Mirrors the read-side `get_active_org` pattern so writes land in the same
+    org the user is currently viewing in the UI.
+    """
+    if org_ids and len(org_ids) == 1:
+        return org_ids[0]
+    return user.org_id
+
+
 def apply_org_filter(query, model, org_ids: Optional[List[int]]):
     """Apply tenant filtering to a SQLAlchemy query.
 

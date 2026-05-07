@@ -13,6 +13,7 @@ from core.database import get_db
 from core.auth import (
     get_current_user, require_auth, get_current_principal, CollaboratorPrincipal,
     get_accessible_org_ids, get_principal_accessible_org_ids,
+    resolve_active_org_id,
 )
 from core.time_utils import iso_utc
 from models.models import (
@@ -202,15 +203,18 @@ class CredentialCreate(BaseModel):
 
 @router.post("/credentials")
 def create_credential(body: CredentialCreate, db: Session = Depends(get_db),
-                       principal=Depends(get_current_principal)):
-    if principal is None:
-        raise HTTPException(401, "Authentication required")
+                       user: User = Depends(require_auth),
+                       org_ids: Optional[list] = Depends(get_accessible_org_ids)):
+    """Credentials are created in the active org context (X-Org-Context),
+    so MSSP users managing a child tenant can mint that tenant's credentials
+    without switching their home org."""
+    target_org = resolve_active_org_id(user, org_ids)
     try:
         encrypted = credential_vault.encrypt(body.values)
     except Exception as e:
         raise HTTPException(500, f"Failed to encrypt credentials: {e}")
     cred = IntegrationCredential(
-        org_id=principal.org_id,
+        org_id=target_org,
         name=body.name,
         connector_id=body.connector_id,
         auth_type=body.auth_type,
@@ -289,11 +293,12 @@ def get_credential(credential_id: str, db: Session = Depends(get_db),
 @router.patch("/credentials/{credential_id}")
 def update_credential(credential_id: str, body: CredentialUpdate,
                        db: Session = Depends(get_db),
-                       user: User = Depends(require_auth)):
-    cred = db.query(IntegrationCredential).filter(
-        IntegrationCredential.id == credential_id,
-        IntegrationCredential.org_id == user.org_id,
-    ).first()
+                       user: User = Depends(require_auth),
+                       org_ids: Optional[list] = Depends(get_accessible_org_ids)):
+    q = db.query(IntegrationCredential).filter(IntegrationCredential.id == credential_id)
+    if org_ids is not None:
+        q = q.filter(IntegrationCredential.org_id.in_(org_ids))
+    cred = q.first()
     if not cred:
         raise HTTPException(404, "Credential not found")
     if body.name is not None:
@@ -325,11 +330,12 @@ def update_credential(credential_id: str, body: CredentialUpdate,
 
 @router.delete("/credentials/{credential_id}")
 def delete_credential(credential_id: str, db: Session = Depends(get_db),
-                       user: User = Depends(require_auth)):
-    cred = db.query(IntegrationCredential).filter(
-        IntegrationCredential.id == credential_id,
-        IntegrationCredential.org_id == user.org_id,
-    ).first()
+                       user: User = Depends(require_auth),
+                       org_ids: Optional[list] = Depends(get_accessible_org_ids)):
+    q = db.query(IntegrationCredential).filter(IntegrationCredential.id == credential_id)
+    if org_ids is not None:
+        q = q.filter(IntegrationCredential.org_id.in_(org_ids))
+    cred = q.first()
     if not cred:
         raise HTTPException(404, "Credential not found")
     db.delete(cred)
@@ -446,7 +452,8 @@ def _trim_raw_response(raw, max_items=20):
 
 @router.post("/connect")
 async def live_connect(body: ConnectRequest, db: Session = Depends(get_db),
-                        user: User = Depends(require_auth)):
+                        user: User = Depends(require_auth),
+                        org_ids: Optional[list] = Depends(get_accessible_org_ids)):
     """Make a live call and return raw response + detected paths. No DB write."""
     import asyncio
     from services.transports.api_transport import ApiTransport
@@ -462,7 +469,7 @@ async def live_connect(body: ConnectRequest, db: Session = Depends(get_db),
         raise HTTPException(400, f"Unsupported transport: {body.transport_type}")
 
     try:
-        credentials = await _load_credentials(db, body.credentials_id, user.org_id) if body.credentials_id else {}
+        credentials = await _load_credentials(db, body.credentials_id, org_ids) if body.credentials_id else {}
 
         config = body.transport_config
         if body.records_path:
@@ -569,7 +576,8 @@ class PreviewRequest(BaseModel):
 
 @router.post("/preview")
 async def preview_mapping(body: PreviewRequest, db: Session = Depends(get_db),
-                           user: User = Depends(require_auth)):
+                           user: User = Depends(require_auth),
+                           org_ids: Optional[list] = Depends(get_accessible_org_ids)):
     """Preview mapped records without writing to DB."""
     from services.transports.api_transport import ApiTransport
     from services.transports.file_transport import FileTransport
@@ -587,7 +595,7 @@ async def preview_mapping(body: PreviewRequest, db: Session = Depends(get_db),
         if body.sample_records:
             samples = body.sample_records
         else:
-            credentials = await _load_credentials(db, body.credentials_id, user.org_id) if body.credentials_id else {}
+            credentials = await _load_credentials(db, body.credentials_id, org_ids) if body.credentials_id else {}
 
             config = body.transport_config
             if body.records_path:
@@ -686,12 +694,16 @@ def list_integrations(
 
 @router.post("/integrations")
 def create_integration(body: IntegrationCreate, db: Session = Depends(get_db),
-                        principal=Depends(get_current_principal)):
+                        principal=Depends(get_current_principal),
+                        org_ids: Optional[list] = Depends(get_principal_accessible_org_ids)):
     if principal is None:
         raise HTTPException(401, "Authentication required")
     is_collab = isinstance(principal, CollaboratorPrincipal)
     user = None if is_collab else principal
-    org_id = principal.org_id
+    # Collaborators stay scoped to their campaign's org. For Users, write to
+    # the active org context (X-Org-Context) so MSSPs configure integrations
+    # for the child tenant they're viewing.
+    org_id = principal.org_id if is_collab else resolve_active_org_id(user, org_ids)
     campaign_id = principal.campaign_id if is_collab else None
     if body.direction not in ("pull", "push"):
         raise HTTPException(400, "direction must be 'pull' or 'push'")
@@ -771,7 +783,7 @@ def create_integration(body: IntegrationCreate, db: Session = Depends(get_db),
                 "direction": integration.direction,
                 "entity": integration.entity,
                 "enabled": integration.enabled,
-            }, org_id=user.org_id)
+            }, org_id=org_id)
         except Exception:
             pass
 
@@ -827,8 +839,9 @@ def get_integration(integration_id: str, db: Session = Depends(get_db),
 @router.put("/integrations/{integration_id}")
 def update_integration(integration_id: str, body: IntegrationUpdate,
                         db: Session = Depends(get_db),
-                        principal=Depends(get_current_principal)):
-    i = _get_integration_for_principal(db, integration_id, principal)
+                        principal=Depends(get_current_principal),
+                        org_ids: Optional[list] = Depends(get_principal_accessible_org_ids)):
+    i = _get_integration_for_principal(db, integration_id, principal, org_ids=org_ids)
     for field in ["name", "transport_config", "credentials_id", "records_path",
                    "field_map", "dedup_key", "params", "schedule", "enabled", "logo_url",
                    "relay_agent_id"]:
@@ -848,8 +861,9 @@ def update_integration(integration_id: str, body: IntegrationUpdate,
 
 @router.delete("/integrations/{integration_id}")
 def delete_integration(integration_id: str, db: Session = Depends(get_db),
-                        principal=Depends(get_current_principal)):
-    i = _get_integration_for_principal(db, integration_id, principal)
+                        principal=Depends(get_current_principal),
+                        org_ids: Optional[list] = Depends(get_principal_accessible_org_ids)):
+    i = _get_integration_for_principal(db, integration_id, principal, org_ids=org_ids)
     from services.integration_scheduler import deregister_integration
     deregister_integration(i.id)
     # Clean up associated ingest endpoints (webhook transport)
@@ -893,7 +907,8 @@ def get_webhook_info(integration_id: str, db: Session = Depends(get_db),
 
 @router.post("/integrations/{integration_id}/webhook/rotate")
 def rotate_webhook_credentials(integration_id: str, db: Session = Depends(get_db),
-                                user: User = Depends(require_auth)):
+                                user: User = Depends(require_auth),
+                                org_ids: Optional[list] = Depends(get_accessible_org_ids)):
     """Rotate the bearer token and HMAC secret for a webhook integration.
 
     Returns the new plaintext token and HMAC secret ONCE. The old credentials
@@ -902,14 +917,14 @@ def rotate_webhook_credentials(integration_id: str, db: Session = Depends(get_db
     import secrets as _secrets
     from passlib.hash import bcrypt
 
-    i = _get_integration_or_404(db, integration_id, user.org_id)
+    i = _get_integration_in_orgs(db, integration_id, org_ids)
     if i.transport_type != "webhook":
         raise HTTPException(400, "Integration is not a webhook transport")
 
-    ep = db.query(IngestEndpoint).filter(
-        IngestEndpoint.integration_id == integration_id,
-        IngestEndpoint.org_id == user.org_id,
-    ).first()
+    ep_q = db.query(IngestEndpoint).filter(IngestEndpoint.integration_id == integration_id)
+    if org_ids is not None:
+        ep_q = ep_q.filter(IngestEndpoint.org_id.in_(org_ids))
+    ep = ep_q.first()
     if not ep:
         raise HTTPException(404, "No ingest endpoint found for this integration")
 
@@ -933,8 +948,9 @@ def rotate_webhook_credentials(integration_id: str, db: Session = Depends(get_db
 
 @router.post("/integrations/{integration_id}/enable")
 def enable_integration(integration_id: str, db: Session = Depends(get_db),
-                        user: User = Depends(require_auth)):
-    i = _get_integration_or_404(db, integration_id, user.org_id)
+                        user: User = Depends(require_auth),
+                        org_ids: Optional[list] = Depends(get_accessible_org_ids)):
+    i = _get_integration_in_orgs(db, integration_id, org_ids)
     i.enabled = True
     db.commit()
     if i.schedule:
@@ -945,8 +961,9 @@ def enable_integration(integration_id: str, db: Session = Depends(get_db),
 
 @router.post("/integrations/{integration_id}/disable")
 def disable_integration(integration_id: str, db: Session = Depends(get_db),
-                         user: User = Depends(require_auth)):
-    i = _get_integration_or_404(db, integration_id, user.org_id)
+                         user: User = Depends(require_auth),
+                         org_ids: Optional[list] = Depends(get_accessible_org_ids)):
+    i = _get_integration_in_orgs(db, integration_id, org_ids)
     i.enabled = False
     db.commit()
     from services.integration_scheduler import deregister_integration
@@ -961,12 +978,13 @@ def disable_integration(integration_id: str, db: Session = Depends(get_db),
 @router.post("/integrations/{integration_id}/run")
 async def run_integration(integration_id: str, background_tasks: BackgroundTasks = None,
                            db: Session = Depends(get_db),
-                           principal=Depends(get_current_principal)):
+                           principal=Depends(get_current_principal),
+                           org_ids: Optional[list] = Depends(get_principal_accessible_org_ids)):
     """Trigger an integration run (executes in background)."""
     import asyncio
     from services.run_engine import execute
 
-    i = _get_integration_for_principal(db, integration_id, principal)
+    i = _get_integration_for_principal(db, integration_id, principal, org_ids=org_ids)
     user = None if isinstance(principal, CollaboratorPrincipal) else principal
 
     # Create a pending run record so we can return the run_id immediately
@@ -1161,9 +1179,10 @@ def _favicon_url(instance_url: str) -> str | None:
 
 @router.post("/integrations/{integration_id}/logo")
 def update_integration_logo(integration_id: str, body: dict,
-                            db: Session = Depends(get_db), user: User = Depends(require_auth)):
+                            db: Session = Depends(get_db), user: User = Depends(require_auth),
+                            org_ids: Optional[list] = Depends(get_accessible_org_ids)):
     """Update the logo URL for an integration. Pass {"logo_url": "..."} or {"auto": true}."""
-    i = _get_integration_or_404(db, integration_id, user.org_id)
+    i = _get_integration_in_orgs(db, integration_id, org_ids)
     if body.get("auto"):
         # Auto-fetch from instance URL
         if i.credentials_id:

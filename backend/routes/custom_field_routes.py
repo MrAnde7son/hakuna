@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 from datetime import datetime
 
 from core.database import get_db
-from core.auth import require_auth, get_accessible_org_ids
+from core.auth import require_auth, get_accessible_org_ids, resolve_active_org_id
 from core.time_utils import iso_utc
 from models.models import (
     User, CustomFieldDefinition, Asset, Finding, Scan,
@@ -246,8 +246,11 @@ def create_custom_field(
     body: CustomFieldCreate,
     db: Session = Depends(get_db),
     user: User = Depends(require_auth),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
-    org_id = _require_org(user)
+    org_id = resolve_active_org_id(user, org_ids)
+    if not org_id:
+        raise HTTPException(400, "User has no org context")
     _validate_definition(body)
 
     existing = db.query(CustomFieldDefinition).filter(
@@ -294,12 +297,12 @@ def update_custom_field(
     body: CustomFieldUpdate,
     db: Session = Depends(get_db),
     user: User = Depends(require_auth),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
-    org_id = _require_org(user)
-    definition = db.query(CustomFieldDefinition).filter(
-        CustomFieldDefinition.id == def_id,
-        CustomFieldDefinition.org_id == org_id,
-    ).first()
+    q = db.query(CustomFieldDefinition).filter(CustomFieldDefinition.id == def_id)
+    if org_ids is not None:
+        q = q.filter(CustomFieldDefinition.org_id.in_(org_ids))
+    definition = q.first()
     if not definition:
         raise HTTPException(404, "Custom field not found")
 
@@ -336,12 +339,12 @@ def delete_custom_field(
     def_id: int,
     db: Session = Depends(get_db),
     user: User = Depends(require_auth),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
-    org_id = _require_org(user)
-    definition = db.query(CustomFieldDefinition).filter(
-        CustomFieldDefinition.id == def_id,
-        CustomFieldDefinition.org_id == org_id,
-    ).first()
+    q = db.query(CustomFieldDefinition).filter(CustomFieldDefinition.id == def_id)
+    if org_ids is not None:
+        q = q.filter(CustomFieldDefinition.org_id.in_(org_ids))
+    definition = q.first()
     if not definition:
         raise HTTPException(404, "Custom field not found")
 
@@ -356,12 +359,12 @@ def backfill_custom_field(
     def_id: int,
     db: Session = Depends(get_db),
     user: User = Depends(require_auth),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
-    org_id = _require_org(user)
-    definition = db.query(CustomFieldDefinition).filter(
-        CustomFieldDefinition.id == def_id,
-        CustomFieldDefinition.org_id == org_id,
-    ).first()
+    q = db.query(CustomFieldDefinition).filter(CustomFieldDefinition.id == def_id)
+    if org_ids is not None:
+        q = q.filter(CustomFieldDefinition.org_id.in_(org_ids))
+    definition = q.first()
     if not definition:
         raise HTTPException(404, "Custom field not found")
     if definition.source_type == "manual":
@@ -375,13 +378,16 @@ def preview_custom_field(
     body: CustomFieldPreview,
     db: Session = Depends(get_db),
     user: User = Depends(require_auth),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
     """Resolve a tentative definition against a sample entity or record.
 
     Used by the UI to show a live preview while the user is editing the
     definition, before saving it.
     """
-    org_id = _require_org(user)
+    org_id = resolve_active_org_id(user, org_ids)
+    if not org_id:
+        raise HTTPException(400, "User has no org context")
     if body.entity_type not in VALID_ENTITIES:
         raise HTTPException(400, f"entity_type must be one of {sorted(VALID_ENTITIES)}")
     if body.source_type not in VALID_SOURCE_TYPES:

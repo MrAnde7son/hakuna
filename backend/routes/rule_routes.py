@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from core.database import get_db
-from core.auth import get_current_user, get_accessible_org_ids
+from core.auth import get_current_user, get_accessible_org_ids, resolve_active_org_id
 from core.audit import log_audit, diff as _diff
 from core.time_utils import iso_utc
 from models.models import (
@@ -233,9 +233,10 @@ def create_asset_type_rule(
     body: AssetTypeRuleCreate,
     db: Session = Depends(get_db),
     user: Optional[User] = Depends(get_current_user),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
     rule = AssetTypeRule(
-        org_id=user.org_id if user else None,
+        org_id=resolve_active_org_id(user, org_ids) if user else None,
         name=body.name,
         description=body.description,
         conditions=body.conditions,
@@ -258,12 +259,23 @@ def create_asset_type_rule(
     return _asset_type_rule_to_dict(rule)
 
 
-@router.get("/api/asset-type-rules/{rule_id}")
-def get_asset_type_rule(rule_id: int, db: Session = Depends(get_db)):
-    rule = db.query(AssetTypeRule).filter(AssetTypeRule.id == rule_id).first()
+def _get_asset_type_rule_in_orgs(db, rule_id, org_ids):
+    q = db.query(AssetTypeRule).filter(AssetTypeRule.id == rule_id)
+    if org_ids is not None:
+        q = q.filter(AssetTypeRule.org_id.in_(org_ids))
+    rule = q.first()
     if not rule:
         raise HTTPException(404, "Asset type rule not found")
-    return _asset_type_rule_to_dict(rule)
+    return rule
+
+
+@router.get("/api/asset-type-rules/{rule_id}")
+def get_asset_type_rule(
+    rule_id: int,
+    db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    return _asset_type_rule_to_dict(_get_asset_type_rule_in_orgs(db, rule_id, org_ids))
 
 
 @router.patch("/api/asset-type-rules/{rule_id}")
@@ -272,10 +284,9 @@ def update_asset_type_rule(
     body: AssetTypeRuleUpdate,
     db: Session = Depends(get_db),
     user: Optional[User] = Depends(get_current_user),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
-    rule = db.query(AssetTypeRule).filter(AssetTypeRule.id == rule_id).first()
-    if not rule:
-        raise HTTPException(404, "Asset type rule not found")
+    rule = _get_asset_type_rule_in_orgs(db, rule_id, org_ids)
     changes = {}
     for field in body.model_fields_set:
         val = getattr(body, field)
@@ -293,10 +304,9 @@ def delete_asset_type_rule(
     rule_id: int,
     db: Session = Depends(get_db),
     user: Optional[User] = Depends(get_current_user),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
-    rule = db.query(AssetTypeRule).filter(AssetTypeRule.id == rule_id).first()
-    if not rule:
-        raise HTTPException(404, "Asset type rule not found")
+    rule = _get_asset_type_rule_in_orgs(db, rule_id, org_ids)
     log_audit(db, "delete", "asset_type_rule", rule.id,
               entity_name=rule.name, actor=user)
     db.delete(rule)
@@ -404,10 +414,25 @@ def list_ownership_rules(
     return [_ownership_rule_to_dict(r) for r in rules]
 
 
+def _get_ownership_rule_in_orgs(db, rule_id, org_ids):
+    q = db.query(OwnershipRule).filter(OwnershipRule.id == rule_id)
+    if org_ids is not None:
+        q = q.filter(OwnershipRule.org_id.in_(org_ids))
+    rule = q.first()
+    if not rule:
+        raise HTTPException(404, "Rule not found")
+    return rule
+
+
 @router.post("/api/ownership-rules")
-def create_ownership_rule(body: OwnershipRuleCreate, db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user)):
+def create_ownership_rule(
+    body: OwnershipRuleCreate,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
     rule = OwnershipRule(
-        org_id=user.org_id if user else None,
+        org_id=resolve_active_org_id(user, org_ids) if user else None,
         name=body.name,
         description=body.description,
         target_type=body.target_type,
@@ -429,10 +454,12 @@ def create_ownership_rule(body: OwnershipRuleCreate, db: Session = Depends(get_d
 
 
 @router.patch("/api/ownership-rules/{rule_id}")
-def update_ownership_rule(rule_id: int, body: OwnershipRuleUpdate, db: Session = Depends(get_db)):
-    rule = db.query(OwnershipRule).filter(OwnershipRule.id == rule_id).first()
-    if not rule:
-        raise HTTPException(404, "Rule not found")
+def update_ownership_rule(
+    rule_id: int, body: OwnershipRuleUpdate,
+    db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    rule = _get_ownership_rule_in_orgs(db, rule_id, org_ids)
     for field in ("name", "description", "target_type", "conditions", "condition_logic",
                   "priority", "owner_name", "owner_email", "owner_role", "team",
                   "notes", "overwrite_existing", "is_enabled"):
@@ -444,10 +471,12 @@ def update_ownership_rule(rule_id: int, body: OwnershipRuleUpdate, db: Session =
 
 
 @router.delete("/api/ownership-rules/{rule_id}")
-def delete_ownership_rule(rule_id: int, db: Session = Depends(get_db)):
-    rule = db.query(OwnershipRule).filter(OwnershipRule.id == rule_id).first()
-    if not rule:
-        raise HTTPException(404, "Rule not found")
+def delete_ownership_rule(
+    rule_id: int,
+    db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    rule = _get_ownership_rule_in_orgs(db, rule_id, org_ids)
     db.delete(rule)
     db.commit()
     return {"message": "Rule deleted"}
@@ -458,10 +487,9 @@ def run_ownership_rule_endpoint(
     rule_id: int,
     scan_id: Optional[int] = None,
     db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
-    rule = db.query(OwnershipRule).filter(OwnershipRule.id == rule_id).first()
-    if not rule:
-        raise HTTPException(404, "Rule not found")
+    rule = _get_ownership_rule_in_orgs(db, rule_id, org_ids)
     count = tag_engine.run_ownership_rule(rule, db, scan_id=scan_id)
     return {"updated": count, "rule_id": rule_id}
 
@@ -546,10 +574,25 @@ def list_external_tag_sources(
     return [_ext_source_to_dict(s) for s in sources]
 
 
+def _get_ext_source_in_orgs(db, source_id, org_ids):
+    q = db.query(ExternalTagSource).filter(ExternalTagSource.id == source_id)
+    if org_ids is not None:
+        q = q.filter(ExternalTagSource.org_id.in_(org_ids))
+    src = q.first()
+    if not src:
+        raise HTTPException(404, "Source not found")
+    return src
+
+
 @router.post("/api/external-tag-sources")
-def create_external_tag_source(body: ExternalTagSourceCreate, db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user)):
+def create_external_tag_source(
+    body: ExternalTagSourceCreate,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
     src = ExternalTagSource(
-        org_id=user.org_id if user else None,
+        org_id=resolve_active_org_id(user, org_ids) if user else None,
         name=body.name,
         source_type=body.source_type,
         match_field=body.match_field,
@@ -564,10 +607,12 @@ def create_external_tag_source(body: ExternalTagSourceCreate, db: Session = Depe
 
 
 @router.patch("/api/external-tag-sources/{source_id}")
-def update_external_tag_source(source_id: int, body: ExternalTagSourceUpdate, db: Session = Depends(get_db)):
-    src = db.query(ExternalTagSource).filter(ExternalTagSource.id == source_id).first()
-    if not src:
-        raise HTTPException(404, "Source not found")
+def update_external_tag_source(
+    source_id: int, body: ExternalTagSourceUpdate,
+    db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    src = _get_ext_source_in_orgs(db, source_id, org_ids)
     for field in ("name", "source_type", "match_field", "api_url", "api_config", "auto_create_tags"):
         val = getattr(body, field)
         if val is not None:
@@ -577,10 +622,12 @@ def update_external_tag_source(source_id: int, body: ExternalTagSourceUpdate, db
 
 
 @router.delete("/api/external-tag-sources/{source_id}")
-def delete_external_tag_source(source_id: int, db: Session = Depends(get_db)):
-    src = db.query(ExternalTagSource).filter(ExternalTagSource.id == source_id).first()
-    if not src:
-        raise HTTPException(404, "Source not found")
+def delete_external_tag_source(
+    source_id: int,
+    db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    src = _get_ext_source_in_orgs(db, source_id, org_ids)
     db.delete(src)
     db.commit()
     return {"message": "Deleted"}
@@ -589,10 +636,12 @@ def delete_external_tag_source(source_id: int, db: Session = Depends(get_db)):
 # ── Tag maps per source ───────────────────────────────────
 
 @router.post("/api/external-tag-sources/{source_id}/maps")
-def upsert_external_tag_map(source_id: int, body: ExternalTagMapCreate, db: Session = Depends(get_db)):
-    src = db.query(ExternalTagSource).filter(ExternalTagSource.id == source_id).first()
-    if not src:
-        raise HTTPException(404, "Source not found")
+def upsert_external_tag_map(
+    source_id: int, body: ExternalTagMapCreate,
+    db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    src = _get_ext_source_in_orgs(db, source_id, org_ids)
     if body.internal_tag_id:
         if not db.query(Tag).filter(Tag.id == body.internal_tag_id).first():
             raise HTTPException(404, "Internal tag not found")
@@ -618,7 +667,12 @@ def upsert_external_tag_map(source_id: int, body: ExternalTagMapCreate, db: Sess
 
 
 @router.delete("/api/external-tag-sources/{source_id}/maps/{map_id}")
-def delete_external_tag_map(source_id: int, map_id: int, db: Session = Depends(get_db)):
+def delete_external_tag_map(
+    source_id: int, map_id: int,
+    db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    _get_ext_source_in_orgs(db, source_id, org_ids)
     m = db.query(ExternalTagMap).filter(ExternalTagMap.id == map_id, ExternalTagMap.source_id == source_id).first()
     if not m:
         raise HTTPException(404, "Map not found")
@@ -634,11 +688,10 @@ async def import_external_tags(
     source_id: int,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
     """Upload a CSV file to apply external tags. Expected columns: identifier, tags."""
-    src = db.query(ExternalTagSource).filter(ExternalTagSource.id == source_id).first()
-    if not src:
-        raise HTTPException(404, "Source not found")
+    src = _get_ext_source_in_orgs(db, source_id, org_ids)
     try:
         content = (await file.read()).decode("utf-8-sig")  # strip BOM
         rows = tag_engine.parse_csv_rows(content)
@@ -651,11 +704,13 @@ async def import_external_tags(
 
 
 @router.post("/api/external-tag-sources/{source_id}/sync")
-def sync_external_tag_source(source_id: int, db: Session = Depends(get_db)):
+def sync_external_tag_source(
+    source_id: int,
+    db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
     """Pull tags from a remote API source (ServiceNow, etc.) and apply them."""
-    src = db.query(ExternalTagSource).filter(ExternalTagSource.id == source_id).first()
-    if not src:
-        raise HTTPException(404, "Source not found")
+    src = _get_ext_source_in_orgs(db, source_id, org_ids)
     if src.source_type == "servicenow":
         try:
             stats = tag_engine.sync_servicenow_source(src, db)
