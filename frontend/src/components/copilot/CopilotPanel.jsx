@@ -246,6 +246,24 @@ const CONTEXTUAL_PROMPTS = {
     { text: 'What are the top risks I should focus on?', icon: 'clipboard' },
     { text: 'Show SLA breaches across all severity levels', icon: 'target' },
   ],
+  '/attack-paths': [
+    { text: 'Show me the riskiest attack paths in my environment', icon: 'shield-alert' },
+    { text: 'Which entry points expose the most critical targets?', icon: 'globe' },
+    { text: 'What single mitigation would break the most attack paths?', icon: 'zap' },
+    { text: 'Are any attack paths waiting on approval to remediate?', icon: 'alarm' },
+  ],
+  '/compliance': [
+    { text: 'What is our overall compliance status across frameworks?', icon: 'clipboard' },
+    { text: 'Which controls are currently failing?', icon: 'shield-alert' },
+    { text: 'Create a campaign to fix findings for failing controls', icon: 'zap' },
+    { text: 'Which frameworks are missing the most evidence?', icon: 'target' },
+  ],
+  '/compliance/': [
+    { text: 'Summarize the status of this framework', icon: 'clipboard' },
+    { text: 'Which controls in this framework are failing?', icon: 'shield-alert' },
+    { text: 'Show findings mapped to this control', icon: 'bug' },
+    { text: 'What remediation steps would close this control?', icon: 'zap' },
+  ],
 }
 
 // Get the page label for context injection
@@ -254,7 +272,7 @@ const PAGE_LABELS = {
   '/findings': 'Findings list',
   '/assets': 'Asset Inventory',
   '/campaigns': 'Campaigns',
-  '/inventory': 'Software Inventory',
+  '/inventory': 'Inventory',
   '/threat-intel': 'Threat Intelligence',
   '/aggregated-solutions': 'Aggregated Solutions',
   '/tags': 'Tag Manager',
@@ -263,6 +281,8 @@ const PAGE_LABELS = {
   '/settings': 'Settings',
   '/profile': 'User Profile',
   '/docs': 'Documentation',
+  '/attack-paths': 'Attack Paths',
+  '/compliance': 'Compliance Management',
 }
 
 // Settings tab labels for richer context injection
@@ -328,6 +348,9 @@ function getPageLabel(path, search) {
   if (path.startsWith('/workflows/')) return 'Workflow builder'
   if (path.startsWith('/reports/')) return 'Report detail'
   if (path.startsWith('/threat-intel')) return 'Threat Intelligence'
+  if (path.startsWith('/compliance/')) {
+    return path.includes('/control/') ? 'Compliance Control detail' : 'Compliance Framework detail'
+  }
   return null
 }
 
@@ -384,6 +407,10 @@ Available app pages and their URL query parameters:
 - /workflows/:id — Workflow builder
 - /agents — AI Agents
 - /tags — Tag Manager
+- /attack-paths — Attack Paths. Shows exploitation chains from entry points to targets with pivot quality, severity, and recommended mitigations
+- /compliance — Compliance Management. Lists subscribed frameworks and overall control status
+- /compliance/:slug — Compliance Framework detail. Shows controls and their status (passing|failing|partial|compensating_control|not_applicable|not_evaluated)
+- /compliance/:slug/control/:id — Compliance Control detail. Shows findings linked to the control
 - / — Dashboard / Reports
 - /settings — Settings. Tabs (via ?tab= param): upload (Scan Management), dedup (Deduplication), risk (Risk Scoring), tags (Tag Manager), sla (SLA Config), exceptions (Exceptions/Waivers), ownership (Ownership Rules), roles (RBAC Roles), users (User Management), integrations (Integrations), integration-builder (Integration Builder), audit-log (Audit Log)
 
@@ -859,6 +886,18 @@ export default function CopilotPanel({ open, onClose, currentPath, currentSearch
         else if (currentPath.startsWith('/assets/')) contextPrefix += `\n[Use get_asset_profile with asset_id=${entityId} to answer questions about this asset]`
         else if (currentPath.startsWith('/campaigns/')) contextPrefix += `\n[Use query_findings with campaign context to answer questions about this campaign]`
         else if (currentPath.startsWith('/reports/')) contextPrefix += `\n[This is a saved report/dashboard. There is no report lookup tool — use query_findings, get_top_risky_assets, get_exploit_findings, get_quick_wins, get_sla_status, and other analysis tools to answer questions about the organization's security posture. Do NOT attempt to fetch a report by ID.]`
+      }
+      // Tool hints for pages whose URLs don't carry numeric entity IDs
+      if (currentPath === '/attack-paths') {
+        contextPrefix += `\n[This page shows attack paths — exploitation chains from entry points to high-value targets, with pivot quality, severity, and recommended mitigations. Use query_findings and get_top_risky_assets to investigate the findings and assets that make up these paths, and reference get_quick_wins or aggregated solutions when proposing mitigations that break multiple paths at once.]`
+      } else if (currentPath === '/compliance') {
+        contextPrefix += `\n[This page lists compliance frameworks and overall control status. Use query_findings with the control_status filter to investigate failing or partial controls, and use get_quick_wins or aggregated solutions when recommending remediations that close multiple controls.]`
+      } else if (currentPath.startsWith('/compliance/')) {
+        if (currentPath.includes('/control/')) {
+          contextPrefix += `\n[This is a Compliance Control detail page. Use query_findings with control_status filtering and the control identifier from the URL to list findings affecting this control, and propose concrete remediation steps that would move it to passing.]`
+        } else {
+          contextPrefix += `\n[This is a Compliance Framework detail page. The slug in the URL identifies the framework. Use query_findings with control_status filtering to surface failing or partial controls and aggregate remediation across the framework.]`
+        }
       }
       contextPrefix += `\n${APP_ROUTES_CONTEXT}`
     }
