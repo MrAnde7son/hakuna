@@ -147,17 +147,34 @@ def test_engine_shim_get_hitl_tools_for_autonomy_matches_old():
 
 def test_deprecated_shim_views_match_old_sets():
     """The legacy module-level names still expose the right membership
-    so existing imports keep working."""
-    # Set equality is enough for existing call-sites (`tool in HITL_TOOLS`).
+    so existing imports keep working.
+
+    The views are live — they reflect *whatever* is in the registry now,
+    including actions registered by modules outside ``agents/`` (e.g.
+    ``routes/mcp_routes.py``). So we assert ⊇ on the legacy universe
+    rather than ==, mirroring ``test_engine_shim_…`` above. Within the
+    legacy universe membership is still exact.
+    """
+    hitl = set(agent_engine.HITL_TOOLS)
+    external = set(agent_engine.EXTERNAL_TOOLS)
+    confirmation = set(agent_engine.CONFIRMATION_REQUIRED_TOOLS)
+    low_risk = set(agent_engine.LOW_RISK_WRITE_TOOLS)
+
+    assert OLD_HITL_TOOLS.issubset(hitl)
+    assert OLD_EXTERNAL_TOOLS.issubset(external)
+    assert OLD_CONFIRMATION_REQUIRED_TOOLS.issubset(confirmation)
+
+    # Within the legacy universe, the views are exactly the old sets.
+    assert hitl & OLD_HITL_TOOLS == OLD_HITL_TOOLS
+    assert external & OLD_HITL_TOOLS == OLD_EXTERNAL_TOOLS
+    assert confirmation & OLD_HITL_TOOLS == OLD_CONFIRMATION_REQUIRED_TOOLS
+
+    # The shim - deprecated set difference still works for legacy names.
     # remember_org_memory is intentionally absent from the new
     # LOW_RISK_WRITE_TOOLS view (it's not in HITL_TOOLS so the old
     # behavior of `HITL_TOOLS - LOW_RISK_WRITE_TOOLS` is preserved).
-    assert set(agent_engine.HITL_TOOLS) == OLD_HITL_TOOLS
-    assert set(agent_engine.EXTERNAL_TOOLS) == OLD_EXTERNAL_TOOLS
-    assert set(agent_engine.CONFIRMATION_REQUIRED_TOOLS) == OLD_CONFIRMATION_REQUIRED_TOOLS
-    # The shim - deprecated set difference still works:
     assert (
-        set(agent_engine.HITL_TOOLS) - set(agent_engine.LOW_RISK_WRITE_TOOLS)
+        (hitl - low_risk) & OLD_HITL_TOOLS
         == OLD_HITL_TOOLS - OLD_LOW_RISK_WRITE_TOOLS
     )
 
