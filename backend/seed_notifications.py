@@ -32,7 +32,7 @@ samples = [
 
     ("scan_failed", "EASM scan 'tenable.com' failed",
      "Scanner: subfinder exited with code 1",
-     "/settings?tab=upload", "scan", 1,
+     "/settings?tab=scans", "scan", 1,
      {"scan_name": "tenable.com", "domain": "tenable.com", "source_type": "easm", "phase": "scanner"}),
 
     ("critical_findings", "23 critical/high findings in 'Q1 Internal Scan'",

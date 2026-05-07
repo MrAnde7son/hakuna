@@ -495,6 +495,43 @@ def require_role(*roles: str):
     return _check
 
 
+def compute_accessible_org_ids(
+    user: User,
+    db: Session,
+    x_org_context: Optional[str],
+) -> Optional[List[int]]:
+    """Pure-function variant of `get_accessible_org_ids`. Returns:
+
+    - None for superadmin without X-Org-Context (no filter).
+    - [ctx_id] when X-Org-Context is set and accessible.
+    - [home_org] for standard users; home_org plus linked client orgs for MSSPs.
+
+    Raises 403 if X-Org-Context targets an org the user can't reach.
+    """
+    if user.role == "superadmin":
+        if x_org_context:
+            return [int(x_org_context)]
+        return None
+
+    accessible = {user.org_id}
+
+    org = db.query(Organization).filter(Organization.id == user.org_id).first()
+    if org and org.org_type == "mssp":
+        links = db.query(MSSPOrgAccess.client_org_id).filter(
+            MSSPOrgAccess.mssp_org_id == user.org_id,
+            MSSPOrgAccess.is_active == True,
+        ).all()
+        accessible.update(row[0] for row in links)
+
+    if x_org_context:
+        ctx_id = int(x_org_context)
+        if ctx_id not in accessible:
+            raise HTTPException(status_code=403, detail="No access to requested organization")
+        return [ctx_id]
+
+    return list(accessible)
+
+
 async def get_accessible_org_ids(
     user: Optional[User] = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -511,32 +548,25 @@ async def get_accessible_org_ids(
     """
     if user is None:
         raise HTTPException(status_code=401, detail="Authentication required")
+    return compute_accessible_org_ids(user, db, x_org_context)
 
-    if user.role == "superadmin":
-        if x_org_context:
-            return [int(x_org_context)]
-        return None  # No filter
 
-    # Base: own org
-    accessible = {user.org_id}
+async def get_principal_accessible_org_ids(
+    principal: Optional[Union[User, CollaboratorPrincipal]] = Depends(get_current_principal),
+    db: Session = Depends(get_db),
+    x_org_context: Optional[str] = Header(None, alias="X-Org-Context"),
+) -> Optional[List[int]]:
+    """Like `get_accessible_org_ids` but tolerates campaign collaborators.
 
-    # MSSP: add linked client orgs
-    org = db.query(Organization).filter(Organization.id == user.org_id).first()
-    if org and org.org_type == "mssp":
-        links = db.query(MSSPOrgAccess.client_org_id).filter(
-            MSSPOrgAccess.mssp_org_id == user.org_id,
-            MSSPOrgAccess.is_active == True,
-        ).all()
-        accessible.update(row[0] for row in links)
-
-    # X-Org-Context: narrow down
-    if x_org_context:
-        ctx_id = int(x_org_context)
-        if ctx_id not in accessible:
-            raise HTTPException(status_code=403, detail="No access to requested organization")
-        return [ctx_id]
-
-    return list(accessible)
+    Returns None for `CollaboratorPrincipal` — callers should fall back to
+    `campaign_id`-based filtering for those. Otherwise resolves the User's
+    accessible orgs honoring `X-Org-Context`.
+    """
+    if principal is None:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    if isinstance(principal, CollaboratorPrincipal):
+        return None
+    return compute_accessible_org_ids(principal, db, x_org_context)
 
 
 def apply_org_filter(query, model, org_ids: Optional[List[int]]):

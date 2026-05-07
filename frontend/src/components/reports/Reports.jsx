@@ -14,7 +14,7 @@ export default function Reports() {
   )
 
   if (scans.length === 0 && !scansFailed && !reportId) {
-    return <Navigate to="/settings?tab=upload" replace />
+    return <Navigate to="/settings?tab=scans" replace />
   }
 
   return <ReportBuilder />

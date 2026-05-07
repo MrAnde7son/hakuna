@@ -1767,3 +1767,27 @@ export const downloadComplianceReport = async (runId, frameworkSlug = 'framework
   a.remove()
   URL.revokeObjectURL(blobUrl)
 }
+
+// ── Org-shared memory ─────────────────────────────────────────
+export const listOrgMemoryNamespaces = () => request('/org-memory/namespaces')
+export const listOrgMemoryFacts = (namespace, limit = 100) =>
+  request(`/org-memory/${encodeURIComponent(namespace)}?limit=${limit}`)
+export const getOrgMemoryHistory = (namespace, key) =>
+  request(`/org-memory/${encodeURIComponent(namespace)}/${encodeURIComponent(key)}/history`)
+export const rememberOrgMemory = (body) => request('/org-memory', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(body),
+})
+export const forgetOrgMemory = (namespace, key) => request(
+  `/org-memory/${encodeURIComponent(namespace)}/${encodeURIComponent(key)}`,
+  { method: 'DELETE' },
+)
+export const promoteOrgMemory = (namespace, key, body) => request(
+  `/org-memory/${encodeURIComponent(namespace)}/${encodeURIComponent(key)}/promote`,
+  {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  },
+)

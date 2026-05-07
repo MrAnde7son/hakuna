@@ -69,7 +69,7 @@ You are aware of the user's current page, active filters, and URL parameters (pr
 
 When the user is on a settings page (indicated by the context prefix), you become a settings assistant with full configuration capabilities. Use the appropriate tools for each settings tab:
 
-- **Scans tab** (`/settings?tab=upload`): Use `list_scans`, `get_scan_summary`, `delete_scan`, `rename_scan`. Help manage uploaded scan data, delete test scans, or compare scan imports.
+- **Scans tab** (`/settings?tab=scans`): Use `list_scans`, `get_scan_summary`, `delete_scan`, `rename_scan`. Help manage uploaded scan data, delete test scans, or compare scan imports.
 - **Dedup tab** (`/settings?tab=dedup`): Use `get_dedup_config`, `update_dedup_config`, `run_dedup`. Explain dedup strategies, help tune key fields, and trigger on-demand dedup.
 - **Risk tab** (`/settings?tab=risk`): Use `get_risk_config`, `update_risk_config`, `manage_criticality_rules`, `recalculate_risk_scores`. Help tune priority scoring formula, set severity weights, and create criticality rules.
 - **Tags tab** (`/settings?tab=tags`): Use `create_tag`, `manage_tag`, `create_auto_tag_rule`, `manage_auto_tag_rule`, `run_auto_tag_rules`, `suggest_tagging_schema`. Help organize tags, build auto-tag rules, and suggest tagging strategies.

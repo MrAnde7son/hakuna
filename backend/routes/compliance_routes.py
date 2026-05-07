@@ -662,22 +662,19 @@ def list_findings_under_control(
     page_size: int = Query(50, ge=1, le=500),
     db: Session = Depends(get_db),
     user: User = Depends(require_permission("page_compliance")),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
     ctrl = db.query(ComplianceControl).filter_by(id=control_id).first()
     if ctrl is None:
         raise HTTPException(404, "control not found")
-    org_id = user.org_id
-    if not org_id:
-        raise HTTPException(400, "user has no org_id")
 
     q = (
         db.query(ComplianceFindingStatus)
-        .filter(
-            ComplianceFindingStatus.org_id == org_id,
-            ComplianceFindingStatus.control_id == control_id,
-        )
+        .filter(ComplianceFindingStatus.control_id == control_id)
         .order_by(ComplianceFindingStatus.scored_at.desc())
     )
+    if org_ids is not None:
+        q = q.filter(ComplianceFindingStatus.org_id.in_(org_ids))
     if verdict:
         q = q.filter(ComplianceFindingStatus.verdict == verdict)
     total = q.count()
@@ -1165,16 +1162,15 @@ def list_reports(
     limit: int = Query(50, ge=1, le=500),
     db: Session = Depends(get_db),
     user: User = Depends(require_permission("page_compliance")),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
-    """List recent report runs for the caller's org, newest first."""
-    org_id = user.org_id
-    if not org_id:
-        raise HTTPException(400, "user has no org_id")
+    """List recent report runs for the caller's accessible orgs, newest first."""
     q = (
         db.query(ComplianceReportRun, ComplianceFramework)
         .join(ComplianceFramework, ComplianceFramework.id == ComplianceReportRun.framework_id)
-        .filter(ComplianceReportRun.org_id == org_id)
     )
+    if org_ids is not None:
+        q = q.filter(ComplianceReportRun.org_id.in_(org_ids))
     if framework_slug:
         q = q.filter(ComplianceFramework.slug == framework_slug)
     q = q.order_by(ComplianceReportRun.created_at.desc()).limit(limit)
@@ -1187,15 +1183,14 @@ def get_report(
     run_id: int,
     db: Session = Depends(get_db),
     user: User = Depends(require_permission("page_compliance")),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
     """Return report metadata + the embedded snapshot. Use the /download
     endpoint when you want the raw artifact bytes instead."""
-    org_id = user.org_id
-    run = (
-        db.query(ComplianceReportRun)
-        .filter_by(id=run_id, org_id=org_id)
-        .first()
-    )
+    q = db.query(ComplianceReportRun).filter(ComplianceReportRun.id == run_id)
+    if org_ids is not None:
+        q = q.filter(ComplianceReportRun.org_id.in_(org_ids))
+    run = q.first()
     if run is None:
         raise HTTPException(404, "report not found")
     fw = db.query(ComplianceFramework).filter_by(id=run.framework_id).first()
@@ -1209,16 +1204,15 @@ def download_report(
     run_id: int,
     db: Session = Depends(get_db),
     user: User = Depends(require_permission("page_compliance")),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
     """Stream the artifact bytes. Re-serializes from the stored snapshot so
     every download returns identical bytes — the run.sha256 covers the
     serialized output, not the raw snapshot dict."""
-    org_id = user.org_id
-    run = (
-        db.query(ComplianceReportRun)
-        .filter_by(id=run_id, org_id=org_id)
-        .first()
-    )
+    q = db.query(ComplianceReportRun).filter(ComplianceReportRun.id == run_id)
+    if org_ids is not None:
+        q = q.filter(ComplianceReportRun.org_id.in_(org_ids))
+    run = q.first()
     if run is None:
         raise HTTPException(404, "report not found")
     if run.status != "succeeded":

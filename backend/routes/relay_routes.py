@@ -14,7 +14,7 @@ from passlib.context import CryptContext
 from sqlalchemy.orm import Session
 
 from core.database import get_db
-from core.auth import get_current_user, require_auth
+from core.auth import get_current_user, require_auth, get_accessible_org_ids
 from core.time_utils import iso_utc
 from models.models import Organization, RelayAgent, Integration
 from routes.internal_relay_routes import ensure_cloud_relay_for_org
@@ -101,20 +101,24 @@ def _reject_if_managed(agent: RelayAgent, action: str) -> None:
 async def list_agents(
     db: Session = Depends(get_db),
     current_user = Depends(get_current_user),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
-    """List all relay agents for the current org."""
-    org_id = current_user.org_id
-
+    """List relay agents in the caller's accessible orgs (honors X-Org-Context)."""
     # Auto-provision the managed cloud_scanner row so it's always visible —
     # in environments where the GCP cloud-relay container isn't polling
     # /internal/cloud-relay/registrations, the row would otherwise never
     # exist and the user would have no way to know external scans are
     # supposed to be possible.
-    org = db.query(Organization).filter(Organization.id == org_id).first()
-    if org is not None:
+    org_q = db.query(Organization)
+    if org_ids is not None:
+        org_q = org_q.filter(Organization.id.in_(org_ids))
+    for org in org_q.all():
         ensure_cloud_relay_for_org(db, org)
 
-    agents = db.query(RelayAgent).filter(RelayAgent.org_id == org_id).order_by(RelayAgent.created_at.desc()).all()
+    agent_q = db.query(RelayAgent)
+    if org_ids is not None:
+        agent_q = agent_q.filter(RelayAgent.org_id.in_(org_ids))
+    agents = agent_q.order_by(RelayAgent.created_at.desc()).all()
 
     broker = get_relay_broker()
     results = []
@@ -171,11 +175,12 @@ async def get_agent(
     agent_id: str,
     db: Session = Depends(get_db),
     current_user = Depends(get_current_user),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
-    org_id = current_user.org_id
-    agent = db.query(RelayAgent).filter(
-        RelayAgent.id == agent_id, RelayAgent.org_id == org_id
-    ).first()
+    q = db.query(RelayAgent).filter(RelayAgent.id == agent_id)
+    if org_ids is not None:
+        q = q.filter(RelayAgent.org_id.in_(org_ids))
+    agent = q.first()
     if not agent:
         raise HTTPException(404, "Relay agent not found")
 
@@ -283,12 +288,13 @@ async def get_setup_instructions(
     agent_id: str,
     db: Session = Depends(get_db),
     current_user = Depends(get_current_user),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
     """Return setup instructions for deploying the relay agent."""
-    org_id = current_user.org_id
-    agent = db.query(RelayAgent).filter(
-        RelayAgent.id == agent_id, RelayAgent.org_id == org_id
-    ).first()
+    q = db.query(RelayAgent).filter(RelayAgent.id == agent_id)
+    if org_ids is not None:
+        q = q.filter(RelayAgent.org_id.in_(org_ids))
+    agent = q.first()
     if not agent:
         raise HTTPException(404, "Relay agent not found")
     _reject_if_managed(agent, "fetch setup instructions for")

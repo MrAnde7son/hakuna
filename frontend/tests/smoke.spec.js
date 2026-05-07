@@ -24,6 +24,7 @@ const ROUTES = [
   { path: '/workflows/1', name: 'Workflow Builder' },
   { path: '/inventory', name: 'Inventory' },
   { path: '/agents', name: 'Agents' },
+  { path: '/settings?tab=org-memory', name: 'Settings → Org Memory' },
   { path: '/tags', name: 'Tags' },
   { path: '/custom-fields', name: 'Custom Fields' },
   { path: '/threat-intel', name: 'Threat Intel' },

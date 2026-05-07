@@ -494,7 +494,6 @@ def get_risk_grade(
     org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
     """Compute a composite organisation risk grade (0-100 score -> A-F letter)."""
-    from services.sla_engine import ensure_sla_defaults as _ensure_sla_defaults
 
     # ── Gather summary data ──
     asset_q = db.query(Asset).join(Scan, Asset.scan_id == Scan.id)
@@ -552,23 +551,40 @@ def get_risk_grade(
     coverage_pct = (credentialed / total_assets * 100) if total_assets > 0 else 0
 
     # ── Gather SLA data ──
-    _ensure_sla_defaults(db)
+    from services.sla_engine import get_sla_configs_for_org
     sla_q = db.query(Finding).join(Scan, Finding.scan_id == Scan.id)
     sla_q = apply_scan_org_filter(sla_q, org_ids)
     if scan_id:
         sla_q = sla_q.filter(Finding.scan_id == scan_id)
-    enabled_sevs = [c.severity for c in db.query(SLAConfig).filter(SLAConfig.is_enabled == True).all()]
-    sla_q = sla_q.filter(Finding.severity.in_(enabled_sevs))
+
+    # Enabled severities = union across the caller's accessible orgs (per-org
+    # SLA, NULL-org fallback). Each org may have different windows enabled.
+    cfg_cache: dict = {}
+
+    def _cfg_for(oid):
+        if oid not in cfg_cache:
+            cfg_cache[oid] = {c.severity: c for c in get_sla_configs_for_org(db, oid)}
+        return cfg_cache[oid]
+
+    enabled_sevs: set = set()
+    if org_ids is None:
+        for c in db.query(SLAConfig).filter(SLAConfig.is_enabled == True).all():
+            enabled_sevs.add(c.severity)
+    else:
+        for oid in org_ids:
+            for c in _cfg_for(oid).values():
+                if c.is_enabled:
+                    enabled_sevs.add(c.severity)
+    sla_q = sla_q.filter(Finding.severity.in_(list(enabled_sevs)))
     sla_findings = sla_q.all()
 
     sla_counts = {"on_track": 0, "at_risk": 0, "breached": 0, "resolved": 0, "n/a": 0}
-    cfg_map = {c.severity: c for c in db.query(SLAConfig).all()}
     mttr_vals = []
     for f in sla_findings:
         status = f.sla_status or "n/a"
         sla_counts[status] = sla_counts.get(status, 0) + 1
         if f.resolved_at and f.sla_due_date:
-            cfg = cfg_map.get(f.severity)
+            cfg = _cfg_for(f.org_id).get(f.severity)
             if cfg:
                 obs_date = f.sla_due_date - timedelta(days=cfg.days_to_remediate)
                 days = (f.resolved_at - obs_date).total_seconds() / 86400

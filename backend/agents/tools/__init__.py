@@ -24,3 +24,4 @@ from agents.tools import netbios_local_tools  # noqa: F401
 from agents.tools import ot_protocol_tools  # noqa: F401
 from agents.tools import ot_passive_tools  # noqa: F401
 from agents.tools import easm_fingerprint_tools  # noqa: F401
+from agents.tools import org_memory_tools  # noqa: F401

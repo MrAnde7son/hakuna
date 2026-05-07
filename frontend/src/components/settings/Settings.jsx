@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Settings as SettingsIcon, Play, Save, RotateCcw, ChevronDown, ChevronRight, ShieldAlert, Upload, Tag, Clock, Plug, Blocks, ShieldOff, ClipboardList, UserCheck, Users, ShieldCheck, Building2, KeyRound, Plus, X, GripVertical, Layers, Antenna } from 'lucide-react'
+import { Settings as SettingsIcon, Play, Save, RotateCcw, ChevronDown, ChevronRight, ShieldAlert, ScanLine, Tag, Clock, Plug, Blocks, ShieldOff, ClipboardList, UserCheck, Users, ShieldCheck, Building2, KeyRound, Plus, X, GripVertical, Layers, Antenna, Brain } from 'lucide-react'
 import { getDedupConfig, saveDedupConfig, deleteDedupOrgOverride, runDedup, exportConfig, getAvailableSources, runRollup } from '../../api.js'
 import { Card, ExportImportButtons } from '../shared/ui.jsx'
 import { useAuth } from '../../contexts/AuthContext.jsx'
@@ -21,6 +21,7 @@ import IntegrationBuilderTab from './IntegrationBuilderTab.jsx'
 import SSOSettings from './SSOSettings.jsx'
 import RelayAgentManager from '../integrations/relay/RelayAgentManager.jsx'
 import ApiTokensPanel from './ApiTokensPanel.jsx'
+import OrgMemoryPanel from '../agents/OrgMemoryPanel.jsx'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -453,9 +454,10 @@ function EntityCard({ entityKey, label, cfg, onChange, runEntityKey, availableSo
 export default function Settings() {
   const [searchParams, setSearchParams] = useSearchParams()
   const { isAdmin, isSuperadmin, isMSSP } = useAuth()
-  const VALID_TABS = ['upload', 'auth-profiles', 'dedup', 'risk', 'tags', 'custom-fields', 'sla', 'exceptions', 'integrations', 'integration-builder', 'relay-agents', 'audit-log', 'ownership', 'users', 'roles', 'orgs', 'sso', 'api-tokens']
-  const tabParam = searchParams.get('tab')
-  const activeTab = VALID_TABS.includes(tabParam) ? tabParam : 'upload'
+  const VALID_TABS = ['scans', 'auth-profiles', 'dedup', 'risk', 'tags', 'custom-fields', 'sla', 'exceptions', 'integrations', 'integration-builder', 'relay-agents', 'audit-log', 'ownership', 'users', 'roles', 'orgs', 'sso', 'api-tokens', 'org-memory']
+  const rawTabParam = searchParams.get('tab')
+  const tabParam = rawTabParam === 'upload' ? 'scans' : rawTabParam
+  const activeTab = VALID_TABS.includes(tabParam) ? tabParam : 'scans'
   const setActiveTab = (id) => setSearchParams(prev => { prev.set('tab', id); return prev })
   const [cfg, setCfg] = useState(null)
   const [saving, setSaving] = useState(false)
@@ -548,7 +550,7 @@ export default function Settings() {
     {
       label: 'Data Ingestion',
       items: [
-        { id: 'upload',              label: 'Scans',               icon: <Upload size={14} /> },
+        { id: 'scans',               label: 'Scans',               icon: <ScanLine size={14} /> },
         { id: 'auth-profiles',       label: 'Credentials',         icon: <KeyRound size={14} /> },
         { id: 'relay-agents',        label: 'Relay Agents',        icon: <Antenna size={14} /> },
         { id: 'integration-builder', label: 'Integration Builder', icon: <Blocks size={14} /> },
@@ -575,6 +577,12 @@ export default function Settings() {
       label: 'Access Control',
       items: accessControlItems,
     }] : []),
+    {
+      label: 'AI',
+      items: [
+        { id: 'org-memory', label: 'Memory', icon: <Brain size={14} /> },
+      ],
+    },
     {
       label: 'Platform',
       items: [
@@ -626,10 +634,10 @@ export default function Settings() {
       </div>
 
       {/* Content */}
-      <div style={{ flex: 1, padding: 24, maxWidth: activeTab === 'users' ? 'none' : ['integration-builder', 'relay-agents', 'upload'].includes(activeTab) ? 1200 : 760 }}>
+      <div style={{ flex: 1, padding: 24, maxWidth: activeTab === 'users' ? 'none' : ['integration-builder', 'relay-agents', 'scans'].includes(activeTab) ? 1200 : 760 }}>
 
       {/* Scans tab */}
-      {activeTab === 'upload' && <ScanManagement />}
+      {activeTab === 'scans' && <ScanManagement />}
 
       {/* Auth Profiles tab */}
       {activeTab === 'auth-profiles' && <AuthProfileManager />}
@@ -654,6 +662,9 @@ export default function Settings() {
 
       {/* API Tokens tab */}
       {activeTab === 'api-tokens' && <ApiTokensPanel />}
+
+      {/* Org Memory tab */}
+      {activeTab === 'org-memory' && <OrgMemoryPanel />}
 
       {/* Integration Builder tab */}
       {activeTab === 'integration-builder' && <IntegrationBuilderTab />}

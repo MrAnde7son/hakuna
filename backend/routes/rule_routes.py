@@ -221,11 +221,10 @@ def list_asset_type_rules(
     db: Session = Depends(get_db),
     org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
-    rules = (
-        db.query(AssetTypeRule)
-        .order_by(AssetTypeRule.priority, AssetTypeRule.id)
-        .all()
-    )
+    q = db.query(AssetTypeRule)
+    if org_ids is not None:
+        q = q.filter(AssetTypeRule.org_id.in_(org_ids))
+    rules = q.order_by(AssetTypeRule.priority, AssetTypeRule.id).all()
     return [_asset_type_rule_to_dict(r) for r in rules]
 
 
@@ -394,8 +393,14 @@ def _ownership_rule_to_dict(rule: OwnershipRule) -> dict:
 
 
 @router.get("/api/ownership-rules")
-def list_ownership_rules(db: Session = Depends(get_db)):
-    rules = db.query(OwnershipRule).order_by(OwnershipRule.priority, OwnershipRule.id).all()
+def list_ownership_rules(
+    db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    q = db.query(OwnershipRule)
+    if org_ids is not None:
+        q = q.filter(OwnershipRule.org_id.in_(org_ids))
+    rules = q.order_by(OwnershipRule.priority, OwnershipRule.id).all()
     return [_ownership_rule_to_dict(r) for r in rules]
 
 
@@ -530,8 +535,14 @@ def _ext_source_to_dict(src: ExternalTagSource) -> dict:
 
 
 @router.get("/api/external-tag-sources")
-def list_external_tag_sources(db: Session = Depends(get_db)):
-    sources = db.query(ExternalTagSource).order_by(ExternalTagSource.id).all()
+def list_external_tag_sources(
+    db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    q = db.query(ExternalTagSource)
+    if org_ids is not None:
+        q = q.filter(ExternalTagSource.org_id.in_(org_ids))
+    sources = q.order_by(ExternalTagSource.id).all()
     return [_ext_source_to_dict(s) for s in sources]
 
 

@@ -761,8 +761,8 @@ def update_finding_status(finding_id: int, body: FindingStatusUpdate, db: Sessio
         finding.sla_status = "resolved"
     elif body.status == "open" and finding.resolved_at:
         finding.resolved_at = None
-        configs = db.query(SLAConfig).all()
-        cfg_map = {c.severity: c for c in configs}
+        from services.sla_engine import get_sla_configs_for_org
+        cfg_map = {c.severity: c for c in get_sla_configs_for_org(db, finding.org_id)}
         cfg = cfg_map.get(finding.severity)
         warn = cfg.warn_days_before if cfg else 7
         finding.sla_status = _compute_sla_status(finding.sla_due_date, None, warn)

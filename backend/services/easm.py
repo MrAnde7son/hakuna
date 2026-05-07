@@ -472,7 +472,7 @@ def _emit_easm_scan_failed_notification(
             db, org_id, "scan_failed",
             f"EASM scan '{scan_label}' failed{title_suffix}",
             body=(error_msg or "")[:200],
-            link="/settings?tab=upload",
+            link="/settings?tab=scans",
             entity_type="scan", entity_id=scan.id,
             metadata={
                 "scan_name": scan_label,

@@ -158,7 +158,7 @@ const CONTEXTUAL_PROMPTS = {
     { text: 'Are there any settings I should optimize based on my data?', icon: 'target' },
     { text: 'What integrations are configured?', icon: 'globe' },
   ],
-  '/settings?tab=upload': [
+  '/settings?tab=scans': [
     { text: 'List all scans and show finding counts by severity', icon: 'clipboard' },
     { text: 'Delete old or test scans to clean up data', icon: 'target' },
     { text: 'Compare my two most recent scans', icon: 'zap' },
@@ -287,7 +287,7 @@ const PAGE_LABELS = {
 
 // Settings tab labels for richer context injection
 const SETTINGS_TAB_LABELS = {
-  'upload': 'Scan Management',
+  'scans': 'Scan Management',
   'dedup': 'Deduplication Settings',
   'risk': 'Risk Scoring Configuration',
   'tags': 'Tag Manager',
@@ -307,9 +307,10 @@ function _getSettingsTab(path, search) {
   // Check search params for tab
   if (search) {
     const params = new URLSearchParams(search)
-    return params.get('tab') || 'upload'
+    const tab = params.get('tab') || 'scans'
+    return tab === 'upload' ? 'scans' : tab
   }
-  return 'upload'
+  return 'scans'
 }
 
 function getContextualPrompts(path, search) {
@@ -866,7 +867,7 @@ export default function CopilotPanel({ open, onClose, currentPath, currentSearch
       // Add tool hints for settings tabs
       if (currentPath === '/settings' && settingsTab) {
         const tabHints = {
-          'upload': '[Use list_scans, get_scan_summary, delete_scan, rename_scan to help manage scans on this page]',
+          'scans': '[Use list_scans, get_scan_summary, delete_scan, rename_scan to help manage scans on this page]',
           'dedup': '[Use get_dedup_config, update_dedup_config, run_dedup to help configure deduplication on this page]',
           'risk': '[Use get_risk_config, update_risk_config, manage_criticality_rules, recalculate_risk_scores to help configure risk scoring on this page]',
           'tags': '[Use create_tag, manage_tag, create_auto_tag_rule, manage_auto_tag_rule, run_auto_tag_rules, suggest_tagging_schema to help manage tags on this page]',

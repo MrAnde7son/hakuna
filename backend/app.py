@@ -92,6 +92,7 @@ from routes.integration_builder_routes import router as integration_builder_rout
 from routes.discovery_routes import router as discovery_router
 from routes.mcp_routes import router as mcp_router
 from routes.api_token_routes import router as api_token_router
+from routes.org_memory_routes import router as org_memory_router
 from routes.billing_routes import router as billing_router
 from routes.copilot_routes import router as copilot_router
 from routes.workflow_routes import router as workflow_router
@@ -328,6 +329,7 @@ app.include_router(integration_builder_router)
 app.include_router(discovery_router)
 app.include_router(mcp_router)
 app.include_router(api_token_router)
+app.include_router(org_memory_router)
 app.include_router(billing_router)
 app.include_router(workflow_router)
 app.include_router(notification_router)
@@ -529,6 +531,28 @@ def _deferred_startup():
         logger.info("EASM→VM trigger sweeper scheduled (every 60 seconds)")
     except Exception as exc:
         logger.error("EASM→VM trigger sweeper failed to start: %s", exc)
+    # Mine user behavior in audit_logs into low-confidence suggestions inside
+    # the org-shared memory layer. Runs nightly. Suggestions live in their own
+    # namespace so agents don't see them until an admin promotes one.
+    try:
+        from apscheduler.schedulers.background import BackgroundScheduler as _BehaviorBG
+        from apscheduler.triggers.cron import CronTrigger as _BehaviorCron
+        from services.behavior_miner import mine_all_orgs as _mine_all_orgs
+        from core.database import SessionLocal as _SessionLocal
+        _behavior_scheduler = _BehaviorBG()
+        _behavior_scheduler.add_job(
+            lambda: _mine_all_orgs(_SessionLocal),
+            _BehaviorCron(hour=3, minute=15),  # 03:15 UTC nightly
+            id="behavior_miner",
+            replace_existing=True,
+            misfire_grace_time=3600,
+            coalesce=True,
+            max_instances=1,
+        )
+        _behavior_scheduler.start()
+        logger.info("Behavior miner scheduled (nightly 03:15 UTC)")
+    except Exception as exc:
+        logger.error("Behavior miner failed to start: %s", exc)
     # Replan stale Adaptive Scan Plans (every 6 hours).
     # Plans are normally refreshed at the tail of the enrichment pipeline,
     # but assets that haven't been re-enriched in a while still benefit
@@ -661,28 +685,27 @@ def _deferred_startup():
         "escalation sweep every 15m (delay=%dm)",
         _approval_expiry_hours, _approval_escalate_minutes,
     )
-    # Seed SLA defaults and backfill any scans that have no SLA due dates yet
+    # Seed legacy global SLA defaults (used as fallback for orgs that haven't
+    # customized) and backfill scans missing sla_due_date. Each scan picks up
+    # its own org's configs (per-org, with NULL-org fallback) inside
+    # _recalculate_sla_for_scan.
     try:
         from core.database import SessionLocal as _SL
         _db = _SL()
         try:
             _ensure_sla_defaults(_db)
-            _sla_configs = _db.query(SLAConfig).filter(SLAConfig.is_enabled == True).all()
-            if _sla_configs:
-                # Find scans that have findings without sla_due_date
-                scan_ids_needing_sla = (
-                    _db.query(Finding.scan_id)
-                    .filter(Finding.sla_due_date == None)
-                    .distinct()
-                    .all()
-                )
-                scan_id_set = {row[0] for row in scan_ids_needing_sla}
-                scans_needing_sla = _db.query(Scan).filter(Scan.id.in_(scan_id_set)).all() if scan_id_set else []
-                if scans_needing_sla:
-                    all_configs = _db.query(SLAConfig).all()
-                    for s in scans_needing_sla:
-                        _recalculate_sla_for_scan(_db, s.id, all_configs)
-                    logger.info(f"SLA backfilled for {len(scans_needing_sla)} scan(s)")
+            scan_ids_needing_sla = (
+                _db.query(Finding.scan_id)
+                .filter(Finding.sla_due_date == None)
+                .distinct()
+                .all()
+            )
+            scan_id_set = {row[0] for row in scan_ids_needing_sla}
+            scans_needing_sla = _db.query(Scan).filter(Scan.id.in_(scan_id_set)).all() if scan_id_set else []
+            for s in scans_needing_sla:
+                _recalculate_sla_for_scan(_db, s.id, None)
+            if scans_needing_sla:
+                logger.info(f"SLA backfilled for {len(scans_needing_sla)} scan(s)")
         finally:
             _db.close()
     except Exception as _e:
@@ -2150,7 +2173,7 @@ def _compute_sla_status(due_date, resolved_at, warn_days: int) -> str:
     return "on_track"
 
 
-def _recalculate_sla_for_scan(db: Session, scan_id: int, configs: list):
+def _recalculate_sla_for_scan(db: Session, scan_id: int, configs: Optional[list] = None):
     """Recompute sla_due_date and sla_status for every finding in a scan.
     Delegates to services.sla_engine — kept here for backward compatibility."""
     from services.sla_engine import recalculate_sla_for_scan

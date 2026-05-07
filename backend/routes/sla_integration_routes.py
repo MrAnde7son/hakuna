@@ -15,7 +15,7 @@ from core.database import get_db
 from core.audit import log_audit, diff as _diff
 from core.time_utils import iso_utc
 from core.auth import (
-    get_current_user, get_accessible_org_ids,
+    get_current_user, require_auth, get_accessible_org_ids,
     apply_org_filter, apply_scan_org_filter,
 )
 from models.models import (
@@ -49,10 +49,22 @@ def _cache_set(key: str, value):
 
 # ─── SLA helpers ─────────────────────────────────────────────────────────────
 
-def _ensure_sla_defaults(db: Session):
-    """Seed SLAConfig rows with defaults if they don't exist yet."""
+def _ensure_sla_defaults(db: Session, org_id: Optional[int] = None):
+    """Seed SLAConfig rows with defaults for `org_id` (or legacy global if None)."""
     from services.sla_engine import ensure_sla_defaults
-    ensure_sla_defaults(db)
+    ensure_sla_defaults(db, org_id)
+
+
+def _resolve_target_org_id(user: User, org_ids: Optional[List[int]]) -> Optional[int]:
+    """Resolve which org's SLA config the user is reading/editing.
+
+    - X-Org-Context selected (or single accessible org) → that org.
+    - MSSP unscoped (multiple accessible orgs) → fall back to home org.
+    - superadmin without X-Org-Context (`org_ids is None`) → home org.
+    """
+    if org_ids and len(org_ids) == 1:
+        return org_ids[0]
+    return user.org_id
 
 
 def _compute_sla_status(due_date, resolved_at, warn_days: int) -> str:
@@ -89,10 +101,22 @@ class SLARecalcBody(BaseModel):
 
 
 @router.get("/api/sla/config")
-def get_sla_config(db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
-    """Return SLA configuration for all severity levels."""
-    _ensure_sla_defaults(db)
-    rows = apply_org_filter(db.query(SLAConfig), SLAConfig, org_ids).order_by(SLAConfig.severity.desc()).all()
+def get_sla_config(
+    db: Session = Depends(get_db),
+    user: User = Depends(require_auth),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    """Return SLA configuration for the active org. First read for an org
+    auto-seeds default SLA windows; subsequent reads return whatever the
+    org has saved."""
+    target = _resolve_target_org_id(user, org_ids)
+    _ensure_sla_defaults(db, target)
+    rows = (
+        db.query(SLAConfig)
+        .filter(SLAConfig.org_id == target)
+        .order_by(SLAConfig.severity.desc())
+        .all()
+    )
     return [
         {
             "id": r.id,
@@ -107,13 +131,23 @@ def get_sla_config(db: Session = Depends(get_db), org_ids: Optional[List[int]] =
 
 
 @router.put("/api/sla/config")
-def save_sla_config(body: SLAConfigUpdateBody, db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user)):
-    """Save SLA configuration and trigger recalculation for all scans."""
-    _ensure_sla_defaults(db)
+def save_sla_config(
+    body: SLAConfigUpdateBody,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_auth),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    """Save SLA configuration for the active org and trigger recalculation
+    for that org's scans only."""
+    target = _resolve_target_org_id(user, org_ids)
+    _ensure_sla_defaults(db, target)
     _sev_labels = {0: "Info", 1: "Low", 2: "Medium", 3: "High", 4: "Critical"}
     for item in body.configs:
         sev = item.get("severity")
-        row = db.query(SLAConfig).filter(SLAConfig.severity == sev).first()
+        row = db.query(SLAConfig).filter(
+            SLAConfig.severity == sev,
+            SLAConfig.org_id == target,
+        ).first()
         if not row:
             continue
         _old = {"days_to_remediate": row.days_to_remediate, "warn_days_before": row.warn_days_before, "is_enabled": row.is_enabled}
@@ -131,18 +165,17 @@ def save_sla_config(body: SLAConfigUpdateBody, db: Session = Depends(get_db), us
                       changes=diff, actor=user)
     db.commit()
 
-    # Dispatch SLA recalculation as a background job (covers all scans)
+    # Recalculate only the scans that belong to the org whose SLA we just changed.
     from services.job_manager import dispatch
     from core.database import SessionLocal
 
     def _run_sla_after_save():
         bg_db = SessionLocal()
         try:
-            _ensure_sla_defaults(bg_db)
-            cfgs = bg_db.query(SLAConfig).all()
-            all_scans = bg_db.query(Scan).all()
+            cfgs = bg_db.query(SLAConfig).filter(SLAConfig.org_id == target).all()
+            org_scans = bg_db.query(Scan).filter(Scan.org_id == target).all()
             total = 0
-            for s in all_scans:
+            for s in org_scans:
                 total += _recalculate_sla_for_scan(bg_db, s.id, cfgs)
             return {"updated_findings": total}
         finally:
@@ -155,25 +188,33 @@ def save_sla_config(body: SLAConfigUpdateBody, db: Session = Depends(get_db), us
 @router.post("/api/sla/recalculate", status_code=202)
 def recalculate_sla(
     body: SLARecalcBody = SLARecalcBody(),
+    user: User = Depends(require_auth),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
-    """Dispatch SLA recalculation as a background job. Returns job_id immediately."""
+    """Dispatch SLA recalculation as a background job. Returns job_id immediately.
+
+    Scoped to the caller's accessible orgs — recalculation reads each scan's
+    own SLA configs (per-org, with global fallback) so different tenants
+    can have different windows.
+    """
     from services.job_manager import dispatch
     from core.database import SessionLocal
 
     scan_id = body.scan_id
+    snapshot_org_ids = list(org_ids) if org_ids is not None else None
 
     def _run_sla_recalc():
         db = SessionLocal()
         try:
-            _ensure_sla_defaults(db)
-            configs = db.query(SLAConfig).all()
+            scan_q = db.query(Scan)
             if scan_id:
-                scans = db.query(Scan).filter(Scan.id == scan_id).all()
-            else:
-                scans = db.query(Scan).all()
+                scan_q = scan_q.filter(Scan.id == scan_id)
+            if snapshot_org_ids is not None:
+                scan_q = scan_q.filter(Scan.org_id.in_(snapshot_org_ids))
+            scans = scan_q.all()
             total = 0
             for scan in scans:
-                total += _recalculate_sla_for_scan(db, scan.id, configs)
+                total += _recalculate_sla_for_scan(db, scan.id, None)
             return {"ok": True, "updated_findings": total}
         finally:
             db.close()
@@ -186,6 +227,7 @@ def recalculate_sla(
 def get_sla_summary(
     scan_id: Optional[int] = None,
     db: Session = Depends(get_db),
+    user: User = Depends(require_auth),
     org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
     """Return SLA compliance stats and MTTR for a scan (or all scans)."""
@@ -193,16 +235,18 @@ def get_sla_summary(
     cached = _cache_get(_ck)
     if cached is not None:
         return cached
-    _ensure_sla_defaults(db)
+    target = _resolve_target_org_id(user, org_ids)
+    _ensure_sla_defaults(db, target)
     q = db.query(Finding).join(Scan, Finding.scan_id == Scan.id)
     q = apply_scan_org_filter(q, org_ids)
     if scan_id:
         q = q.filter(Finding.scan_id == scan_id)
 
-    # Exclude Info unless it has SLA enabled
-    enabled_sevs = [
-        c.severity for c in db.query(SLAConfig).filter(SLAConfig.is_enabled == True).all()
-    ]
+    # Exclude Info unless it has SLA enabled — scoped to the active org's
+    # configs (with NULL-org fallback for orgs that haven't customized).
+    from services.sla_engine import get_sla_configs_for_org
+    org_configs = get_sla_configs_for_org(db, target)
+    enabled_sevs = [c.severity for c in org_configs if c.is_enabled]
     q = q.filter(Finding.severity.in_(enabled_sevs))
 
     # Counts via SQL aggregation instead of loading all findings into memory
@@ -227,7 +271,7 @@ def get_sla_summary(
     breached_by_sev = {sev: cnt for sev, cnt in breached_rows}
 
     # MTTR: only load resolved findings with SLA data (small subset), not ALL findings
-    cfg_map = {c.severity: c for c in db.query(SLAConfig).all()}
+    cfg_map = {c.severity: c for c in org_configs}
     mttr_findings = q.filter(
         Finding.resolved_at != None, Finding.sla_due_date != None
     ).with_entities(Finding.severity, Finding.resolved_at, Finding.sla_due_date).all()

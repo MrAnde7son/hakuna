@@ -64,11 +64,17 @@ def compute_sla_status(due_date, resolved_at, warn_days: int) -> str:
     return "on_track"
 
 
-def ensure_sla_defaults(db: Session):
-    """Seed SLAConfig rows with defaults if they don't exist yet."""
+def ensure_sla_defaults(db: Session, org_id: Optional[int] = None):
+    """Seed SLAConfig rows with defaults for `org_id`. Idempotent — only
+    inserts severities not yet present for that org. Pass `org_id=None` to
+    seed legacy global rows (used by callers that haven't been org-scoped
+    yet)."""
     for sev, d in _SLA_DEFAULTS.items():
-        if not db.query(SLAConfig).filter(SLAConfig.severity == sev).first():
+        q = db.query(SLAConfig).filter(SLAConfig.severity == sev)
+        q = q.filter(SLAConfig.org_id.is_(None) if org_id is None else SLAConfig.org_id == org_id)
+        if not q.first():
             db.add(SLAConfig(
+                org_id=org_id,
                 severity=sev,
                 severity_label=d["label"],
                 days_to_remediate=d["days"],
@@ -78,8 +84,25 @@ def ensure_sla_defaults(db: Session):
     db.commit()
 
 
-def recalculate_sla_for_scan(db: Session, scan_id: int, configs: list):
+def get_sla_configs_for_org(db: Session, org_id: Optional[int]) -> list:
+    """Return SLA configs to use when evaluating findings owned by `org_id`.
+
+    Per-org rows take precedence; if an org hasn't customized SLA yet, fall
+    back to the legacy global (NULL-org) rows so existing installs keep
+    working. Returns an empty list if neither exists.
+    """
+    if org_id is not None:
+        rows = db.query(SLAConfig).filter(SLAConfig.org_id == org_id).all()
+        if rows:
+            return rows
+    return db.query(SLAConfig).filter(SLAConfig.org_id.is_(None)).all()
+
+
+def recalculate_sla_for_scan(db: Session, scan_id: int, configs: Optional[list] = None):
     """Recompute sla_due_date and sla_status for every finding in a scan.
+
+    `configs` may be passed by callers that already have them loaded; when
+    omitted, the configs are looked up per the scan's own org.
 
     Base date priority (most accurate → fallback):
       1. asset.scan_start  — per-asset scan start from Nessus
@@ -89,6 +112,9 @@ def recalculate_sla_for_scan(db: Session, scan_id: int, configs: list):
     scan = db.query(Scan).filter(Scan.id == scan_id).first()
     if not scan:
         return 0
+
+    if configs is None:
+        configs = get_sla_configs_for_org(db, scan.org_id)
 
     cfg_map = {c.severity: c for c in configs}
 

@@ -205,12 +205,28 @@ def _compute_org_metrics(db: Session, org_ids: Optional[List[int]], scan_id: Opt
     critical = sev_counts.get(4, 0)
     high = sev_counts.get(3, 0)
 
-    # SLA & MTTR — load SLAConfig once
-    all_sla_configs = db.query(SLAConfig).all()
-    cfg_map = {c.severity: c for c in all_sla_configs}
-    enabled_sevs = [c.severity for c in all_sla_configs if c.is_enabled]
+    # SLA & MTTR — per-org configs (with NULL-org fallback). When the caller
+    # spans multiple orgs (MSSP overview), each finding picks up its own
+    # org's SLA windows, and "enabled severities" is the union across orgs.
+    from services.sla_engine import get_sla_configs_for_org
+    cfg_cache: dict = {}
 
-    sla_q = finding_q.filter(Finding.severity.in_(enabled_sevs)) if enabled_sevs else finding_q.filter(False)
+    def _cfg_for(oid):
+        if oid not in cfg_cache:
+            cfg_cache[oid] = {c.severity: c for c in get_sla_configs_for_org(db, oid)}
+        return cfg_cache[oid]
+
+    enabled_sevs: set = set()
+    if org_ids is None:
+        for c in db.query(SLAConfig).filter(SLAConfig.is_enabled == True).all():
+            enabled_sevs.add(c.severity)
+    else:
+        for oid in org_ids:
+            for c in _cfg_for(oid).values():
+                if c.is_enabled:
+                    enabled_sevs.add(c.severity)
+
+    sla_q = finding_q.filter(Finding.severity.in_(list(enabled_sevs))) if enabled_sevs else finding_q.filter(False)
     sla_findings = sla_q.all()
 
     sla_counts = {"on_track": 0, "at_risk": 0, "breached": 0, "resolved": 0, "n/a": 0}
@@ -220,7 +236,7 @@ def _compute_org_metrics(db: Session, org_ids: Optional[List[int]], scan_id: Opt
         status = f.sla_status or "n/a"
         sla_counts[status] = sla_counts.get(status, 0) + 1
         if f.resolved_at and f.sla_due_date:
-            cfg = cfg_map.get(f.severity)
+            cfg = _cfg_for(f.org_id).get(f.severity)
             if cfg:
                 obs_date = f.sla_due_date - timedelta(days=cfg.days_to_remediate)
                 days = (f.resolved_at - obs_date).total_seconds() / 86400

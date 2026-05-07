@@ -1282,12 +1282,13 @@ function AppShell() {
                 <Route path="/workflows/:id" element={<WorkflowBuilder />} />
                 <Route path="/inventory" element={<InventoryExplorer />} />
                 <Route path="/agents" element={<AgentBuilder />} />
+                <Route path="/org-memory" element={<Navigate to="/settings?tab=org-memory" replace />} />
                 <Route path="/tags" element={<TagManager />} />
                 <Route path="/custom-fields" element={<CustomFieldManager />} />
                 <Route path="/threat-intel/:tab?" element={<ThreatIntelCenter />} />
                 <Route path="/settings" element={<Settings />} />
-                <Route path="/scans" element={<Navigate to="/settings?tab=upload" replace />} />
-                <Route path="/upload" element={<Navigate to="/settings?tab=upload" replace />} />
+                <Route path="/scans" element={<Navigate to="/settings?tab=scans" replace />} />
+                <Route path="/upload" element={<Navigate to="/settings?tab=scans" replace />} />
                 <Route path="/profile" element={<UserManagement />} />
                 <Route path="/billing" element={<Navigate to="/profile" replace />} />
                 <Route path="/siem/search" element={<EventSearch />} />

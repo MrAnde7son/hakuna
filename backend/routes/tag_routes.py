@@ -448,7 +448,10 @@ def get_tag_condition_catalog(db: Session = Depends(get_db), org_ids: Optional[L
 
 @router.get("/api/auto-tag-rules")
 def list_auto_tag_rules(db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
-    rules = db.query(AutoTagRule).order_by(AutoTagRule.id).all()
+    q = db.query(AutoTagRule)
+    if org_ids is not None:
+        q = q.filter(AutoTagRule.org_id.in_(org_ids))
+    rules = q.order_by(AutoTagRule.id).all()
     return [_rule_to_dict(r) for r in rules]
 
 

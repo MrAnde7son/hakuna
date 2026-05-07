@@ -264,13 +264,72 @@ def _get_document_summary(agent_id: int) -> Optional[str]:
         return None
 
 
-def build_context_section(agent_id: int, agent_memory: Optional[dict] = None) -> str:
+_ORG_MEMORY_BUDGET_BYTES = 2048
+_ORG_MEMORY_PER_NAMESPACE = 10
+
+
+def _build_org_memory_section(org_id: int, namespaces: List[str]) -> Optional[str]:
+    """Render up to ~2KB of recent active facts across the requested namespaces.
+
+    Truncates oldest first so the most recent learnings always survive the
+    budget. Returns None when no facts are available — caller should skip
+    the section entirely in that case.
+    """
+    if not namespaces:
+        return None
+    try:
+        from core.database import SessionLocal
+        from services.org_memory import recall as recall_facts
+        db = SessionLocal()
+        try:
+            collected: list[tuple[str, dict]] = []
+            for ns in namespaces:
+                facts = recall_facts(db, org_id, ns, limit=_ORG_MEMORY_PER_NAMESPACE)
+                for f in facts:
+                    collected.append((ns, f))
+            if not collected:
+                return None
+            # `recall` returns newest first per namespace, so the *end* of
+            # `collected` holds the oldest entries; pop those first when over
+            # budget.
+            lines = [
+                "## Org Memory",
+                "Shared org-level knowledge captured by other agents and analysts.",
+                "Use `recall_org_memory` to read more, `remember_org_memory` to add new facts.",
+            ]
+            rendered: list[str] = []
+            for ns, f in collected:
+                key = f.get("key")
+                value = f.get("value")
+                conf = f.get("confidence")
+                rendered.append(
+                    f"- [{ns}] {key} (confidence={conf}): {json.dumps(value, default=str)}"
+                )
+            body = "\n".join(lines + rendered)
+            while len(body.encode("utf-8")) > _ORG_MEMORY_BUDGET_BYTES and rendered:
+                rendered.pop()  # drop oldest (end of list)
+                body = "\n".join(lines + rendered + ["- (older facts truncated)"])
+            return body
+        finally:
+            db.close()
+    except Exception:
+        logger.exception("Failed to build org memory section for org %s", org_id)
+        return None
+
+
+def build_context_section(
+    agent_id: int,
+    agent_memory: Optional[dict] = None,
+    org_id: Optional[int] = None,
+    org_memory_namespaces: Optional[List[str]] = None,
+) -> str:
     """Build the context section to append to an agent's system prompt.
 
     Includes:
     - Persistent memory (from agent.memory)
     - Scratchpad state (from file)
     - Knowledge base document listing (RAG)
+    - Org Memory (cross-agent, opt-in via org_memory_namespaces)
     """
     sections = []
 
@@ -291,6 +350,11 @@ def build_context_section(agent_id: int, agent_memory: Optional[dict] = None) ->
     doc_summary = _get_document_summary(agent_id)
     if doc_summary:
         sections.append(doc_summary)
+
+    if org_id is not None and org_memory_namespaces:
+        org_section = _build_org_memory_section(org_id, org_memory_namespaces)
+        if org_section:
+            sections.append(org_section)
 
     if not sections:
         return ""

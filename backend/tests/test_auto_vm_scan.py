@@ -507,6 +507,63 @@ class TestProcessPendingEasmVmTriggers:
         session.refresh(scan)
         # Flag must still be set so the next sweep retries.
         assert scan.raw_metadata.get("needs_auto_vm_scan") is True
+        # Failure counter is bumped so a permanently broken scan eventually
+        # gives up instead of looping every 60s forever.
+        assert scan.raw_metadata.get("auto_vm_scan_failures") == 1
+
+    def test_drops_flag_after_max_consecutive_failures(self, db_session):
+        """A permanently broken dispatch eventually clears the flag instead of
+        looping forever. Observed in prod 2026-04-30 → 2026-05-07: scan 548
+        retried every 60s for 6 days because no retry cap existed."""
+        from services.vm_scanner import (
+            MAX_AUTO_VM_SCAN_FAILURES,
+            process_pending_easm_vm_triggers,
+        )
+
+        session, org = db_session
+        scan = _make_easm_scan(session, org)
+        _make_easm_asset(session, scan.id, "app.example.com", ports=[443])
+        # Pre-seed N-1 failures so this sweep is the one that trips the cap.
+        scan.raw_metadata = {
+            **(scan.raw_metadata or {}),
+            "needs_auto_vm_scan": True,
+            "auto_vm_scan_failures": MAX_AUTO_VM_SCAN_FAILURES - 1,
+        }
+        session.commit()
+
+        with patch(
+            "services.vm_scanner.trigger_vm_scan_for_easm_assets",
+            new_callable=AsyncMock,
+        ) as mock_trigger:
+            mock_trigger.side_effect = RuntimeError("vm-api 503")
+            stats = process_pending_easm_vm_triggers(session)
+
+        assert stats["errors"] == 1
+        session.refresh(scan)
+        assert "needs_auto_vm_scan" not in (scan.raw_metadata or {})
+        assert scan.raw_metadata.get("auto_vm_scan_failures") == MAX_AUTO_VM_SCAN_FAILURES
+
+    def test_resets_failure_counter_on_success(self, db_session):
+        """A successful dispatch clears both the flag and the failure counter."""
+        session, org = db_session
+        scan = _make_easm_scan(session, org)
+        _make_easm_asset(session, scan.id, "app.example.com", ports=[443])
+        scan.raw_metadata = {
+            **(scan.raw_metadata or {}),
+            "needs_auto_vm_scan": True,
+            "auto_vm_scan_failures": 3,
+        }
+        session.commit()
+
+        with patch("services.vm_scanner.start_vm_scan", new_callable=AsyncMock) as mock_start:
+            mock_start.return_value = {"scan_id": 999, "job_ids": ["j1"], "status": "running"}
+            from services.vm_scanner import process_pending_easm_vm_triggers
+            stats = process_pending_easm_vm_triggers(session)
+
+        assert stats["dispatched"] == 1
+        session.refresh(scan)
+        assert "needs_auto_vm_scan" not in (scan.raw_metadata or {})
+        assert "auto_vm_scan_failures" not in (scan.raw_metadata or {})
 
 
 # ─────────────────────────────────────────────────────────────────────

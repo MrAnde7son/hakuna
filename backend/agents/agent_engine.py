@@ -194,12 +194,39 @@ _INTER_AGENT_PROTOCOL = (
 )
 
 
+_DEFAULT_ORG_MEMORY_NAMESPACES = ["org_profile"]
+
+
+def _agent_org_memory_namespaces(agent: Agent) -> list[str]:
+    """Resolve which org_memory namespaces an agent's prompt should include.
+
+    Order of precedence:
+      1. `agent.guardrails.org_memory_namespaces` (explicit per-agent opt-in)
+      2. `_DEFAULT_ORG_MEMORY_NAMESPACES` — `org_profile` is universal context
+         from the onboarding wizard; every agent benefits from knowing the
+         customer's industry / team shape / objectives.
+
+    Behavior-suggestion namespace is intentionally excluded — those facts
+    must be promoted by an admin first.
+    """
+    g = agent.guardrails or {}
+    explicit = g.get("org_memory_namespaces")
+    if isinstance(explicit, list):
+        return [str(n) for n in explicit if n]
+    return list(_DEFAULT_ORG_MEMORY_NAMESPACES)
+
+
 def _build_system_prompt(agent: Agent) -> str:
     """Combine agent instructions with memory + scratchpad context."""
     parts = [agent.system_prompt]
 
-    # Add context section (memory + scratchpad)
-    ctx = build_context_section(agent.id, agent.memory)
+    # Add context section (memory + scratchpad + org memory)
+    ctx = build_context_section(
+        agent.id,
+        agent.memory,
+        org_id=agent.org_id,
+        org_memory_namespaces=_agent_org_memory_namespaces(agent),
+    )
     if ctx:
         parts.append(ctx)
 
@@ -230,8 +257,13 @@ def _build_system_prompt_cached(agent: Agent) -> list:
         }
     ]
 
-    # Dynamic block: memory + scratchpad (changes between runs)
-    ctx = build_context_section(agent.id, agent.memory)
+    # Dynamic block: memory + scratchpad + org memory (changes between runs)
+    ctx = build_context_section(
+        agent.id,
+        agent.memory,
+        org_id=agent.org_id,
+        org_memory_namespaces=_agent_org_memory_namespaces(agent),
+    )
     if ctx:
         blocks.append({"type": "text", "text": ctx})
 
@@ -393,6 +425,7 @@ HITL_TOOLS = CONFIRMATION_REQUIRED_TOOLS | {
 LOW_RISK_WRITE_TOOLS = {
     "tag_assets", "bulk_tag_findings", "create_tag", "create_auto_tag_rule",
     "run_auto_tag_rules", "update_finding_status", "build_report",
+    "remember_org_memory",
 }
 
 # Adaptive autonomy levels:

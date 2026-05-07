@@ -1229,12 +1229,11 @@ def apply_packages(
     # ── Create SLA configs ───────────────────────────────────
     sla_rows = SLA_PRESETS.get(sla_preset, SLA_PRESETS["standard"])
     for sla_data in sla_rows:
-        # UniqueConstraint on severity (global) — check by severity alone
         existing = db.query(SLAConfig).filter(
             SLAConfig.severity == sla_data["severity"],
+            SLAConfig.org_id == org_id,
         ).first()
         if existing:
-            existing.org_id = org_id
             existing.days_to_remediate = sla_data["days_to_remediate"]
             existing.warn_days_before = sla_data["warn_days_before"]
             existing.is_enabled = sla_data["is_enabled"]
@@ -1470,6 +1469,20 @@ def apply_packages(
 
     db.commit()
     logger.info("Onboarding packages applied for org %s: %s", org_id, created)
+
+    # Mirror the user-stated profile into the org-shared memory layer so any
+    # agent opted into the `org_profile` namespace gets industry / team-shape
+    # / objectives in its system prompt without a bespoke tool. Failures here
+    # must not break onboarding — the wizard's source-of-truth remains
+    # `Organization.settings.onboarding`.
+    try:
+        from services.org_memory import sync_org_profile_to_memory
+        sync_org_profile_to_memory(db, org_id)
+        db.commit()
+    except Exception:
+        logger.exception("Failed to mirror onboarding profile to org_memory (non-fatal)")
+        db.rollback()
+
     return created
 
 

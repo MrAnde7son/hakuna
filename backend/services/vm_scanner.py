@@ -40,6 +40,12 @@ VM_SCAN_STALE_THRESHOLD_SECONDS = 3 * 3600
 # slow targets, so 20 min is well outside the normal ramp-up window.
 VM_SCAN_PENDING_ORPHAN_SECONDS = 20 * 60
 
+# After this many consecutive dispatch failures, drop `needs_auto_vm_scan`
+# from the EASM scan's metadata. At a 60s sweep interval this is ~10 min of
+# retries — long enough to ride out transient vm-api blips, short enough that
+# a permanently broken scan can't poison the sweeper indefinitely.
+MAX_AUTO_VM_SCAN_FAILURES = 10
+
 
 def _emit_vm_scan_failed_notification(
     db: Session,
@@ -69,7 +75,7 @@ def _emit_vm_scan_failed_notification(
             db, scan.org_id, "scan_failed",
             f"VM scan '{scan_label}' failed",
             body=(error_msg or "")[:200],
-            link="/settings?tab=upload",
+            link="/settings?tab=scans",
             entity_type="scan", entity_id=scan.id,
             metadata={
                 "scan_name": scan_label,
@@ -401,6 +407,14 @@ async def start_vm_scan(
                         logger.exception(
                             "scan_plan compute failed for asset %s; using legacy path", aid,
                         )
+                        # Roll back so a Postgres error here doesn't poison
+                        # the shared session and cascade-fail every later
+                        # query in this dispatch (and in the connection's
+                        # next pool checkout).
+                        try:
+                            db.rollback()
+                        except Exception:
+                            logger.exception("rollback after scan_plan failure failed")
                         return aid, None
             try:
                 computed = await asyncio.wait_for(
@@ -980,6 +994,14 @@ def process_pending_easm_vm_triggers(db: Session | None = None) -> dict:
     if own_session:
         db = SessionLocal()
 
+    # Defensive: if a connection from the pool was returned in an aborted
+    # state by a previous request that crashed without rollback, the very
+    # first query below will raise InFailedSqlTransaction. Reset before use.
+    try:
+        db.rollback()
+    except Exception:
+        logger.exception("pre-sweep rollback failed")
+
     swept = 0
     dispatched = 0
     skipped = 0
@@ -1011,6 +1033,7 @@ def process_pending_easm_vm_triggers(db: Session | None = None) -> dict:
                     scan.id,
                 )
                 md.pop("needs_auto_vm_scan", None)
+                md.pop("auto_vm_scan_failures", None)
                 scan.raw_metadata = md
                 db.commit()
                 skipped += 1
@@ -1026,8 +1049,37 @@ def process_pending_easm_vm_triggers(db: Session | None = None) -> dict:
                     scan.id,
                 )
                 errors += 1
-                # Leave the flag set — next sweep will retry. Most failures
-                # here are transient (vm-api 5xx, network blip).
+                # The async dispatch may have left the session with an
+                # aborted Postgres tx (e.g. deadlock, statement timeout).
+                # Roll back so the next iteration — and the next pool
+                # checkout — get a clean connection.
+                try:
+                    db.rollback()
+                except Exception:
+                    logger.exception(
+                        "rollback after dispatch failure failed for scan %s",
+                        scan.id,
+                    )
+                # Bump the failure counter and give up after enough
+                # consecutive failures so a permanently-broken scan can't
+                # loop forever (~6 days of every-60s retries observed in
+                # prod for scan 548 before this cap was added).
+                fail_count = int(md.get("auto_vm_scan_failures") or 0) + 1
+                md["auto_vm_scan_failures"] = fail_count
+                if fail_count >= MAX_AUTO_VM_SCAN_FAILURES:
+                    logger.warning(
+                        "easm vm trigger sweep: scan %s reached %d consecutive failures — clearing flag",
+                        scan.id, fail_count,
+                    )
+                    md.pop("needs_auto_vm_scan", None)
+                scan.raw_metadata = md
+                try:
+                    db.commit()
+                except Exception:
+                    logger.exception(
+                        "commit of failure counter failed for scan %s", scan.id,
+                    )
+                    db.rollback()
                 continue
 
             # Whether result is a dict (dispatched / already triggered) or
@@ -1035,6 +1087,7 @@ def process_pending_easm_vm_triggers(db: Session | None = None) -> dict:
             # change the outcome until the EASM scan re-runs and refreshes
             # `easm_data` on its assets.
             md.pop("needs_auto_vm_scan", None)
+            md.pop("auto_vm_scan_failures", None)
             scan.raw_metadata = md
             db.commit()
             if result is not None:
@@ -1043,6 +1096,10 @@ def process_pending_easm_vm_triggers(db: Session | None = None) -> dict:
                 skipped += 1
     except Exception:
         logger.exception("easm vm trigger sweep failed")
+        try:
+            db.rollback()
+        except Exception:
+            logger.exception("rollback after sweep failure failed")
     finally:
         if own_session:
             db.close()

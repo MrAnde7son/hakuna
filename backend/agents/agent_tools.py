@@ -4350,7 +4350,9 @@ def recalculate_risk_scores(db: Session, params: dict):
     {},
 )
 def get_sla_config(db: Session, params: dict):
-    configs = db.query(SLAConfig).order_by(SLAConfig.severity.desc()).all()
+    from services.sla_engine import get_sla_configs_for_org
+    org_id = params.get("_org_id")
+    configs = sorted(get_sla_configs_for_org(db, org_id), key=lambda c: -c.severity)
     if not configs:
         return {
             "configs": [],
@@ -4390,12 +4392,20 @@ def update_sla_config(db: Session, params: dict):
     configs = params.get("configs", [])
     if not configs:
         return {"error": "Provide at least one SLA config entry."}
+    org_id = params.get("_org_id")
+    if org_id is None:
+        return {"error": "Agent has no org context — cannot update SLA configuration."}
+    from services.sla_engine import ensure_sla_defaults
+    ensure_sla_defaults(db, org_id)
     results = []
     for entry in configs:
         sev = entry.get("severity")
         if sev is None:
             continue
-        existing = db.query(SLAConfig).filter(SLAConfig.severity == sev).first()
+        existing = db.query(SLAConfig).filter(
+            SLAConfig.severity == sev,
+            SLAConfig.org_id == org_id,
+        ).first()
         if existing:
             if "days_to_remediate" in entry:
                 existing.days_to_remediate = entry["days_to_remediate"]
@@ -4405,6 +4415,7 @@ def update_sla_config(db: Session, params: dict):
                 existing.is_enabled = entry["is_enabled"]
         else:
             existing = SLAConfig(
+                org_id=org_id,
                 severity=sev,
                 days_to_remediate=entry.get("days_to_remediate", 30),
                 warn_days_before=entry.get("warn_days_before", 7),
@@ -4429,12 +4440,15 @@ def recalculate_sla(db: Session, params: dict):
     if not params.get("confirmed"):
         return {"error": "Ask for confirmation before recalculating SLA for all findings."}
     from services.sla_engine import recalculate_sla_for_scan
+    org_id = params.get("_org_id")
     scan_id = params.get("scan_id")
     if scan_id:
         result = recalculate_sla_for_scan(db, scan_id)
         return {"message": f"SLA recalculated for scan {scan_id}.", "result": result}
-    # Recalculate for all scans
-    scans = db.query(Scan).all()
+    scan_q = db.query(Scan)
+    if org_id is not None:
+        scan_q = scan_q.filter(Scan.org_id == org_id)
+    scans = scan_q.all()
     total = 0
     for scan in scans:
         result = recalculate_sla_for_scan(db, scan.id)

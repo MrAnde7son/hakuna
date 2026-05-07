@@ -228,9 +228,11 @@ def list_custom_fields(
     entity_type: Optional[str] = Query(None),
     db: Session = Depends(get_db),
     user: User = Depends(require_auth),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
-    org_id = _require_org(user)
-    q = db.query(CustomFieldDefinition).filter(CustomFieldDefinition.org_id == org_id)
+    q = db.query(CustomFieldDefinition)
+    if org_ids is not None:
+        q = q.filter(CustomFieldDefinition.org_id.in_(org_ids))
     if entity_type:
         if entity_type not in VALID_ENTITIES:
             raise HTTPException(400, f"entity_type must be one of {sorted(VALID_ENTITIES)}")

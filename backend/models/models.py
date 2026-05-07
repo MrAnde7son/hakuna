@@ -2024,6 +2024,42 @@ class AgentApproval(Base):
     agent = relationship("Agent")
 
 
+class OrgMemoryFact(Base):
+    """Org-scoped, agent-shared memory — captures HOW each customer triages.
+
+    Append-only: never UPDATE the value column. To change a fact, insert a
+    new row and point the predecessor's `superseded_by` at the new id. This
+    preserves the full chain of org reasoning over time, so an analyst can
+    answer "when did this rule change, and who learned it?".
+
+    Distinct from `Agent.memory` (per-agent scratch state) and the file-based
+    scratchpad in agents/agent_context.py — those are per-agent and do not
+    cross between agents.
+    """
+    __tablename__ = "org_memory_facts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    namespace = Column(String(64), nullable=False)
+    key = Column(String(255), nullable=False)
+    value = Column(JSON, nullable=False)
+    confidence = Column(Float, nullable=False, default=0.8)
+
+    source_agent_id = Column(Integer, ForeignKey("agents.id"), nullable=True)
+    source_run_id = Column(Integer, ForeignKey("agent_runs.id"), nullable=True)
+    evidence = Column(JSON, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    expires_at = Column(DateTime, nullable=True)
+    superseded_by = Column(Integer, ForeignKey("org_memory_facts.id"), nullable=True)
+
+    __table_args__ = (
+        Index("ix_org_memory_org_namespace", "org_id", "namespace"),
+        Index("ix_org_memory_key", "org_id", "namespace", "key"),
+    )
+
+
 class AgentLead(Base):
     """Observation emitted by an audit agent it didn't have the budget to pursue.
 

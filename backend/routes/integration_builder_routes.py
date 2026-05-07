@@ -10,7 +10,10 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from core.database import get_db
-from core.auth import get_current_user, require_auth, get_current_principal, CollaboratorPrincipal
+from core.auth import (
+    get_current_user, require_auth, get_current_principal, CollaboratorPrincipal,
+    get_accessible_org_ids, get_principal_accessible_org_ids,
+)
 from core.time_utils import iso_utc
 from models.models import (
     User, Integration, IntegrationCredential, IntegrationRun, DiscoveredSpec,
@@ -82,16 +85,17 @@ def poll_integration_events(
     integration_id: str,
     db: Session = Depends(get_db),
     user: User = Depends(require_auth),
+    org_ids: Optional[list] = Depends(get_accessible_org_ids),
 ):
     """Poll for events received on a webhook integration. Returns detected paths from the first event."""
     from models.models import SIEMEvent
 
-    i = _get_integration_or_404(db, integration_id, user.org_id)
+    i = _get_integration_in_orgs(db, integration_id, org_ids)
 
-    event = db.query(SIEMEvent).filter(
-        SIEMEvent.integration_id == integration_id,
-        SIEMEvent.org_id == user.org_id,
-    ).order_by(SIEMEvent.ingested_at.desc()).first()
+    event_q = db.query(SIEMEvent).filter(SIEMEvent.integration_id == integration_id)
+    if org_ids is not None:
+        event_q = event_q.filter(SIEMEvent.org_id.in_(org_ids))
+    event = event_q.order_by(SIEMEvent.ingested_at.desc()).first()
 
     if not event:
         return {"found": False, "detected_paths": [], "sample_records": []}
@@ -222,13 +226,13 @@ def create_credential(body: CredentialCreate, db: Session = Depends(get_db),
 
 @router.get("/credentials")
 def list_credentials(db: Session = Depends(get_db),
-                      principal=Depends(get_current_principal)):
+                      user: User = Depends(require_auth),
+                      org_ids: Optional[list] = Depends(get_accessible_org_ids)):
     """List credentials — metadata only, never return encrypted values."""
-    if principal is None:
-        raise HTTPException(401, "Authentication required")
-    creds = db.query(IntegrationCredential).filter(
-        IntegrationCredential.org_id == principal.org_id
-    ).all()
+    q = db.query(IntegrationCredential)
+    if org_ids is not None:
+        q = q.filter(IntegrationCredential.org_id.in_(org_ids))
+    creds = q.all()
     return [
         {
             "id": c.id, "name": c.name, "connector_id": c.connector_id,
@@ -254,14 +258,15 @@ _SAFE_VALUE_KEYS = {"username", "user", "domain", "host", "url", "client_id", "t
 
 @router.get("/credentials/{credential_id}")
 def get_credential(credential_id: str, db: Session = Depends(get_db),
-                    user: User = Depends(require_auth)):
+                    user: User = Depends(require_auth),
+                    org_ids: Optional[list] = Depends(get_accessible_org_ids)):
     """Return metadata + non-secret values. Secret fields (password, community,
     token, api_key, etc.) are never echoed — the UI shows a placeholder and
     treats blank as "keep existing" on PATCH."""
-    cred = db.query(IntegrationCredential).filter(
-        IntegrationCredential.id == credential_id,
-        IntegrationCredential.org_id == user.org_id,
-    ).first()
+    q = db.query(IntegrationCredential).filter(IntegrationCredential.id == credential_id)
+    if org_ids is not None:
+        q = q.filter(IntegrationCredential.org_id.in_(org_ids))
+    cred = q.first()
     if not cred:
         raise HTTPException(404, "Credential not found")
     value_keys: list[str] = []
@@ -666,14 +671,15 @@ class IntegrationUpdate(BaseModel):
 def list_integrations(
     db: Session = Depends(get_db),
     principal=Depends(get_current_principal),
+    org_ids: Optional[list] = Depends(get_principal_accessible_org_ids),
 ):
     if principal is None:
         raise HTTPException(401, "Authentication required")
     q = db.query(Integration)
     if isinstance(principal, CollaboratorPrincipal):
         q = q.filter(Integration.campaign_id == principal.campaign_id)
-    else:
-        q = q.filter(Integration.org_id == principal.org_id)
+    elif org_ids is not None:
+        q = q.filter(Integration.org_id.in_(org_ids))
     integrations = q.order_by(Integration.created_at.desc()).all()
     return [_integration_summary(i) for i in integrations]
 
@@ -812,8 +818,9 @@ def create_integration(body: IntegrationCreate, db: Session = Depends(get_db),
 
 @router.get("/integrations/{integration_id}")
 def get_integration(integration_id: str, db: Session = Depends(get_db),
-                     principal=Depends(get_current_principal)):
-    i = _get_integration_for_principal(db, integration_id, principal)
+                     principal=Depends(get_current_principal),
+                     org_ids: Optional[list] = Depends(get_principal_accessible_org_ids)):
+    i = _get_integration_for_principal(db, integration_id, principal, org_ids=org_ids)
     return _integration_detail(i)
 
 
@@ -854,21 +861,22 @@ def delete_integration(integration_id: str, db: Session = Depends(get_db),
 
 @router.get("/integrations/{integration_id}/webhook")
 def get_webhook_info(integration_id: str, db: Session = Depends(get_db),
-                     user: User = Depends(require_auth)):
+                     user: User = Depends(require_auth),
+                     org_ids: Optional[list] = Depends(get_accessible_org_ids)):
     """Return the ingest endpoint ID and metadata for a webhook integration.
 
     Does NOT return the bearer token or HMAC secret — those are only shown
     once at creation and cannot be retrieved. Use /webhook/rotate to generate
     a new pair if lost.
     """
-    i = _get_integration_or_404(db, integration_id, user.org_id)
+    i = _get_integration_in_orgs(db, integration_id, org_ids)
     if i.transport_type != "webhook":
         raise HTTPException(400, "Integration is not a webhook transport")
 
-    ep = db.query(IngestEndpoint).filter(
-        IngestEndpoint.integration_id == integration_id,
-        IngestEndpoint.org_id == user.org_id,
-    ).first()
+    ep_q = db.query(IngestEndpoint).filter(IngestEndpoint.integration_id == integration_id)
+    if org_ids is not None:
+        ep_q = ep_q.filter(IngestEndpoint.org_id.in_(org_ids))
+    ep = ep_q.first()
     if not ep:
         raise HTTPException(404, "No ingest endpoint found for this integration")
 
@@ -1015,8 +1023,9 @@ async def run_integration(integration_id: str, background_tasks: BackgroundTasks
 @router.get("/integrations/{integration_id}/runs")
 def list_runs(integration_id: str, limit: int = Query(50, le=100),
               db: Session = Depends(get_db),
-              principal=Depends(get_current_principal)):
-    _get_integration_for_principal(db, integration_id, principal)
+              principal=Depends(get_current_principal),
+              org_ids: Optional[list] = Depends(get_principal_accessible_org_ids)):
+    _get_integration_for_principal(db, integration_id, principal, org_ids=org_ids)
     runs = db.query(IntegrationRun).filter(
         IntegrationRun.integration_id == integration_id
     ).order_by(IntegrationRun.started_at.desc()).limit(limit).all()
@@ -1025,8 +1034,9 @@ def list_runs(integration_id: str, limit: int = Query(50, le=100),
 
 @router.get("/integrations/{integration_id}/runs/{run_id}")
 def get_run(integration_id: str, run_id: str, db: Session = Depends(get_db),
-             user: User = Depends(require_auth)):
-    _get_integration_or_404(db, integration_id, user.org_id)
+             user: User = Depends(require_auth),
+             org_ids: Optional[list] = Depends(get_accessible_org_ids)):
+    _get_integration_in_orgs(db, integration_id, org_ids)
     run = db.query(IntegrationRun).filter(IntegrationRun.id == run_id).first()
     if not run:
         raise HTTPException(404, "Run not found")
@@ -1047,17 +1057,34 @@ def _get_integration_or_404(db, integration_id, org_id):
     return i
 
 
-def _get_integration_for_principal(db, integration_id: str, principal):
+def _get_integration_in_orgs(db, integration_id: str, org_ids):
+    """Resolve an integration scoped to the caller's accessible orgs.
+
+    `org_ids=None` means superadmin without X-Org-Context — no org filter.
+    """
+    q = db.query(Integration).filter(Integration.id == integration_id)
+    if org_ids is not None:
+        q = q.filter(Integration.org_id.in_(org_ids))
+    i = q.first()
+    if not i:
+        raise HTTPException(404, "Integration not found")
+    return i
+
+
+def _get_integration_for_principal(db, integration_id: str, principal, org_ids=None):
     """Resolve an integration in the principal's allowed scope.
+
     - Collaborators: must match `campaign_id == collab.campaign_id`.
-    - Users: must match `org_id == user.org_id`.
-    Returns the Integration. Raises 404 otherwise.
+    - Users: filter by `org_ids` when provided (honors X-Org-Context); fall
+      back to the user's home org otherwise.
     """
     if principal is None:
         raise HTTPException(401, "Authentication required")
     q = db.query(Integration).filter(Integration.id == integration_id)
     if isinstance(principal, CollaboratorPrincipal):
         q = q.filter(Integration.campaign_id == principal.campaign_id)
+    elif org_ids is not None:
+        q = q.filter(Integration.org_id.in_(org_ids))
     else:
         q = q.filter(Integration.org_id == principal.org_id)
     i = q.first()

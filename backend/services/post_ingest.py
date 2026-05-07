@@ -583,12 +583,11 @@ def _match_ttps(db, scan_id):
 
 
 def _compute_sla(db, scan_id):
-    from models.models import SLAConfig
-    from services.sla_engine import ensure_sla_defaults, recalculate_sla_for_scan
+    from services.sla_engine import recalculate_sla_for_scan
 
-    ensure_sla_defaults(db)
-    configs = db.query(SLAConfig).all()
-    updated = recalculate_sla_for_scan(db, scan_id, configs)
+    # recalculate_sla_for_scan looks up the scan's own org configs (per-org,
+    # with NULL-org fallback) — no need to load a global config list here.
+    updated = recalculate_sla_for_scan(db, scan_id)
     if updated:
         logger.info("SLA computed for %d findings", updated)
     return updated
