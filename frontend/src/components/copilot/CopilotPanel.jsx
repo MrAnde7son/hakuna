@@ -272,7 +272,7 @@ const PAGE_LABELS = {
   '/findings': 'Findings list',
   '/assets': 'Asset Inventory',
   '/campaigns': 'Campaigns',
-  '/inventory': 'Software Inventory',
+  '/inventory': 'Inventory',
   '/threat-intel': 'Threat Intelligence',
   '/aggregated-solutions': 'Aggregated Solutions',
   '/tags': 'Tag Manager',
