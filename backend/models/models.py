@@ -1990,13 +1990,21 @@ class AgentSchedule(Base):
 
 
 class AgentApproval(Base):
-    """Pending human-in-the-loop approval for a write/destructive tool call during an agent run."""
+    """Pending human-in-the-loop approval for a write/destructive tool call.
+
+    Two flavors share the table:
+      * ``source='internal_agent'`` — paused agent run; ``agent_id`` and
+        ``agent_run_id`` populated, snapshot fields used to resume the loop.
+      * ``source='mcp_external'`` — call came in through ``/api/mcp`` from
+        a third-party agent; no run behind it, so the run/agent FKs are NULL.
+    """
     __tablename__ = "agent_approvals"
 
     id = Column(Integer, primary_key=True, index=True)
     org_id = Column(Integer, ForeignKey("organizations.id"), nullable=True, index=True)
-    agent_run_id = Column(Integer, ForeignKey("agent_runs.id"), nullable=False, index=True)
-    agent_id = Column(Integer, ForeignKey("agents.id"), nullable=False, index=True)
+    agent_run_id = Column(Integer, ForeignKey("agent_runs.id"), nullable=True, index=True)
+    agent_id = Column(Integer, ForeignKey("agents.id"), nullable=True, index=True)
+    source = Column(String, default="internal_agent", nullable=False)
 
     # Tool being gated
     tool_name = Column(String, nullable=False)
@@ -2022,6 +2030,26 @@ class AgentApproval(Base):
 
     run = relationship("AgentRun")
     agent = relationship("Agent")
+
+
+class OrgActionGrant(Base):
+    """Org-wide auto-approval grant for a specific action, with TTL.
+
+    Backs the "Approve and auto-approve same tool for 24h" decision in
+    the approval queue: instead of just ``grant_scope='run'`` (which only
+    survives the current AgentRun), an ``org_for_24h`` decision inserts
+    one of these so future calls of the same action — including ones
+    coming from external MCP callers — skip the gate until ``expires_at``.
+    """
+    __tablename__ = "org_action_grants"
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    action_name = Column(String(128), nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    granted_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    granted_via_approval_id = Column(Integer, ForeignKey("agent_approvals.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
 
 class OrgMemoryFact(Base):

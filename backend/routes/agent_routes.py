@@ -484,6 +484,17 @@ class ApprovalDecide(BaseModel):
     grant_scope: Optional[str] = None
 
 
+def _approvals_query(db: Session, org_ids: Optional[List[int]]):
+    """Build the base approvals query that includes both internal-agent rows
+    (joined to Agent) and external MCP rows (no agent FK, scoped purely by
+    AgentApproval.org_id). Necessary because MCP-source approvals leave
+    ``agent_id`` NULL — an inner join on Agent would drop them."""
+    q = db.query(AgentApproval)
+    if org_ids is not None:
+        q = q.filter(AgentApproval.org_id.in_(org_ids))
+    return q
+
+
 @router.get("/approvals")
 def list_approvals(
     status: Optional[str] = None,
@@ -491,11 +502,7 @@ def list_approvals(
     org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
     """List approval requests, optionally filtered by status (pending/approved/rejected/expired)."""
-    q = (
-        db.query(AgentApproval)
-        .join(Agent, Agent.id == AgentApproval.agent_id)
-    )
-    q = apply_org_filter(q, Agent, org_ids)
+    q = _approvals_query(db, org_ids)
     if status:
         q = q.filter(AgentApproval.status == status)
     approvals = q.order_by(AgentApproval.requested_at.desc()).limit(200).all()
@@ -509,12 +516,7 @@ def get_approval(
     org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
     """Get a single approval request."""
-    q = (
-        db.query(AgentApproval)
-        .join(Agent, Agent.id == AgentApproval.agent_id)
-        .filter(AgentApproval.id == approval_id)
-    )
-    q = apply_org_filter(q, Agent, org_ids)
+    q = _approvals_query(db, org_ids).filter(AgentApproval.id == approval_id)
     approval = q.first()
     if not approval:
         raise HTTPException(404, "Approval not found")
@@ -532,15 +534,12 @@ def decide_approval(
     """Approve or reject a pending tool call. Resumes the agent run."""
     if body.decision not in ("approved", "rejected"):
         raise HTTPException(400, "decision must be 'approved' or 'rejected'")
-    if body.grant_scope is not None and body.grant_scope != "run":
-        raise HTTPException(400, "grant_scope must be 'run' if provided")
+    if body.grant_scope is not None and body.grant_scope not in ("run", "org_for_24h"):
+        raise HTTPException(400, "grant_scope must be 'run' or 'org_for_24h' if provided")
 
-    q = (
-        db.query(AgentApproval)
-        .join(Agent, Agent.id == AgentApproval.agent_id)
-        .filter(AgentApproval.id == approval_id, AgentApproval.status == "pending")
+    q = _approvals_query(db, org_ids).filter(
+        AgentApproval.id == approval_id, AgentApproval.status == "pending"
     )
-    q = apply_org_filter(q, Agent, org_ids)
     approval = q.first()
     if not approval:
         raise HTTPException(404, "Pending approval not found")
@@ -558,6 +557,7 @@ def decide_approval(
         decider_id=current_user.id if current_user else None,
         db=db,
         grant_scope=body.grant_scope,
+        approval_id=approval.id,
     )
 
     # The notification that pointed at this approval is no longer
@@ -565,6 +565,11 @@ def decide_approval(
     from services.approval_lifecycle import clear_approval_notification
     if clear_approval_notification(db, approval_id_for_cleanup):
         db.commit()
+
+    # External MCP approvals have no run/agent to resume — the decision row
+    # is the whole story (and ``org_for_24h`` grants take effect on retry).
+    if run_id is None:
+        return {"ok": True, "approval_id": approval_id_for_cleanup, "source": approval.source}
 
     # Continue the agent loop off the request thread — keeps the HTTP
     # response fast even when the approved tool is slow (SSH commands,
@@ -575,9 +580,8 @@ def decide_approval(
     # visible in audit-worker logs and survives a backend restart. Manual
     # non-audit runs keep the in-process path so dev without the audits
     # profile still works.
-    is_audit_run = bool(
-        ((approval.agent.memory or {}).get("_run_ctx") or {}).get("_scan_id")
-    )
+    agent_memory = (approval.agent.memory or {}) if approval.agent else {}
+    is_audit_run = bool((agent_memory.get("_run_ctx") or {}).get("_scan_id"))
 
     from services.job_manager import dispatch
 
@@ -1298,12 +1302,25 @@ def _schedule_to_dict(s: AgentSchedule):
 
 
 def _approval_to_dict(a: AgentApproval, include_snapshot: bool = False):
+    from agents.action_registry import get_action
+
+    spec = get_action(a.tool_name)
+    principal_type = "mcp_external" if a.source == "mcp_external" else "internal_agent"
+    principal_label = (
+        f"Internal agent: {a.agent.name}" if a.agent and a.source != "mcp_external"
+        else "External MCP caller"
+    )
     d = {
         "id": a.id,
         "agent_run_id": a.agent_run_id,
         "agent_id": a.agent_id,
+        "agent_name": a.agent.name if a.agent else None,
+        "source": a.source or "internal_agent",
+        "principal_type": principal_type,
+        "principal_label": principal_label,
         "tool_name": a.tool_name,
         "tool_input": a.tool_input,
+        "risk_tier": spec.risk_tier.value if spec else None,
         "provider": a.provider,
         "model_name": a.model_name,
         "current_step": a.current_step,

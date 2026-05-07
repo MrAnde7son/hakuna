@@ -18,7 +18,9 @@ from core.database import SessionLocal
 from core.token_quota import check_token_quota, increment_token_usage
 from core.llm_router import router as llm_router, PROVIDER_FOR_MODEL
 
-from models.models import Agent, AgentRun, AgentApproval, IntegrationConfig
+from models.models import (
+    Agent, AgentRun, AgentApproval, IntegrationConfig, OrgActionGrant,
+)
 from agents.agent_tools import (
     TOOL_REGISTRY, get_claude_tool_schemas, get_openai_tool_schemas,
     NeedsApproval,
@@ -506,11 +508,58 @@ def _is_auto_approved_for_run(run: AgentRun, tool_name: str) -> bool:
     calls of these tools skip both the HITL gate and the per-call NeedsApproval
     gate; the tool body sees ``_approved=True`` so its own classifier
     short-circuits.
+
+    Also consults ``OrgActionGrant`` when the run carries an ``org_id`` so a
+    24-hour org-scoped grant (``grant_scope='org_for_24h'``) covers the run.
     """
     if not run:
         return False
     granted = run.auto_approved_tools or []
-    return tool_name in granted
+    if tool_name in granted:
+        return True
+    # Org-scoped TTL grant — looked up lazily so missing tables in tests
+    # (pre-migration SQLite) don't crash the gate.
+    org_id = getattr(run, "org_id", None) or _agent_org_id_for_run(run)
+    if org_id is None:
+        return False
+    return _is_auto_approved_for_org(org_id, tool_name)
+
+
+def _agent_org_id_for_run(run: AgentRun) -> Optional[int]:
+    """Resolve the org id for a run via its agent. AgentRun has no direct
+    org_id column — the agent owns that — so we hop one relationship."""
+    try:
+        agent = getattr(run, "agent", None)
+        return getattr(agent, "org_id", None) if agent else None
+    except Exception:  # pragma: no cover — defensive
+        return None
+
+
+def _is_auto_approved_for_org(org_id: int, tool_name: str) -> bool:
+    """True if the org has a non-expired ``OrgActionGrant`` covering ``tool_name``.
+
+    Opens its own session because callers often hold a session in a tight
+    transaction and we don't want a stray query on the wrong table to
+    poison it. Cheap — indexed by (org_id, action_name, expires_at).
+    """
+    db = SessionLocal()
+    try:
+        now = datetime.utcnow()
+        return (
+            db.query(OrgActionGrant)
+            .filter(
+                OrgActionGrant.org_id == org_id,
+                OrgActionGrant.action_name == tool_name,
+                OrgActionGrant.expires_at > now,
+            )
+            .first()
+            is not None
+        )
+    except Exception:  # pragma: no cover — defensive (table may not exist yet)
+        logger.exception("OrgActionGrant lookup failed for org=%s tool=%s", org_id, tool_name)
+        return False
+    finally:
+        db.close()
 
 
 def _maybe_inject_auto_approval(run: AgentRun, tool_name: str, tool_input: dict) -> dict:
@@ -1680,46 +1729,68 @@ def update_run_ctx(db: Session, agent_id: int, updates: dict) -> None:
 # ── HITL Resume ───────────────────────────────────────────────────────
 
 def record_approval_decision(
-    run_id: int,
+    run_id: Optional[int],
     decision: str,
     reason: Optional[str],
     decider_id: Optional[int],
     db: Session,
     grant_scope: Optional[str] = None,
-) -> tuple[AgentRun, AgentApproval]:
-    """Record a human's approve/reject decision and flip the run to 'running'.
+    *,
+    approval_id: Optional[int] = None,
+) -> tuple[Optional[AgentRun], AgentApproval]:
+    """Record a human's approve/reject decision and (when applicable) flip
+    the run back to 'running'.
 
     Cheap and synchronous — does NOT execute the gated tool or continue the
     agent loop. Pair with :func:`continue_after_decision` (typically run on a
-    background thread) for the heavy work. Splitting the two lets the HTTP
-    handler return immediately so the UI can show the decision without
-    waiting on multi-second SSH/LLM round-trips.
+    background thread) for the heavy work.
 
-    If ``grant_scope='run'`` and the decision is ``approved``, registers a
-    standing grant on the run so future calls of the same tool skip the
-    HITL gate and per-call approval.
+    Supports two flavors of approval:
+      * Internal agent (``run_id`` set, ``approval.source='internal_agent'``):
+        the run is flipped from ``awaiting_approval`` back to ``running``.
+      * External MCP (``run_id`` is None, ``approval.source='mcp_external'``):
+        no run to resume — caller (the MCP retry) consults the org grant.
+        Pass ``approval_id`` directly to identify the row.
+
+    Grant scopes:
+      * ``run`` — register the tool on the run's ``auto_approved_tools`` so
+        future calls of the same tool skip the gate for the rest of this run.
+      * ``org_for_24h`` — insert an :class:`OrgActionGrant` so any caller in
+        the org (internal agents *and* external MCP) auto-approves this tool
+        for the next 24 hours.
     """
-    run = db.query(AgentRun).filter(AgentRun.id == run_id).first()
-    if not run:
-        raise ValueError(f"Run {run_id} not found")
-    if run.status != "awaiting_approval":
-        raise ValueError(f"Run {run_id} is not awaiting approval (status: {run.status})")
-
-    approval = (
-        db.query(AgentApproval)
-        .filter(AgentApproval.agent_run_id == run_id, AgentApproval.status == "pending")
-        .order_by(AgentApproval.requested_at.desc())
-        .first()
-    )
-    if not approval:
-        raise ValueError(f"No pending approval found for run {run_id}")
+    run: Optional[AgentRun] = None
+    if approval_id is not None:
+        approval = db.query(AgentApproval).filter(AgentApproval.id == approval_id).first()
+        if not approval:
+            raise ValueError(f"Approval {approval_id} not found")
+        if approval.status != "pending":
+            raise ValueError(f"Approval {approval_id} is not pending (status: {approval.status})")
+        if approval.agent_run_id is not None:
+            run = db.query(AgentRun).filter(AgentRun.id == approval.agent_run_id).first()
+    else:
+        if run_id is None:
+            raise ValueError("Either run_id or approval_id must be provided")
+        run = db.query(AgentRun).filter(AgentRun.id == run_id).first()
+        if not run:
+            raise ValueError(f"Run {run_id} not found")
+        if run.status != "awaiting_approval":
+            raise ValueError(f"Run {run_id} is not awaiting approval (status: {run.status})")
+        approval = (
+            db.query(AgentApproval)
+            .filter(AgentApproval.agent_run_id == run_id, AgentApproval.status == "pending")
+            .order_by(AgentApproval.requested_at.desc())
+            .first()
+        )
+        if not approval:
+            raise ValueError(f"No pending approval found for run {run_id}")
 
     approval.status = decision  # "approved" or "rejected"
     approval.decided_at = datetime.utcnow()
     approval.decided_by = decider_id
     approval.rejection_reason = reason
 
-    if decision == "approved" and grant_scope == "run":
+    if decision == "approved" and grant_scope == "run" and run is not None:
         # Register a run-scoped grant so future calls of this tool skip the
         # gate. SQLAlchemy doesn't detect in-place mutation of JSON columns,
         # so reassign the list to flag the attribute dirty.
@@ -1728,10 +1799,26 @@ def record_approval_decision(
             granted.append(approval.tool_name)
         run.auto_approved_tools = granted
 
-    run.status = "running"
+    if decision == "approved" and grant_scope == "org_for_24h" and approval.org_id:
+        # 24h grant covers any future caller in the org — internal agents
+        # via _is_auto_approved_for_run, MCP via _has_active_org_grant.
+        from datetime import timedelta
+        grant = OrgActionGrant(
+            org_id=approval.org_id,
+            action_name=approval.tool_name,
+            expires_at=datetime.utcnow() + timedelta(hours=24),
+            granted_by=decider_id,
+            granted_via_approval_id=approval.id,
+        )
+        db.add(grant)
+
+    if run is not None and run.status == "awaiting_approval":
+        run.status = "running"
+
     db.commit()
-    db.refresh(run)
     db.refresh(approval)
+    if run is not None:
+        db.refresh(run)
     return run, approval
 
 

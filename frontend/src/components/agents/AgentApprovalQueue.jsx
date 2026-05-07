@@ -24,6 +24,80 @@ const TOOL_LABELS = {
   bulk_tag_findings: 'Bulk Tag Findings',
   create_tag: 'Create Tag',
   run_auto_tag_rules: 'Run Auto-Tag Rules',
+  // MCP-only tools
+  assign_owner: 'Assign Owner',
+  request_exception: 'Request Exception',
+  trigger_scan: 'Trigger Scan',
+  add_finding_comment: 'Add Finding Comment',
+}
+
+// Color-coded risk tier badge from the action registry. Greens are safe,
+// oranges/reds are progressively higher impact. Mirrors RiskTier in
+// backend/agents/action_registry.py.
+const RISK_TIER_STYLES = {
+  read:        { bg: 'var(--success-subtle, #dcfce7)', text: 'var(--success, #16a34a)', border: 'var(--success-border, #bbf7d0)', label: 'READ' },
+  soft_write:  { bg: 'var(--warning-subtle, #fef9c3)', text: 'var(--warning, #ca8a04)', border: 'var(--warning-border, #fde68a)', label: 'SOFT WRITE' },
+  hard_write:  { bg: '#ffedd5',                         text: '#9a3412',                  border: '#fdba74',                       label: 'HARD WRITE' },
+  external:    { bg: 'var(--danger-subtle, #fee2e2)',  text: 'var(--danger, #dc2626)',   border: 'var(--danger-border, #fecaca)',  label: 'EXTERNAL' },
+  destructive: { bg: 'var(--danger-subtle, #fee2e2)',  text: 'var(--danger, #dc2626)',   border: 'var(--danger-border, #fecaca)',  label: 'DESTRUCTIVE' },
+}
+
+function RiskTierBadge({ tier }) {
+  const s = RISK_TIER_STYLES[tier]
+  if (!s) return null
+  return (
+    <span style={{
+      display: 'inline-flex', alignItems: 'center',
+      padding: '2px 8px', borderRadius: 12, fontSize: 10, fontWeight: 700,
+      letterSpacing: '0.04em', textTransform: 'uppercase',
+      background: s.bg, color: s.text, border: `1px solid ${s.border}`,
+    }}>
+      {s.label}
+    </span>
+  )
+}
+
+// Best-effort "before → after" diff for state-changing tool inputs. Picks
+// the field most likely to be the post-state from a small allow-list and
+// renders it as a tiny table. Falls back to nothing when the tool's input
+// shape doesn't carry an obvious target field — the JSON pretty-print in
+// ToolInputPreview still covers the full picture.
+const STATE_CHANGE_TARGETS = {
+  update_finding_status:  { idField: 'finding_id',  toField: 'status',         label: 'Finding status' },
+  add_finding_comment:    { idField: 'finding_id',  toField: 'comment',        label: 'New comment' },
+  assign_owner:           { idField: 'asset_id',    toField: 'owner_email',    label: 'Asset owner' },
+  request_exception:      { idField: 'finding_id',  toField: 'expires_at',     label: 'Exception expires' },
+  trigger_scan:           { idField: 'asset_ids',   toField: 'scan_type',      label: 'Scan type' },
+  create_campaign:        { idField: 'finding_ids', toField: 'name',           label: 'Campaign name' },
+}
+
+function BeforeAfterDiff({ toolName, toolInput }) {
+  const spec = STATE_CHANGE_TARGETS[toolName]
+  if (!spec || !toolInput) return null
+  const target = toolInput[spec.toField]
+  const subject = toolInput[spec.idField]
+  if (target == null || subject == null) return null
+  const subjectLabel = Array.isArray(subject)
+    ? `${subject.length} item${subject.length === 1 ? '' : 's'}`
+    : `#${subject}`
+  return (
+    <div style={{
+      marginTop: 8, padding: '8px 10px', borderRadius: 6,
+      background: 'var(--bg-subtle, #f9fafb)', border: '1px solid var(--border)',
+      fontSize: 12,
+    }}>
+      <div style={{ fontWeight: 600, color: 'var(--muted)', marginBottom: 4 }}>
+        {spec.label} · {subjectLabel}
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <span style={{ color: 'var(--muted)', fontStyle: 'italic' }}>before unchanged</span>
+        <span style={{ color: 'var(--muted)' }}>→</span>
+        <span style={{ fontWeight: 600, color: 'var(--text)' }}>
+          {typeof target === 'string' ? target : JSON.stringify(target)}
+        </span>
+      </div>
+    </div>
+  )
 }
 
 function StatusBadge({ status }) {
@@ -125,16 +199,28 @@ function ApprovalCard({ approval, onDecide }) {
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
             <span style={{ fontWeight: 600, fontSize: 14 }}>{toolLabel}</span>
             <StatusBadge status={approval.status} />
+            <RiskTierBadge tier={approval.risk_tier} />
           </div>
           <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 3 }}>
-            Run #{approval.agent_run_id}
-            {' · '}
-            Step {approval.current_step + 1}
+            {approval.principal_label || (
+              approval.source === 'mcp_external'
+                ? 'External MCP caller'
+                : (approval.agent_name ? `Internal agent: ${approval.agent_name}` : `Agent ${approval.agent_id || ''}`)
+            )}
+            {approval.agent_run_id != null && (
+              <>
+                {' · '}Run #{approval.agent_run_id}
+                {' · '}Step {(approval.current_step ?? 0) + 1}
+              </>
+            )}
             {' · '}
             {new Date(approval.requested_at).toLocaleString()}
           </div>
         </div>
       </div>
+
+      {/* State-changing diff (best-effort, falls back to nothing) */}
+      <BeforeAfterDiff toolName={approval.tool_name} toolInput={approval.tool_input} />
 
       {/* Tool input */}
       <ToolInputPreview toolName={approval.tool_name} toolInput={approval.tool_input} />
@@ -218,7 +304,7 @@ function ApprovalCard({ approval, onDecide }) {
               Reject
             </button>
           </div>
-          {!alreadyGranted && (
+          {!alreadyGranted && approval.agent_run_id != null && (
             <button
               onClick={() => handleDecide('approved', { grantScope: 'run' })}
               disabled={loading}
@@ -235,7 +321,22 @@ function ApprovalCard({ approval, onDecide }) {
               Approve all {toolLabel} for this run
             </button>
           )}
-          {alreadyGranted && (
+          <button
+            onClick={() => handleDecide('approved', { grantScope: 'org_for_24h' })}
+            disabled={loading}
+            title={`Auto-approve every ${toolLabel} call across the org for the next 24 hours`}
+            style={{
+              padding: '6px 0', borderRadius: 6,
+              border: '1px solid var(--border)',
+              background: 'transparent',
+              color: 'var(--text-muted, #6b7280)',
+              cursor: loading ? 'not-allowed' : 'pointer',
+              fontSize: 12, fontWeight: 600,
+            }}
+          >
+            Approve and auto-approve same tool for 24h (org-wide)
+          </button>
+          {alreadyGranted && approval.agent_run_id != null && (
             <div style={{ fontSize: 11, color: 'var(--muted)', textAlign: 'center' }}>
               {toolLabel} is auto-approved for this run
             </div>
