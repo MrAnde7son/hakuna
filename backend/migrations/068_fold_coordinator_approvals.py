@@ -96,12 +96,14 @@ def upgrade():
         # writing source='coordinator' AND tool_input->>'legacy_id'=<old.id>
         # so re-running the migration is a no-op.
         if _is_pg:
+            # tool_input is a `json` column (not `jsonb`), so the `?` key-existence
+            # operator isn't defined on it — cast before checking.
             existing_ids = {
                 int(r[0]) for r in conn.execute(text("""
                     SELECT (tool_input->>'legacy_id')::int
                     FROM agent_approvals
                     WHERE source = 'coordinator'
-                      AND tool_input ? 'legacy_id'
+                      AND tool_input::jsonb ? 'legacy_id'
                 """)).fetchall() if r[0] is not None
             }
         else:
