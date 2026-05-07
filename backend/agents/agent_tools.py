@@ -34,6 +34,7 @@ from services.ownership_inference import resolve_finding_owner
 from models.threat_intel_models import (
     ThreatGroup, ThreatGroupTTP, TTP, ThreatCVE, ThreatCampaign,
 )
+from agents.action_registry import action, RiskTier
 
 logger = logging.getLogger(__name__)
 
@@ -699,6 +700,7 @@ def correlate_software_to_cves(db: Session, params: dict):
     return correlate_asset(db, int(asset_id), top_n=top_n, include_eol=bool(include_eol))
 
 
+@action("tag_assets", RiskTier.SOFT_WRITE, scopes=["assets:write", "tags:write"])
 @agent_tool(
     "tag_assets",
     "Apply a tag to a list of assets by ID. Requires write permission (read_only guardrail must be off).",
@@ -1449,6 +1451,12 @@ def get_internet_facing_risk(db: Session, params: dict):
     return results
 
 
+@action(
+    "update_finding_status",
+    RiskTier.SOFT_WRITE,
+    scopes=["findings:write"],
+    confirmation_required=True,
+)
 @agent_tool(
     "update_finding_status",
     "Update the workflow status of one or more findings (open/in_progress/resolved/accepted_risk/false_positive). Requires write permission. "
@@ -1515,6 +1523,7 @@ def get_security_controls(db: Session, params: dict):
 
 # ── Action Tools (write operations) ──────────────────────────────────
 
+@action("create_jira_ticket", RiskTier.EXTERNAL, scopes=["jira:write"])
 @agent_tool(
     "create_jira_ticket",
     "Create a Jira ticket for findings. Requires Jira integration configured in Settings. Write operation. "
@@ -1566,6 +1575,7 @@ def create_jira_ticket(db: Session, params: dict):
     return result
 
 
+@action("create_servicenow_ticket", RiskTier.EXTERNAL, scopes=["servicenow:write"])
 @agent_tool(
     "create_servicenow_ticket",
     "Create a ServiceNow incident. Requires ServiceNow integration configured in Settings. Write operation. "
@@ -1603,6 +1613,7 @@ def create_servicenow_ticket(db: Session, params: dict):
     return result
 
 
+@action("send_slack_message", RiskTier.EXTERNAL, scopes=["slack:write"])
 @agent_tool(
     "send_slack_message",
     "Send a Slack message via webhook. Requires Slack integration configured in Settings. Write operation. "
@@ -1633,6 +1644,7 @@ def send_slack_message(db: Session, params: dict):
     return result
 
 
+@action("send_teams_message", RiskTier.EXTERNAL, scopes=["teams:write"])
 @agent_tool(
     "send_teams_message",
     "Send a Microsoft Teams message via webhook. Requires Teams integration configured in Settings. Write operation. "
@@ -1660,6 +1672,7 @@ def send_teams_message(db: Session, params: dict):
     return result
 
 
+@action("send_email_alert", RiskTier.EXTERNAL, scopes=["email:write"])
 @agent_tool(
     "send_email_alert",
     "Send an email notification. Requires Email (SMTP) integration configured in Settings. Write operation. "
@@ -1691,6 +1704,7 @@ def send_email_alert(db: Session, params: dict):
     return result
 
 
+@action("create_campaign", RiskTier.HARD_WRITE, scopes=["campaigns:write"])
 @agent_tool(
     "create_campaign",
     "Create a remediation campaign to track a group of findings. Write operation. "
@@ -1920,6 +1934,7 @@ def get_campaign(db: Session, params: dict):
     }
 
 
+@action("create_exception", RiskTier.HARD_WRITE, scopes=["findings:write"])
 @agent_tool(
     "create_exception",
     "Create a finding exception (accepted risk, false positive, or compensating control). Write operation. "
@@ -1958,6 +1973,7 @@ def create_exception(db: Session, params: dict):
     return {"exception_id": exc.id, "plugin_id": plugin_id, "type": exc.exception_type}
 
 
+@action("create_tag", RiskTier.SOFT_WRITE, scopes=["tags:write"])
 @agent_tool(
     "create_tag",
     "Create a new tag for organizing assets and findings. Write operation.",
@@ -1983,6 +1999,7 @@ def create_tag(db: Session, params: dict):
     return {"tag_id": tag.id, "label": f"{category}:{value}"}
 
 
+@action("bulk_tag_findings", RiskTier.SOFT_WRITE, scopes=["findings:write", "tags:write"])
 @agent_tool(
     "bulk_tag_findings",
     "Apply a tag to multiple findings by ID. Write operation.",
@@ -2014,6 +2031,7 @@ def bulk_tag_findings(db: Session, params: dict):
     return {"tagged": added, "tag": f"{tag.category}:{tag.value}"}
 
 
+@action("create_auto_tag_rule", RiskTier.SOFT_WRITE, scopes=["tags:write"])
 @agent_tool(
     "create_auto_tag_rule",
     "Create a persistent auto-tag rule that automatically applies a tag to assets or findings on every future scan upload. Write operation.",
@@ -2056,6 +2074,7 @@ def create_auto_tag_rule(db: Session, params: dict):
     return {"rule_id": rule.id, "name": name, "tag": f"{tag.category}:{tag.value}", "conditions_count": len(conditions)}
 
 
+@action("run_auto_tag_rules", RiskTier.SOFT_WRITE, scopes=["tags:write"])
 @agent_tool(
     "run_auto_tag_rules",
     "Execute all auto-tag rules for a scan. Automatically classifies assets/findings based on rules. Write operation.",
@@ -2073,6 +2092,7 @@ def run_auto_tag_rules(db: Session, params: dict):
     return {"scan_id": scan_id, "rules_executed": len(results), "results": dict(list(results.items())[:20])}
 
 
+@action("send_webhook", RiskTier.EXTERNAL, scopes=["webhook:write"])
 @agent_tool(
     "send_webhook",
     "Send data to an arbitrary webhook URL. Useful for custom integrations. Write operation. "
@@ -2505,6 +2525,7 @@ def list_integrations(db: Session, params: dict):
     ]
 
 
+@action("call_integration_fetch", RiskTier.EXTERNAL, scopes=["integrations:run"])
 @agent_tool(
     "call_integration_fetch",
     "Trigger a pull integration to fetch data from an external system (e.g. import assets from a CMDB, "
@@ -2557,6 +2578,7 @@ def call_integration_fetch(db: Session, params: dict):
     }
 
 
+@action("call_integration_push", RiskTier.EXTERNAL, scopes=["integrations:run"])
 @agent_tool(
     "call_integration_push",
     "Trigger a push integration to send data to an external system (e.g. push findings to Jira, "
@@ -3547,6 +3569,12 @@ def recommend_agents(db: Session, params: dict):
     }
 
 
+@action(
+    "build_report",
+    RiskTier.SOFT_WRITE,
+    scopes=["reports:write"],
+    confirmation_required=True,
+)
 @agent_tool(
     "build_report",
     "Create a saved report/dashboard template with properly configured widgets. Write operation. "
@@ -3673,6 +3701,7 @@ def build_report(db: Session, params: dict):
     }
 
 
+@action("create_agent", RiskTier.HARD_WRITE, scopes=["agents:write"])
 @agent_tool(
     "create_agent",
     "Create a new AI agent with a name, instructions, selected tools, and optional guardrails. Write operation. "
@@ -3717,6 +3746,7 @@ def create_agent_tool(db: Session, params: dict):
     }
 
 
+@action("create_agent_schedule", RiskTier.HARD_WRITE, scopes=["agents:write"])
 @agent_tool(
     "create_agent_schedule",
     "Create a cron schedule for an existing agent so it runs automatically. Write operation. "

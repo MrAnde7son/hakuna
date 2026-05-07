@@ -6,9 +6,8 @@ These let any agent in the org read and write the shared knowledge layer in
 same organization on subsequent runs.
 
 `recall_org_memory` is read-only and never approval-gated.
-`remember_org_memory` is a low-risk write — registered in
-`agent_engine.LOW_RISK_WRITE_TOOLS` so it auto-approves at "standard"
-autonomy.
+`remember_org_memory` is a low-risk write that is not gated at any
+autonomy level — see ``agents.action_registry`` for the unified gate.
 """
 from __future__ import annotations
 

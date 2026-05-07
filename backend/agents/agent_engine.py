@@ -24,6 +24,8 @@ from agents.agent_tools import (
     NeedsApproval,
 )
 from agents.agent_context import compress_tool_result, build_context_section
+from agents import action_registry as _action_registry
+from agents.action_registry import RiskTier, requires_approval
 
 logger = logging.getLogger(__name__)
 
@@ -406,49 +408,86 @@ def _execute_tool(agent: Agent, db: Session, tool_name: str, tool_input: Optiona
     return json.dumps(compressed, default=str)
 
 
-# Tools that require explicit confirmation before execution
-CONFIRMATION_REQUIRED_TOOLS = {
-    "create_jira_ticket", "create_servicenow_ticket",
-    "send_slack_message", "send_teams_message", "send_email_alert",
-    "create_campaign", "send_webhook",
-    "update_finding_status", "create_exception",
-    "call_integration_fetch", "call_integration_push",
-    "build_report", "create_agent", "create_agent_schedule",
-}
-
-# Tools gated by HITL approval (superset of confirmation-required tools)
-HITL_TOOLS = CONFIRMATION_REQUIRED_TOOLS | {
-    "tag_assets", "bulk_tag_findings", "create_tag", "create_auto_tag_rule", "run_auto_tag_rules",
-}
-
-# Low-risk write tools that can be auto-approved in "standard" autonomy mode
-LOW_RISK_WRITE_TOOLS = {
-    "tag_assets", "bulk_tag_findings", "create_tag", "create_auto_tag_rule",
-    "run_auto_tag_rules", "update_finding_status", "build_report",
-    "remember_org_memory",
-}
-
+# ── Approval gating (action-registry-backed) ─────────────────────────
+#
+# These four module-level names used to be hardcoded sets. They are now
+# DEPRECATED views computed from ``agents.action_registry.ACTIONS`` and
+# kept here so existing imports (and the per-call confirmation guard)
+# don't break. New code should call ``action_registry.requires_approval``
+# directly.
+#
 # Adaptive autonomy levels:
-# - conservative: HITL approval for ALL write tools (current default)
-# - standard: auto-approve low-risk writes (tagging, status updates, reports),
-#             HITL for high-risk (tickets, notifications, campaigns, integrations)
-# - autonomous: auto-approve everything except external integrations
-#               (Jira, ServiceNow, Slack, Teams, Email, webhooks)
-EXTERNAL_TOOLS = {
-    "create_jira_ticket", "create_servicenow_ticket",
-    "send_slack_message", "send_teams_message", "send_email_alert",
-    "send_webhook", "call_integration_fetch", "call_integration_push",
-}
+#   conservative — HITL approval for any non-READ action (default)
+#   standard     — HITL for HARD_WRITE / EXTERNAL / DESTRUCTIVE; auto-approve SOFT_WRITE
+#   autonomous   — HITL only for EXTERNAL / DESTRUCTIVE
+
+
+def _names_with_tier(*tiers: RiskTier) -> set:
+    return {
+        name for name, spec in _action_registry.ACTIONS.items()
+        if spec.risk_tier in tiers
+    }
+
+
+class _RegistryView:
+    """Set-like proxy that re-derives membership from the action registry on
+    each access. Existing call-sites use ``in`` / iteration / ``- other`` —
+    Set semantics are sufficient for the legacy use, and re-deriving per
+    access keeps the view consistent if a tool is registered later."""
+
+    __slots__ = ("_compute",)
+
+    def __init__(self, compute):
+        self._compute = compute
+
+    def _resolve(self) -> set:
+        return self._compute()
+
+    def __contains__(self, name) -> bool:
+        return name in self._resolve()
+
+    def __iter__(self):
+        return iter(self._resolve())
+
+    def __len__(self):
+        return len(self._resolve())
+
+    def __sub__(self, other):
+        return self._resolve() - set(other)
+
+    def __or__(self, other):
+        return self._resolve() | set(other)
+
+    def __ror__(self, other):
+        return set(other) | self._resolve()
+
+    def __eq__(self, other):
+        return self._resolve() == set(other)
+
+    def __repr__(self):
+        return f"<RegistryView {sorted(self._resolve())}>"
+
+
+CONFIRMATION_REQUIRED_TOOLS = _RegistryView(
+    lambda: {n for n, s in _action_registry.ACTIONS.items() if s.confirmation_required}
+)
+HITL_TOOLS = _RegistryView(
+    lambda: _names_with_tier(
+        RiskTier.SOFT_WRITE, RiskTier.HARD_WRITE,
+        RiskTier.EXTERNAL, RiskTier.DESTRUCTIVE,
+    )
+)
+LOW_RISK_WRITE_TOOLS = _RegistryView(lambda: _names_with_tier(RiskTier.SOFT_WRITE))
+EXTERNAL_TOOLS = _RegistryView(lambda: _names_with_tier(RiskTier.EXTERNAL))
 
 
 def get_hitl_tools_for_autonomy(autonomy_level: str) -> set:
-    """Return the set of tools requiring HITL approval for the given autonomy level."""
-    if autonomy_level == "autonomous":
-        return EXTERNAL_TOOLS
-    elif autonomy_level == "standard":
-        return HITL_TOOLS - LOW_RISK_WRITE_TOOLS
-    else:  # conservative (default)
-        return HITL_TOOLS
+    """DEPRECATED — use ``action_registry.requires_approval`` directly.
+
+    Returns the set of registered tools that require HITL approval at the
+    given autonomy level. Kept as a shim because the agent loops still
+    call it to decide whether to pause before executing a tool."""
+    return _action_registry.hitl_tools_for_autonomy(autonomy_level)
 
 
 class ApprovalRequired(Exception):
