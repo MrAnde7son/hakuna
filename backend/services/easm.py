@@ -2658,6 +2658,7 @@ def _import_github_npm_assets(
         a = existing.get(key)
         if a:
             a.asset_attributes = {**(a.asset_attributes or {}), **attributes}
+            a.asset_identity = {**(a.asset_identity or {}), **identity}
             a.last_seen = now
             sources = a.source_systems or []
             if "easm" not in sources:
@@ -2733,7 +2734,7 @@ def _import_github_npm_assets(
             continue
         a = _upsert(
             "code_repo",
-            {"provider": "github", "org": owner, "repo": name},
+            {"provider": "github", "org": owner, "repo": name, "display_name": full_name},
             {
                 "full_name": full_name,
                 "url": repo.get("url"),
