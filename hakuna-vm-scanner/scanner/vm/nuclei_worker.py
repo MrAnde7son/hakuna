@@ -161,9 +161,13 @@ def _parse_nuclei_stats(stderr_lines: list[str]) -> dict:
       - Startup banner (authoritative count at scan start):
           ``[INF] Templates loaded for current scan: 4820``
           ``[INF] Executing 4820 signed templates from ...``
-      - Periodic `-stats` ticker and final summary:
+      - Periodic `-stats` ticker (table form, older nuclei or when
+        stdout is not JSONL):
           ``| Templates: 389/389 | Requests: 566/566 | Matched: 0 |``
           ``Duration: 00:00:12 | Requests: 566 | Matched: 0 | Templates: 389 |``
+      - Periodic `-stats` ticker (JSON form, emitted by nuclei v3.x
+        whenever `-jsonl` is set — values arrive as JSON-encoded strings):
+          ``{"duration":"0:00:01","matched":"1","requests":"2","templates":"1",...}``
       - Legacy summary:
           ``[INF] Total requests: 45210``
           ``[INF] Results found: 3``
@@ -174,6 +178,33 @@ def _parse_nuclei_stats(stderr_lines: list[str]) -> dict:
     """
     stats: dict = {}
     for line in stderr_lines:
+        # JSON stats line — nuclei emits this on stderr instead of the
+        # table ticker whenever -jsonl is set. Without this branch the
+        # stall watchdog never sees requests_sent move and kills healthy
+        # scans at NUCLEI_STALL_GRACE_SECONDS.
+        stripped = line.strip()
+        if stripped.startswith("{") and stripped.endswith("}") and '"requests"' in stripped:
+            try:
+                payload = json.loads(stripped)
+            except json.JSONDecodeError:
+                payload = None
+            if isinstance(payload, dict):
+                def _as_int(v):
+                    try:
+                        return int(v)
+                    except (TypeError, ValueError):
+                        return None
+                t = _as_int(payload.get("templates"))
+                if t is not None:
+                    stats["templates_loaded"] = t
+                r = _as_int(payload.get("requests"))
+                if r is not None:
+                    stats["requests_sent"] = r
+                m_ = _as_int(payload.get("matched"))
+                if m_ is not None:
+                    stats["results_found"] = m_
+                continue
+
         m = re.search(r"Templates loaded for current scan:\s*(\d+)", line, re.IGNORECASE)
         if m:
             stats["templates_loaded"] = int(m.group(1))

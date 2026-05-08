@@ -169,6 +169,35 @@ class SpecialistSpec:
     # cheap reflection-style specialists (xss) don't.
     preferred_provider: str | None = None
     preferred_model: str | None = None
+    # Server-side gate on emit_finding payloads. When set, the
+    # ``emit_finding`` tool runs the validator before recording the
+    # finding. The validator returns either ("pass", None) — the
+    # payload is accepted unchanged — or ("downgrade", reason) — the
+    # verdict is forced to ``needs_review`` and the reason is attached
+    # as ``_downgrade_reason`` so reviewers can see why. The validator
+    # exists so the prompt can be loose ("look for X") while the
+    # runtime stays strict ("X must literally appear in the evidence
+    # field"). See ``_validate_*_evidence`` for examples.
+    evidence_validator: Callable[[dict], "EvidenceVerdict"] | None = None
+
+
+@dataclass(frozen=True)
+class EvidenceVerdict:
+    """Outcome of a per-specialist evidence check.
+
+    ``action`` is either ``"pass"`` (accept the payload unchanged) or
+    ``"downgrade"`` (force ``verdict=needs_review`` and attach
+    ``reason`` as ``_downgrade_reason`` on the recorded payload).
+    """
+    action: str  # "pass" | "downgrade"
+    reason: str | None = None
+
+
+_PASS = EvidenceVerdict(action="pass")
+
+
+def _downgrade(reason: str) -> EvidenceVerdict:
+    return EvidenceVerdict(action="downgrade", reason=reason)
 
 
 # ── Applicability predicates ─────────────────────────────────────
@@ -422,22 +451,39 @@ SCOPE:
 - Parser-driven SSRF (XML external entities, SVG xlink:href, Markdown image fetch)
 
 HOW TO PROCEED:
-1. From the endpoints list, pick endpoints whose parameter names include any of: url, redirect, callback, webhook, source, image, fetch, proxy, import, host. Also pick endpoints with content_type application/xml or application/xhtml+xml.
-2. For each target, send the parameter with a value pointing to `http://127.0.0.1:1/` and observe status + timing. A fast connect-refused tells you the server attempted the fetch; a fast 400 tells you it rejected the URL client-side.
-3. Escalate with `http://127.0.0.1:80/` and compare to the public 80 from outside — a response diff (the server can reach localhost, you can't) is a true_positive.
-4. Cloud metadata: only if step 2-3 show an SSRF primitive AND the asset is cloud-hosted (you have no way to know for sure — use best judgement from httpx_full if present). Never hammer 169.254.169.254 blindly.
+
+Step 0 — BASELINE CHECK. Do not skip.
+   Send the endpoint with a benign value for the candidate parameter (empty string, or a harmless token like `none`). If the response is 5xx or otherwise an error page, the endpoint is broken or the parameter is not reaching URL-fetching code. STOP for this endpoint — any timing or status differential below is now noise (the server is errorring before parsing the URL).
+
+Step 1 — PARAMETER SELECTION. Prefer parameter names: url, redirect, callback, webhook, source, image, fetch, proxy, import, host. Also XML / xhtml content types. Other parameter names are weak candidates and require Step 3 OOB confirmation — do not emit on timing alone for them.
+
+Step 2 — BLACKHOLE PROBE (the anti-false-positive test).
+   Send the parameter pointing to `http://10.255.255.1/` (an unrouted address; any real outbound socket blocks for ~10–20s before timing out). Compare elapsed time against Step 0 baseline.
+   - Elapsed < 5s → the server is NOT making an outbound fetch. Abandon SSRF for this endpoint regardless of any localhost-port timing differential (those are RTT jitter, not signal).
+   - Elapsed >= 5s, or hits the request timeout → the server is dialing out. Continue to Step 3.
+
+Step 3 — OOB CONFIRMATION (the only path to true_positive).
+   Call `oob_get_probe()` to mint a unique probe_url. Send it as the parameter value. Call `oob_check(token)`.
+   - `hit_count >= 1` → emit with verdict=true_positive and `oob_hit_count` set in the finding payload.
+   - OOB not configured (`configured: false`) AND Step 2 showed >=5s blackhole timing → emit with verdict=true_positive and `timing_delta_seconds` set (the elapsed seconds against the Step 0 baseline).
+   - OOB not configured AND no >=5s blackhole timing → at most verdict=needs_review. Sub-second timing differentials over the public internet are not evidence; the runner will downgrade true_positive findings that lack one of these two fields.
+
+Step 4 — Cloud metadata: only if Step 3 confirmed an SSRF primitive AND the asset is cloud-hosted. Never hammer 169.254.169.254 blindly.
 
 BUDGET:
 - Max 8 tool calls. 3 per candidate endpoint.
 - On confirmation, call `emit_finding` once per candidate, then `summary` to exit.
 
+EVIDENCE FIELDS for emit_finding:
+- For verdict=true_positive: include `oob_hit_count` (>=1) OR `timing_delta_seconds` (>=5 from the blackhole probe). Findings without either are auto-downgraded to needs_review.
+
 TOOLS BEYOND http_request:
-- `oob_get_probe()` — your single best tool for blind SSRF. Mint a probe_url, feed it as the URL parameter value, then `oob_check(token)`. `hit_count >= 1` is definitive; the target fetched your URL server-side. If `configured: false`, fall back to the localhost + timing heuristic in steps 2-3.
-- `diff_responses(baseline, probe)` — when the SSRF is semi-blind (response reflects metadata about the fetched resource), diff the two responses to spot the leaked bytes.
+- `oob_get_probe()` / `oob_check(token)` — definitive SSRF confirmation. Use them.
+- `diff_responses(baseline, probe)` — for semi-blind SSRF where the response reflects metadata about the fetched resource.
 - `memory_set(key, value)` — if you confirm an SSRF primitive, store `internal_host_reachable=true` so the authz specialist knows tenant-boundary probes are worth more.
 
 SAFETY:
-- Never target third-party origins you don't own — the ONLY exception is the probe_url from oob_get_probe, which hits a collaborator you control.
+- Never target third-party origins you don't own — the ONLY exception is the probe_url from oob_get_probe.
 - Never use metadata endpoints on first-tier probes.
 - Stop immediately on first confirmed SSRF primitive.
 """
@@ -646,7 +692,7 @@ Step 3 — EXECUTION PROBE. Attempt to upload a minimal PHP payload. The goal is
    After each accepted upload, GET the probable storage URL (most apps return a 200 with a path hint in the response, OR you can guess `/uploads/<filename>`, `/files/<filename>`, the form's action directory with filename appended). If the fetched body contains `hakuna_upload_rce_confirmed`, you have CRITICAL-severity RCE via upload.
 
 Step 4 — CLASSIFY:
-   - Fetched file contains the sentinel string → CRITICAL true_positive. Emit finding naming the exact upload/retrieval URLs and the accepted filename variant.
+   - Fetched file contains the sentinel string → CRITICAL true_positive. Emit finding naming the exact upload/retrieval URLs and the accepted filename variant. You MUST also pass the fetched body in `fetched_body_substring` — the runtime confirms the literal `hakuna_upload_rce_confirmed` string is present and downgrades any CRITICAL true_positive that doesn't include it. "The upload was accepted" alone is not RCE.
    - Upload accepted but fetching the file returns the raw PHP source → MEDIUM. Source disclosure.
    - Upload accepted, fetching returns 404 / 403 → LOW needs_review. Can't confirm execution but the filter is weaker than intended.
    - All variants rejected → no finding. Skip to summary.
@@ -705,7 +751,14 @@ Step 3 — EMIT. Call emit_finding for each endpoint with a weak token:
    - CRITICAL: sequential counter (one-off guessable)
    - HIGH: timestamp-based (narrow guessable window)
    - MEDIUM: short length (<16 chars) or digits-only
-   - Cite the two captured samples in the finding's evidence_response field.
+   - Cite the two captured samples in the finding's evidence_response field
+     AND in the structured `token_sample_1` / `token_sample_2` fields. The
+     runtime re-derives the weakness class from those two strings and
+     downgrades any true_positive whose samples don't actually match the
+     claimed class (digits-only with |diff|<=5 for CRITICAL; Unix-timestamp
+     range within 60s for HIGH; <16 chars or all-digit for MEDIUM). Don't
+     classify on entropy intuition — paste the samples and let the gate
+     decide.
 
 BUDGET:
 - Max 8 tool calls.
@@ -763,7 +816,11 @@ Step 4 — CLASSIFY:
    - Backend error leaks absolute path (`/var/www/html/includes/...`) → needs_review (path disclosure — useful for the next specialist)
    - No diff or generic 500 → stop probing that parameter
 
-Step 5 — EMIT. Call emit_finding with the concrete evidence: the payload, the response substring (first 200 chars of passwd / base64 prefix / fetched URL), and for path traversal the baseline-vs-probe status difference.
+Step 5 — EMIT. Call emit_finding with the concrete evidence: the payload, the response substring (first 200 chars of passwd / base64 prefix / fetched URL), and for path traversal the baseline-vs-probe status difference. You MUST also populate ONE of the structured evidence fields the runtime checks:
+   - `evidence_substring` — the verbatim response substring containing `root:x:0:0:` (Unix passwd), a Windows ini section header (`[extensions]`, `[fonts]`), or a PHP source prefix (`<?php` / `<?=`). For wrapper output that's base64-encoded, decode first and pass the decoded text.
+   - `oob_hit_count` — set to the `hit_count` from `oob_check` for confirmed RFI.
+   - `baseline_status` AND `probe_status` — for path traversal, with baseline 4xx and probe 200.
+   true_positive findings without one of these will be auto-downgraded to needs_review.
 
 BUDGET:
 - Max 10 tool calls. 3 per parameter.
@@ -807,6 +864,210 @@ _HIGH_ORCH_VERTEX_MODEL = os.environ.get(
     "AGENT_HIGH_ORCH_VERTEX_MODEL",
     os.environ.get("AGENT_CLAUDE_VERTEX_MODEL", "vertex/gemini-2.5-pro"),
 )
+
+
+# ── Per-specialist evidence validators ───────────────────────────
+# Each validator is a pure function over the ``emit_finding`` payload.
+# It returns ``_PASS`` to accept the payload unchanged, or
+# ``_downgrade(reason)`` to force ``verdict=needs_review``. The intent
+# is to make the LLM's ``true_positive`` claim load-bearing — a
+# hallucinated verdict without the deterministic evidence the prompt
+# was told to gather will be downgraded by the runtime, not silently
+# persisted. The prompt itself stays loose ("look for X"); the
+# validator stays strict ("X must literally appear here").
+
+
+def _validate_ssrf_evidence(payload: dict) -> EvidenceVerdict:
+    """SSRF true_positive requires OOB hit or >=5s blackhole timing.
+
+    Sub-second timing differentials over the public internet are RTT
+    jitter, not signal. The localhost port-1 vs port-80 heuristic
+    earlier prompts relied on collapses against any endpoint that
+    uniformly errors before reading the parameter — see the gate's
+    origin in the audit that introduced this validator.
+    """
+    if payload.get("verdict") != "true_positive":
+        return _PASS
+    oob_hits = payload.get("oob_hit_count")
+    timing_delta = payload.get("timing_delta_seconds")
+    has_oob = isinstance(oob_hits, (int, float)) and oob_hits >= 1
+    has_timing = isinstance(timing_delta, (int, float)) and timing_delta >= 5
+    if has_oob or has_timing:
+        return _PASS
+    return _downgrade(
+        "SSRF true_positive requires oob_hit_count>=1 or "
+        "timing_delta_seconds>=5; neither was provided"
+    )
+
+
+# Bounds chosen to reject obvious junk without rejecting real-world
+# session tokens. ``_TOKEN_SAMPLE_MAX_LEN`` is generous (a JWT can run
+# ~1KB); the ``min`` length of 1 just rejects empty strings.
+_TOKEN_SAMPLE_MAX_LEN = 4096
+_UNIX_TS_MIN = 1_000_000_000  # 2001-09-09
+_UNIX_TS_MAX = 2_500_000_000  # 2049-03-22 — comfortably future-proof
+_SHORT_TOKEN_THRESHOLD = 16
+
+
+def _validate_session_evidence(payload: dict) -> EvidenceVerdict:
+    """Session-token true_positive must show predictability concretely.
+
+    The prompt asks the agent to mint two tokens and judge entropy.
+    Eyeballing entropy is exactly the kind of thing LLMs hallucinate,
+    so the gate forces both samples into the payload and re-derives
+    the classification from severity + sample shape. The runtime is
+    the source of truth for "is this token actually weak"; the LLM
+    just collects samples.
+    """
+    if payload.get("verdict") != "true_positive":
+        return _PASS
+    severity = (payload.get("severity") or "").lower()
+    if severity not in ("critical", "high", "medium"):
+        return _PASS  # low/info are advisory, not load-bearing
+
+    s1 = payload.get("token_sample_1")
+    s2 = payload.get("token_sample_2")
+    if not (isinstance(s1, str) and isinstance(s2, str) and s1 and s2):
+        return _downgrade(
+            "session true_positive requires token_sample_1 and "
+            "token_sample_2 (both non-empty strings)"
+        )
+    if len(s1) > _TOKEN_SAMPLE_MAX_LEN or len(s2) > _TOKEN_SAMPLE_MAX_LEN:
+        return _downgrade(
+            f"token samples exceed {_TOKEN_SAMPLE_MAX_LEN} chars; truncate before emit"
+        )
+
+    if severity == "critical":
+        # CRITICAL = sequential counter. Both samples must be all-digit
+        # and within a small window of each other. ``5`` (not ``2``)
+        # leaves room for racy mints between the agent's two probes
+        # while still rejecting anything that isn't trivially next-
+        # value-guessable.
+        if not (s1.isdigit() and s2.isdigit()):
+            return _downgrade(
+                "session CRITICAL requires both token_samples to be "
+                "all-digit (sequential counter); they were not"
+            )
+        if abs(int(s1) - int(s2)) > 5:
+            return _downgrade(
+                "session CRITICAL requires |token_sample_1 - "
+                "token_sample_2| <= 5 (sequential); samples differ "
+                f"by {abs(int(s1) - int(s2))}"
+            )
+        return _PASS
+
+    if severity == "high":
+        # HIGH = timestamp-shaped. Both samples must decode as Unix
+        # timestamps within ~60s of each other.
+        try:
+            t1, t2 = int(s1), int(s2)
+        except ValueError:
+            return _downgrade(
+                "session HIGH requires both token_samples to decode "
+                "as integers (timestamp-shaped); they did not"
+            )
+        if not (_UNIX_TS_MIN <= t1 <= _UNIX_TS_MAX
+                and _UNIX_TS_MIN <= t2 <= _UNIX_TS_MAX):
+            return _downgrade(
+                "session HIGH requires both token_samples to fall in "
+                "the Unix timestamp range; they did not"
+            )
+        if abs(t1 - t2) > 60:
+            return _downgrade(
+                "session HIGH requires timestamps within 60s of each "
+                f"other; samples differ by {abs(t1 - t2)}s"
+            )
+        return _PASS
+
+    # MEDIUM = short or digits-only. At least one sample must qualify.
+    short_or_digits = any(
+        len(s) < _SHORT_TOKEN_THRESHOLD or s.isdigit() for s in (s1, s2)
+    )
+    if not short_or_digits:
+        return _downgrade(
+            "session MEDIUM requires at least one token_sample to be "
+            f"shorter than {_SHORT_TOKEN_THRESHOLD} chars or all-digit; "
+            "neither was"
+        )
+    return _PASS
+
+
+_UPLOAD_RCE_SENTINEL = "hakuna_upload_rce_confirmed"
+
+
+def _validate_upload_evidence(payload: dict) -> EvidenceVerdict:
+    """CRITICAL upload findings require the executed sentinel.
+
+    The prompt mints ``hakuna_upload_rce_confirmed`` and instructs the
+    agent to fetch the uploaded file back and confirm execution. A
+    CRITICAL claim without the sentinel literally appearing in the
+    fetched body means the agent is inferring RCE from upload
+    acceptance alone — a common false positive (apps often store the
+    file but never serve it as code).
+    """
+    if payload.get("verdict") != "true_positive":
+        return _PASS
+    if (payload.get("severity") or "").lower() != "critical":
+        return _PASS  # MEDIUM (source disclosure) has its own evidence shape
+    body = payload.get("fetched_body_substring")
+    if isinstance(body, str) and _UPLOAD_RCE_SENTINEL in body:
+        return _PASS
+    return _downgrade(
+        "upload CRITICAL requires fetched_body_substring containing "
+        f"the literal sentinel '{_UPLOAD_RCE_SENTINEL}' (proves the "
+        "uploaded file was executed, not merely stored)"
+    )
+
+
+# LFI/wrapper/path-traversal evidence shapes. The validator accepts
+# ANY one of: a passwd-line literal, a Windows ini-section literal, a
+# PHP source prefix (typical wrapper output before/after base64
+# decoding), an OOB hit (RFI), or a 4xx→200 status flip (path
+# traversal). The agent picks whichever shape its probe produced.
+_LFI_PASSWD_RE = re.compile(r"root:[^:]*:0:0:")
+_LFI_WIN_INI_RE = re.compile(r"\[(extensions|fonts|mci extensions)\]", re.I)
+_PHP_SOURCE_RE = re.compile(r"<\?(php|=)\b")
+
+
+def _validate_files_evidence(payload: dict) -> EvidenceVerdict:
+    """LFI / RFI / path-traversal must cite a deterministic fingerprint.
+
+    Every one of the prompt's positive classifications produces a
+    machine-checkable artifact (passwd line, win.ini section header,
+    PHP source prefix, OOB hit, or status flip). The validator just
+    confirms one of those is in the payload — it doesn't re-judge
+    severity.
+    """
+    if payload.get("verdict") != "true_positive":
+        return _PASS
+
+    evidence = payload.get("evidence_substring")
+    if isinstance(evidence, str) and evidence:
+        if (
+            _LFI_PASSWD_RE.search(evidence)
+            or _LFI_WIN_INI_RE.search(evidence)
+            or _PHP_SOURCE_RE.search(evidence)
+        ):
+            return _PASS
+
+    oob_hits = payload.get("oob_hit_count")
+    if isinstance(oob_hits, (int, float)) and oob_hits >= 1:
+        return _PASS
+
+    baseline = payload.get("baseline_status")
+    probe = payload.get("probe_status")
+    if (
+        isinstance(baseline, int) and isinstance(probe, int)
+        and 400 <= baseline < 500 and probe == 200
+    ):
+        return _PASS
+
+    return _downgrade(
+        "files true_positive requires one of: evidence_substring "
+        "containing 'root:x:0:0:' / Windows ini section / '<?php' "
+        "(LFI or wrapper source leak); oob_hit_count>=1 (RFI); or "
+        "baseline_status (4xx) + probe_status (200) (path traversal)"
+    )
 
 
 SPECIALISTS: dict[str, SpecialistSpec] = {
@@ -862,6 +1123,7 @@ SPECIALISTS: dict[str, SpecialistSpec] = {
         augmented_by=(_CAP_CRED, _CAP_INTERNAL_HOST),
         produces=("ssrf_primitive", "internal_host"),
         max_runs=2,
+        evidence_validator=_validate_ssrf_evidence,
     ),
     "authn": SpecialistSpec(
         category="authn",
@@ -922,6 +1184,7 @@ SPECIALISTS: dict[str, SpecialistSpec] = {
         augmented_by=(_CAP_CRED, _CAP_SESSION, _CAP_WEB_ROOT),
         produces=("file_read", "file_write"),
         max_runs=2,
+        evidence_validator=_validate_files_evidence,
     ),
     "upload": SpecialistSpec(
         category="upload",
@@ -940,6 +1203,7 @@ SPECIALISTS: dict[str, SpecialistSpec] = {
         augmented_by=(_CAP_SESSION,),
         produces=("file_write", "cmd_exec"),
         max_runs=2,
+        evidence_validator=_validate_upload_evidence,
     ),
     "session": SpecialistSpec(
         category="session",
@@ -956,6 +1220,7 @@ SPECIALISTS: dict[str, SpecialistSpec] = {
         requires=(_CAP_CRED,),
         augmented_by=(_CAP_SESSION,),
         max_runs=2,
+        evidence_validator=_validate_session_evidence,
     ),
 }
 
@@ -1140,11 +1405,25 @@ def _check_pattern_handler(params: dict, ctx: AgentContext) -> dict:
 def _emit_finding_handler(params: dict, ctx: AgentContext) -> dict:
     """Record a vulnerability finding discovered by the agent.
 
-    Does not mutate state here — the runner captures findings via a
-    callback wired in run time (see agent_worker._run_specialist). The
-    handler just echoes the payload back so the LLM sees the ACK and
-    continues.
+    Looks up the current specialist's ``evidence_validator`` (if any)
+    and runs it against the payload. A ``downgrade`` verdict forces
+    ``verdict=needs_review`` and attaches ``_downgrade_reason`` so
+    reviewers see why. Specialists without a validator (or runs
+    outside any specialist context, e.g. tests) pass through unchanged.
+
+    The validator pattern keeps "what counts as evidence" co-located
+    with "what the LLM was told to look for" — both live in the
+    specialist module — and lets each gate be unit-tested against the
+    handler's dispatch separately from the prompt itself.
     """
+    spec = SPECIALISTS.get(ctx.current_specialist or "")
+    validator = spec.evidence_validator if spec else None
+    if validator is not None:
+        verdict = validator(params)
+        if verdict.action == "downgrade":
+            params = dict(params)
+            params["verdict"] = "needs_review"
+            params["_downgrade_reason"] = verdict.reason
     return {"status": "recorded", "payload": params}
 
 
@@ -2374,11 +2653,14 @@ TOOLS: dict[str, Tool] = {
             "persist the finding and you can continue probing other "
             "targets. Payload fields are severity, title, description, "
             "evidence_url, parameter, evidence_request, evidence_response, "
-            "verdict, confidence (0-1). Always include `parameter` (the "
-            "exact name of the vulnerable input, e.g. 'id', 'ip', 'url') "
-            "when the vuln is tied to one — it's used for dedup, so "
-            "findings on different parameters of the same endpoint stay "
-            "distinct."
+            "verdict, confidence (0-1), oob_hit_count, timing_delta_seconds. "
+            "Always include `parameter` (the exact name of the vulnerable "
+            "input, e.g. 'id', 'ip', 'url') when the vuln is tied to one "
+            "— it's used for dedup, so findings on different parameters "
+            "of the same endpoint stay distinct. For SSRF true_positive, "
+            "you MUST include either oob_hit_count>=1 or "
+            "timing_delta_seconds>=5; otherwise the runner downgrades "
+            "the verdict to needs_review."
         ),
         input_schema={
             "type": "object",
@@ -2401,6 +2683,83 @@ TOOLS: dict[str, Tool] = {
                 "evidence_response": {"type": "string", "description": "Relevant response snippet."},
                 "verdict": {"type": "string", "enum": ["true_positive", "needs_review"]},
                 "confidence": {"type": "number"},
+                "oob_hit_count": {
+                    "type": "integer",
+                    "description": (
+                        "Out-of-band collaborator hit count from "
+                        "`oob_check`. >=1 is definitive evidence the "
+                        "target made the requested fetch. Required for "
+                        "SSRF true_positive (or use timing_delta_seconds); "
+                        "also satisfies files RFI true_positive."
+                    ),
+                },
+                "timing_delta_seconds": {
+                    "type": "number",
+                    "description": (
+                        "Elapsed seconds for a blackhole-IP probe (e.g. "
+                        "http://10.255.255.1/) compared to baseline. "
+                        ">=5 indicates the server is opening an outbound "
+                        "socket. Sub-second deltas are RTT jitter, not "
+                        "signal. Required for SSRF true_positive when no "
+                        "OOB hit is available."
+                    ),
+                },
+                "evidence_substring": {
+                    "type": "string",
+                    "description": (
+                        "Verbatim substring of the response body that "
+                        "proves the finding. For files: must contain "
+                        "'root:x:0:0:' (LFI), a Windows ini section "
+                        "header like '[extensions]', or a PHP source "
+                        "prefix '<?php' (wrapper source leak)."
+                    ),
+                },
+                "fetched_body_substring": {
+                    "type": "string",
+                    "description": (
+                        "Body of the file fetched back after upload. For "
+                        "upload CRITICAL true_positive, must contain the "
+                        "literal sentinel 'hakuna_upload_rce_confirmed' "
+                        "— proves the upload executed, not merely stored."
+                    ),
+                },
+                "baseline_status": {
+                    "type": "integer",
+                    "description": (
+                        "HTTP status of the unmodified request. Pair "
+                        "with probe_status to demonstrate path traversal "
+                        "(4xx baseline → 200 probe)."
+                    ),
+                },
+                "probe_status": {
+                    "type": "integer",
+                    "description": (
+                        "HTTP status of the probe request (with the "
+                        "traversal/payload). See baseline_status."
+                    ),
+                },
+                "token_sample_1": {
+                    "type": "string",
+                    "description": (
+                        "First token sample collected from a token-"
+                        "minting endpoint. For session true_positive, "
+                        "the runtime re-derives the weakness "
+                        "classification from token_sample_1 and "
+                        "token_sample_2 — the LLM does not get to call "
+                        "this on entropy intuition."
+                    ),
+                },
+                "token_sample_2": {
+                    "type": "string",
+                    "description": (
+                        "Second token sample, collected immediately "
+                        "after token_sample_1. CRITICAL requires "
+                        "sequential digits within 5; HIGH requires "
+                        "Unix-timestamp shape within 60s; MEDIUM "
+                        "requires either sample shorter than 16 chars "
+                        "or all-digit."
+                    ),
+                },
             },
             "required": ["severity", "title", "description", "verdict"],
         },

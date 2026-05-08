@@ -105,6 +105,21 @@ class TestParseNucleiStats:
         assert stats["requests_sent"] == 566
         assert stats["results_found"] == 0
 
+    def test_jsonl_stats_line(self):
+        """Nuclei v3.x switches the periodic -stats ticker to JSON when
+        -jsonl is set. The stall watchdog reads requests_sent through
+        this parser, so missing the JSON form means healthy scans get
+        killed as 'WAF/edge block' even while findings stream in."""
+        stderr = [
+            '{"duration":"0:00:30","errors":"0","hosts":"1","matched":"7",'
+            '"percent":"3","requests":"250","rps":"8","startedAt":"2026-05-08T10:24:11.554596741Z",'
+            '"templates":"10153","total":"65000"}',
+        ]
+        stats = _parse_nuclei_stats(stderr)
+        assert stats["templates_loaded"] == 10153
+        assert stats["requests_sent"] == 250
+        assert stats["results_found"] == 7
+
 
 class TestResultToFinding:
     """The payload shape run_nuclei_scan and run_nuclei_adhoc return must be

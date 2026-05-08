@@ -797,9 +797,22 @@ _FEED_ENTRY_SEVERITIES = {"critical", "high", "medium", "low", "info"}
         "proposed_actions": {
             "type": "array",
             "description": (
-                "Inline buttons. Each item: {label, kind, approval_id?, href?, tool_name?}. "
-                "kind='approve_action' pairs with approval_id to show an inline approve button. "
-                "kind='navigate' uses href for a deep link."
+                "Inline buttons rendered under the entry. Supported shapes:\n"
+                "  • approve_action — {kind:'approve_action', approval_id, label?}. Pair with an "
+                "AgentApproval row (campaign/notification/ticket draft).\n"
+                "  • navigate — {kind:'navigate', href, label?, intent?}. Deep link to a page. "
+                "Set intent='integrate' to render a 'Connect' affordance (Plug icon, accent border) "
+                "when you're suggesting the user wire up an external tool — e.g. "
+                "{kind:'navigate', href:'/settings?tab=integrations', label:'Connect Cloudflare', intent:'integrate'}.\n"
+                "  • apply_inline — {kind:'apply_inline', op, args, label?, confirm_text?, success_label?}. "
+                "Asks the user to apply a small mutation in one click. Allowed ops: "
+                "'assign_tags' (args: {tag_ids:[...], asset_ids?:[...], finding_ids?:[...]}), "
+                "'unassign_tags' (same args), "
+                "'set_asset_ownership' (args: {asset_id, owner_name?, owner_email?, owner_role?, team?, notes?}), "
+                "'set_finding_ownership' (args: {finding_id, owner_name?, owner_email?, owner_role?, team?}), "
+                "'confirm_asset_owner' (args: {asset_id}). "
+                "Use confirm_text when the change isn't trivially reversible. Resolve tag names to ids "
+                "via list_tags before constructing assign_tags args."
             ),
             "items": {"type": "object"},
         },

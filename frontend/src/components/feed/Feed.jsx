@@ -5,14 +5,28 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import {
   Bot, AlertTriangle, AlertCircle, Info, Check, X, ExternalLink,
-  RefreshCw, Sparkles, Inbox, Send,
+  RefreshCw, Sparkles, Inbox, Send, Plug, Wand2,
 } from 'lucide-react'
 
 import {
   getFeed, markFeedEntryRead, recordFeedEntryDecision, decideAgentApproval,
   getFeedChatContext, createCopilotConversation, getCopilotConversation,
   streamCopilotMessage,
+  assignTags, unassignTags,
+  setAssetOwnership, setFindingOwnership, confirmAssetOwner,
 } from '../../api.js'
+
+// Whitelist of mutations a narrator can request inline. Keeps the
+// agent → user contract narrow: anything not in this map degrades to a
+// muted pill so a stale or hallucinated op can't trigger arbitrary
+// requests.
+const APPLY_INLINE_OPS = {
+  assign_tags:           ({ args }) => assignTags(args),
+  unassign_tags:         ({ args }) => unassignTags(args),
+  set_asset_ownership:   ({ args }) => setAssetOwnership(args.asset_id, args),
+  set_finding_ownership: ({ args }) => setFindingOwnership(args.finding_id, args),
+  confirm_asset_owner:   ({ args }) => confirmAssetOwner(args.asset_id),
+}
 import {
   Card, EmptyState, Button, Pill, SeverityBadge,
 } from '../shared/ui.jsx'
@@ -82,6 +96,11 @@ function ProposedAction({ entry, action, onActed }) {
   const { t } = useTranslation()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
+  // For apply_inline ops with confirm_text: stage the confirmation
+  // inline rather than popping a modal (modals fight the feed's
+  // compact, scannable layout).
+  const [confirming, setConfirming] = useState(false)
+  const [done, setDone] = useState(false)
 
   const handleApprove = async () => {
     if (!action.approval_id) return
@@ -107,6 +126,25 @@ function ProposedAction({ entry, action, onActed }) {
     } finally { setBusy(false) }
   }
 
+  const handleApplyInline = async () => {
+    const handler = APPLY_INLINE_OPS[action.op]
+    if (!handler) return
+    setBusy(true); setError(null)
+    try {
+      await handler(action)
+      // Mirror the approve flow: an apply that mutates state should
+      // close the entry as "acted" so it leaves the open queue.
+      await recordFeedEntryDecision(entry.id, 'acted')
+      setDone(true)
+      onActed?.(entry.id, 'acted')
+    } catch (e) {
+      setError(e.message || t('feed.actionFailed'))
+    } finally {
+      setBusy(false)
+      setConfirming(false)
+    }
+  }
+
   if (action.kind === 'approve_action' && action.approval_id) {
     return (
       <div style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
@@ -123,36 +161,67 @@ function ProposedAction({ entry, action, onActed }) {
     )
   }
 
+  if (action.kind === 'apply_inline') {
+    const handler = APPLY_INLINE_OPS[action.op]
+    if (!handler) {
+      return <Pill label={action.label || t('feed.unsupportedOp')} color="var(--text-muted)" />
+    }
+    if (done) {
+      return <Pill label={action.success_label || t('feed.applied')} color="var(--success, #16a34a)" />
+    }
+    if (action.confirm_text && confirming) {
+      return (
+        <div style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+          <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{action.confirm_text}</span>
+          <Button onClick={handleApplyInline} variant="primary" size="sm" disabled={busy}>
+            <Check size={13} />{t('feed.confirm')}
+          </Button>
+          <Button onClick={() => setConfirming(false)} variant="ghost" size="sm" disabled={busy}>
+            {t('feed.cancel')}
+          </Button>
+          {error && <span style={{ color: 'var(--danger)', fontSize: 11 }}>{error}</span>}
+        </div>
+      )
+    }
+    return (
+      <div style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+        <Button
+          onClick={action.confirm_text ? () => setConfirming(true) : handleApplyInline}
+          variant="primary" size="sm" disabled={busy}
+        >
+          <Wand2 size={13} />
+          {action.label || t('feed.apply')}
+        </Button>
+        {error && <span style={{ color: 'var(--danger)', fontSize: 11 }}>{error}</span>}
+      </div>
+    )
+  }
+
   if (action.kind === 'navigate' && action.href) {
     const isExternal = /^https?:\/\//i.test(action.href)
+    const isIntegrate = action.intent === 'integrate'
+    const Icon = isIntegrate ? Plug : ExternalLink
+    const label = action.label || (isIntegrate ? t('feed.connect') : t('feed.open'))
+    const linkStyle = {
+      display: 'inline-flex', alignItems: 'center', gap: 6,
+      padding: '5px 10px', borderRadius: 6,
+      border: `1px solid ${isIntegrate ? 'var(--accent)' : 'var(--border)'}`,
+      background: isIntegrate ? 'var(--accent)15' : 'transparent',
+      color: isIntegrate ? 'var(--accent)' : 'var(--text-secondary)',
+      fontSize: 12, fontWeight: 600, textDecoration: 'none',
+    }
     if (isExternal) {
       return (
-        <a
-          href={action.href} target="_blank" rel="noopener noreferrer"
-          style={{
-            display: 'inline-flex', alignItems: 'center', gap: 6,
-            padding: '5px 10px', borderRadius: 6, border: '1px solid var(--border)',
-            background: 'transparent', color: 'var(--text-secondary)',
-            fontSize: 12, fontWeight: 600, textDecoration: 'none',
-          }}
-        >
-          <ExternalLink size={13} />
-          {action.label || t('feed.open')}
+        <a href={action.href} target="_blank" rel="noopener noreferrer" style={linkStyle}>
+          <Icon size={13} />
+          {label}
         </a>
       )
     }
     return (
-      <Link
-        to={action.href}
-        style={{
-          display: 'inline-flex', alignItems: 'center', gap: 6,
-          padding: '5px 10px', borderRadius: 6, border: '1px solid var(--border)',
-          background: 'transparent', color: 'var(--text-secondary)',
-          fontSize: 12, fontWeight: 600, textDecoration: 'none',
-        }}
-      >
-        <ExternalLink size={13} />
-        {action.label || t('feed.open')}
+      <Link to={action.href} style={linkStyle}>
+        <Icon size={13} />
+        {label}
       </Link>
     )
   }

@@ -773,6 +773,348 @@ class TestSimpleHandlers:
         assert out["status"] == "acknowledged"
 
 
+class TestEmitFindingSSRFGating:
+    """SSRF true_positive without OOB or >=5s timing must downgrade.
+
+    Sub-second timing deltas over the public internet are RTT jitter,
+    not evidence — the gate exists so a flawed timing heuristic in the
+    prompt can't push hallucinated true_positives through.
+    """
+
+    def _ssrf_ctx(self):
+        return _ctx(current_specialist="ssrf")
+
+    def test_ssrf_true_positive_without_evidence_downgraded(self):
+        payload = {
+            "severity": "high", "title": "SSRF in url",
+            "description": "x", "verdict": "true_positive",
+        }
+        out = _emit_finding_handler(payload, self._ssrf_ctx())
+        assert out["payload"]["verdict"] == "needs_review"
+        assert "_downgrade_reason" in out["payload"]
+
+    def test_ssrf_true_positive_with_oob_hit_passes(self):
+        payload = {
+            "severity": "high", "title": "SSRF in url",
+            "description": "x", "verdict": "true_positive",
+            "oob_hit_count": 1,
+        }
+        out = _emit_finding_handler(payload, self._ssrf_ctx())
+        assert out["payload"]["verdict"] == "true_positive"
+        assert "_downgrade_reason" not in out["payload"]
+
+    def test_ssrf_true_positive_with_timing_delta_passes(self):
+        payload = {
+            "severity": "high", "title": "SSRF in url",
+            "description": "x", "verdict": "true_positive",
+            "timing_delta_seconds": 12.4,
+        }
+        out = _emit_finding_handler(payload, self._ssrf_ctx())
+        assert out["payload"]["verdict"] == "true_positive"
+
+    def test_ssrf_true_positive_with_subsecond_timing_downgraded(self):
+        payload = {
+            "severity": "high", "title": "SSRF in url",
+            "description": "x", "verdict": "true_positive",
+            "timing_delta_seconds": 0.4,
+        }
+        out = _emit_finding_handler(payload, self._ssrf_ctx())
+        assert out["payload"]["verdict"] == "needs_review"
+
+    def test_ssrf_true_positive_with_zero_oob_hits_downgraded(self):
+        payload = {
+            "severity": "high", "title": "SSRF in url",
+            "description": "x", "verdict": "true_positive",
+            "oob_hit_count": 0,
+        }
+        out = _emit_finding_handler(payload, self._ssrf_ctx())
+        assert out["payload"]["verdict"] == "needs_review"
+
+    def test_ssrf_needs_review_passes_through_unchanged(self):
+        payload = {
+            "severity": "medium", "title": "SSRF candidate",
+            "description": "x", "verdict": "needs_review",
+        }
+        out = _emit_finding_handler(payload, self._ssrf_ctx())
+        assert out["payload"]["verdict"] == "needs_review"
+        assert "_downgrade_reason" not in out["payload"]
+
+    def test_non_gated_specialist_not_affected(self):
+        """Categories without an evidence_validator pass through unchanged."""
+        payload = {
+            "severity": "high", "title": "Reflected XSS",
+            "description": "x", "verdict": "true_positive",
+        }
+        # xss has no evidence_validator yet — the dispatch should no-op.
+        out = _emit_finding_handler(payload, _ctx(current_specialist="xss"))
+        assert out["payload"]["verdict"] == "true_positive"
+
+    def test_no_specialist_context_passes_through(self):
+        """Tool calls outside any specialist (tests, seed) bypass gating."""
+        payload = {
+            "severity": "high", "title": "x",
+            "description": "x", "verdict": "true_positive",
+        }
+        out = _emit_finding_handler(payload, _ctx())  # current_specialist=None
+        assert out["payload"]["verdict"] == "true_positive"
+
+
+class TestEmitFindingSessionGating:
+    """Session true_positive must show predictability via two samples.
+
+    The runtime re-derives the weakness class from the sample pair
+    rather than trusting the LLM's entropy intuition. CRITICAL needs
+    a sequential digit pair; HIGH needs Unix-timestamp shape; MEDIUM
+    needs a short or all-digit sample. Anything else is downgraded.
+    """
+
+    def _ctx(self):
+        return _ctx(current_specialist="session")
+
+    def _payload(self, **kw):
+        base = {
+            "severity": "critical", "title": "Weak session token",
+            "description": "x", "verdict": "true_positive",
+        }
+        base.update(kw)
+        return base
+
+    def test_critical_sequential_passes(self):
+        out = _emit_finding_handler(
+            self._payload(token_sample_1="42", token_sample_2="43"),
+            self._ctx(),
+        )
+        assert out["payload"]["verdict"] == "true_positive"
+
+    def test_critical_non_sequential_digits_downgraded(self):
+        out = _emit_finding_handler(
+            self._payload(token_sample_1="42", token_sample_2="9999999"),
+            self._ctx(),
+        )
+        assert out["payload"]["verdict"] == "needs_review"
+
+    def test_critical_non_digit_samples_downgraded(self):
+        out = _emit_finding_handler(
+            self._payload(token_sample_1="abc123def", token_sample_2="abc124def"),
+            self._ctx(),
+        )
+        assert out["payload"]["verdict"] == "needs_review"
+
+    def test_high_timestamp_shaped_passes(self):
+        out = _emit_finding_handler(
+            self._payload(
+                severity="high",
+                token_sample_1="1700000000",
+                token_sample_2="1700000010",
+            ),
+            self._ctx(),
+        )
+        assert out["payload"]["verdict"] == "true_positive"
+
+    def test_high_non_timestamp_int_downgraded(self):
+        # ints, but outside the Unix-timestamp range
+        out = _emit_finding_handler(
+            self._payload(
+                severity="high",
+                token_sample_1="42", token_sample_2="43",
+            ),
+            self._ctx(),
+        )
+        assert out["payload"]["verdict"] == "needs_review"
+
+    def test_high_timestamps_too_far_apart_downgraded(self):
+        out = _emit_finding_handler(
+            self._payload(
+                severity="high",
+                token_sample_1="1700000000",
+                token_sample_2="1700000999",  # 999s apart
+            ),
+            self._ctx(),
+        )
+        assert out["payload"]["verdict"] == "needs_review"
+
+    def test_medium_short_sample_passes(self):
+        out = _emit_finding_handler(
+            self._payload(
+                severity="medium",
+                token_sample_1="abc123", token_sample_2="abc124",
+            ),
+            self._ctx(),
+        )
+        assert out["payload"]["verdict"] == "true_positive"
+
+    def test_medium_high_entropy_long_downgraded(self):
+        out = _emit_finding_handler(
+            self._payload(
+                severity="medium",
+                token_sample_1="aB3xY7q9Z2nM4kLwP8R1c5v6", # 24 chars mixed
+                token_sample_2="dF1pK9w2X4mN8z3J7yC0bH6t",
+            ),
+            self._ctx(),
+        )
+        assert out["payload"]["verdict"] == "needs_review"
+
+    def test_missing_samples_downgraded(self):
+        out = _emit_finding_handler(self._payload(), self._ctx())
+        assert out["payload"]["verdict"] == "needs_review"
+
+    def test_oversized_samples_downgraded(self):
+        big = "a" * 5000
+        out = _emit_finding_handler(
+            self._payload(token_sample_1=big, token_sample_2=big),
+            self._ctx(),
+        )
+        assert out["payload"]["verdict"] == "needs_review"
+
+    def test_low_severity_passes_through(self):
+        """LOW/INFO findings are advisory and not gate-checked."""
+        out = _emit_finding_handler(
+            self._payload(severity="low"), self._ctx(),
+        )
+        assert out["payload"]["verdict"] == "true_positive"
+
+
+class TestEmitFindingUploadGating:
+    """Upload CRITICAL claims must include the executed sentinel.
+
+    Upload-accepted ≠ executed. The CRITICAL gate exists to block the
+    common false-positive shape "the upload was accepted, therefore
+    RCE" — a real RCE finding includes the fetched body containing the
+    sentinel the prompt mints.
+    """
+
+    def _ctx(self):
+        return _ctx(current_specialist="upload")
+
+    def test_critical_with_sentinel_passes(self):
+        out = _emit_finding_handler({
+            "severity": "critical", "title": "Upload RCE",
+            "description": "x", "verdict": "true_positive",
+            "fetched_body_substring": (
+                "some prefix hakuna_upload_rce_confirmed trailing"
+            ),
+        }, self._ctx())
+        assert out["payload"]["verdict"] == "true_positive"
+
+    def test_critical_without_sentinel_downgraded(self):
+        out = _emit_finding_handler({
+            "severity": "critical", "title": "Upload RCE",
+            "description": "x", "verdict": "true_positive",
+            "fetched_body_substring": "some unrelated body",
+        }, self._ctx())
+        assert out["payload"]["verdict"] == "needs_review"
+
+    def test_critical_missing_fetched_body_downgraded(self):
+        out = _emit_finding_handler({
+            "severity": "critical", "title": "Upload RCE",
+            "description": "x", "verdict": "true_positive",
+        }, self._ctx())
+        assert out["payload"]["verdict"] == "needs_review"
+
+    def test_medium_source_disclosure_passes(self):
+        """MEDIUM (source disclosure) is out of CRITICAL gate's scope."""
+        out = _emit_finding_handler({
+            "severity": "medium", "title": "Source disclosure on upload",
+            "description": "x", "verdict": "true_positive",
+        }, self._ctx())
+        assert out["payload"]["verdict"] == "true_positive"
+
+
+class TestEmitFindingFilesGating:
+    """Files true_positive must cite a deterministic LFI/RFI/traversal artifact."""
+
+    def _ctx(self):
+        return _ctx(current_specialist="files")
+
+    def _payload(self, **kw):
+        base = {
+            "severity": "critical", "title": "LFI",
+            "description": "x", "verdict": "true_positive",
+        }
+        base.update(kw)
+        return base
+
+    def test_lfi_passwd_substring_passes(self):
+        out = _emit_finding_handler(
+            self._payload(evidence_substring="root:x:0:0:root:/root:/bin/bash"),
+            self._ctx(),
+        )
+        assert out["payload"]["verdict"] == "true_positive"
+
+    def test_lfi_windows_ini_passes(self):
+        out = _emit_finding_handler(
+            self._payload(evidence_substring="; for 16-bit app support\n[extensions]\nINI=ini\n"),
+            self._ctx(),
+        )
+        assert out["payload"]["verdict"] == "true_positive"
+
+    def test_wrapper_php_source_passes(self):
+        out = _emit_finding_handler(
+            self._payload(evidence_substring="<?php require_once('config.php'); ?>"),
+            self._ctx(),
+        )
+        assert out["payload"]["verdict"] == "true_positive"
+
+    def test_rfi_oob_hit_passes(self):
+        out = _emit_finding_handler(
+            self._payload(severity="critical", oob_hit_count=2),
+            self._ctx(),
+        )
+        assert out["payload"]["verdict"] == "true_positive"
+
+    def test_path_traversal_status_flip_passes(self):
+        out = _emit_finding_handler(
+            self._payload(
+                severity="high", title="Path traversal",
+                baseline_status=403, probe_status=200,
+            ),
+            self._ctx(),
+        )
+        assert out["payload"]["verdict"] == "true_positive"
+
+    def test_unrelated_evidence_downgraded(self):
+        out = _emit_finding_handler(
+            self._payload(evidence_substring="404 Not Found"),
+            self._ctx(),
+        )
+        assert out["payload"]["verdict"] == "needs_review"
+
+    def test_path_traversal_baseline_2xx_downgraded(self):
+        # The flip must be 4xx → 200; same-status pair is not evidence.
+        out = _emit_finding_handler(
+            self._payload(
+                severity="high",
+                baseline_status=200, probe_status=200,
+            ),
+            self._ctx(),
+        )
+        assert out["payload"]["verdict"] == "needs_review"
+
+    def test_no_evidence_at_all_downgraded(self):
+        out = _emit_finding_handler(self._payload(), self._ctx())
+        assert out["payload"]["verdict"] == "needs_review"
+
+
+class TestSpecialistValidatorWiring:
+    """Each gated specialist must declare its validator on the spec."""
+
+    def test_ssrf_has_validator(self):
+        assert SPECIALISTS["ssrf"].evidence_validator is not None
+
+    def test_session_has_validator(self):
+        assert SPECIALISTS["session"].evidence_validator is not None
+
+    def test_upload_has_validator(self):
+        assert SPECIALISTS["upload"].evidence_validator is not None
+
+    def test_files_has_validator(self):
+        assert SPECIALISTS["files"].evidence_validator is not None
+
+    def test_xss_has_no_validator_yet(self):
+        """Sentinel — when XSS gating ships, this test should be replaced."""
+        assert SPECIALISTS["xss"].evidence_validator is None
+
+
 class TestMemorySetHandler:
     def test_stores_and_returns_total_keys(self):
         ctx = _ctx()
