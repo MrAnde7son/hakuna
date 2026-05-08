@@ -11,6 +11,7 @@ import shutil
 import uuid
 from datetime import datetime, timezone
 
+import aiohttp
 from sqlalchemy import text
 
 from app.tasks.enrichment import ENRICHMENT_STEP_COUNT
@@ -29,6 +30,7 @@ from app.ingest.liveness import (
     check_dns_resolution,
     create_dangling_dns_finding,
     identify_cloud_provider,
+    probe_dangling_asset,
     validate_and_update_assets,
 )
 from app.ingest.wildcard import detect_wildcard, filter_wildcard_results
@@ -629,9 +631,11 @@ async def _do_liveness_gate(sf, org_id: str, target_scope: str | None = None) ->
             port_check_results, http_check_results,
         )
 
-    # Create findings for dangling DNS assets. We look up the CNAME from
-    # dns_records so the takeover fingerprint check can short-circuit on
-    # known-vulnerable CNAME targets (S3, GitHub Pages, etc.).
+    # Create findings for dangling DNS assets. The CNAME from dns_records
+    # short-circuits the takeover fingerprint check on known-vulnerable
+    # targets (S3, GitHub Pages, etc.). DNS + HTTP probing is gathered
+    # across all dangling hosts so we don't pay 5s × N in serial timeouts;
+    # the DB writes are then sequential on the single session.
     async with get_task_session()() as db:
         rows = await db.execute(
             text("""
@@ -640,38 +644,62 @@ async def _do_liveness_gate(sf, org_id: str, target_scope: str | None = None) ->
             """),
             {"org_id": org_id},
         )
-        for row in rows.fetchall():
-            try:
-                resolved_ips = check_dns_resolution(row.hostname)
-                cloud_provider = None
-                for ip in resolved_ips:
-                    cloud_provider = identify_cloud_provider(ip)
-                    if cloud_provider:
-                        break
+        dangling_rows = rows.fetchall()
 
-                cname_targets: list[str] = []
-                dns_records = row.dns_records
-                if isinstance(dns_records, dict):
-                    raw_cnames = dns_records.get("CNAME") or dns_records.get("cname") or []
-                    if isinstance(raw_cnames, str):
-                        cname_targets = [raw_cnames]
-                    elif isinstance(raw_cnames, list):
-                        cname_targets = [str(c) for c in raw_cnames if c]
+        if dangling_rows:
+            connector = aiohttp.TCPConnector(limit=20, ssl=False)
+            async with aiohttp.ClientSession(
+                connector=connector,
+                headers={"User-Agent": "Mozilla/5.0 (compatible; HakunaScanner/1.0 takeover-probe)"},
+            ) as http_session:
+                sem = asyncio.Semaphore(20)
 
-                await create_dangling_dns_finding(
-                    db, uuid.UUID(org_id), row.id, row.hostname,
-                    resolved_ips, cloud_provider,
-                    cname_targets=cname_targets,
-                )
-            except Exception:
-                # Don't let a single asset's finding-creation failure abort
-                # the whole liveness_gate stage. If it does, the surrounding
-                # chain leaves the scan_run stuck at this stage and the
-                # recovery loop re-dispatches it forever.
-                logger.exception(
-                    "org=%s dangling_dns finding failed for asset=%s host=%s",
-                    org_id, row.id, row.hostname,
-                )
+                async def _probe(row):
+                    async with sem:
+                        try:
+                            cname_targets: list[str] = []
+                            dns_records = row.dns_records
+                            if isinstance(dns_records, dict):
+                                raw_cnames = (
+                                    dns_records.get("CNAME") or dns_records.get("cname") or []
+                                )
+                                if isinstance(raw_cnames, str):
+                                    cname_targets = [raw_cnames]
+                                elif isinstance(raw_cnames, list):
+                                    cname_targets = [str(c) for c in raw_cnames if c]
+                            resolved_ips, cloud_provider, evidence = await probe_dangling_asset(
+                                row.hostname, cname_targets, http_session,
+                            )
+                            return row, cname_targets, resolved_ips, cloud_provider, evidence
+                        except Exception:
+                            logger.exception(
+                                "org=%s dangling_dns probe failed for asset=%s host=%s",
+                                org_id, row.id, row.hostname,
+                            )
+                            return None
+
+                probe_results = await asyncio.gather(*[_probe(r) for r in dangling_rows])
+
+            for result in probe_results:
+                if result is None:
+                    continue
+                row, cname_targets, resolved_ips, cloud_provider, evidence = result
+                try:
+                    await create_dangling_dns_finding(
+                        db, uuid.UUID(org_id), row.id, row.hostname,
+                        resolved_ips, cloud_provider,
+                        cname_targets=cname_targets,
+                        takeover_evidence=evidence,
+                    )
+                except Exception:
+                    # Per-asset isolation — one bad insert must not abort the
+                    # liveness_gate stage, otherwise the recovery loop would
+                    # re-dispatch this stage forever.
+                    logger.exception(
+                        "org=%s dangling_dns finding failed for asset=%s host=%s",
+                        org_id, row.id, row.hostname,
+                    )
+
         await db.commit()
 
     return summary

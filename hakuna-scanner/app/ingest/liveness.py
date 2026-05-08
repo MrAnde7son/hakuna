@@ -4,6 +4,7 @@ Checks DNS resolution, port response, and HTTP probe to determine
 whether assets are alive, unconfirmed, or likely dead.
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -210,6 +211,35 @@ def check_dns_resolution(hostname: str) -> list[str]:
         return []
 
 
+# Cap on concurrent DNS lookups. Each call blocks a worker in the asyncio
+# default executor (~32 threads on cpython). 64 is enough to saturate the
+# pool and keeps the resolver from rate-limiting us.
+_DNS_RESOLVE_CONCURRENCY = 64
+
+# Chunk size for the bulk UPDATE … FROM (VALUES …) statement. Keeps the
+# parsed query size bounded for very large scans.
+_LIVENESS_UPDATE_CHUNK = 500
+
+
+async def _resolve_hostnames_async(hostnames: list[str]) -> dict[str, list[str]]:
+    """Resolve many hostnames concurrently.
+
+    `check_dns_resolution` does a blocking `socket.getaddrinfo`, so each
+    lookup runs in the asyncio default executor and we gather them. The
+    LOAD_GLOBAL on `check_dns_resolution` happens at call time, so test
+    patches on `app.ingest.liveness.check_dns_resolution` still take effect.
+    """
+    sem = asyncio.Semaphore(_DNS_RESOLVE_CONCURRENCY)
+
+    async def _one(host: str) -> tuple[str, list[str]]:
+        async with sem:
+            ips = await asyncio.to_thread(check_dns_resolution, host)
+            return host, ips
+
+    pairs = await asyncio.gather(*[_one(h) for h in hostnames])
+    return dict(pairs)
+
+
 async def validate_and_update_assets(
     db: AsyncSession,
     org_id: uuid.UUID,
@@ -219,47 +249,42 @@ async def validate_and_update_assets(
 ) -> dict:
     """Run liveness checks and update asset state.
 
-    DNS resolution is done inline (Python socket). Port and HTTP checks
-    are passed in from the caller (Naabu recheck + httpx probe).
+    DNS resolution runs concurrently across all assets. Port and HTTP
+    checks are passed in from the caller (Naabu recheck + httpx probe).
+    The whole batch issues one SELECT and one chunked UPDATE — for an N-asset
+    scan that's O(1) DB round-trips, not O(N).
 
     Returns summary dict with counts per state.
     """
     now = datetime.now(timezone.utc)
     summary = {"confirmed_alive": 0, "unconfirmed": 0, "likely_dead": 0, "dangling_dns": 0}
 
-    for asset_id in asset_ids:
-        row = await db.execute(
-            text("""
-                SELECT id, hostname, host(ip) as ip, open_ports, consecutive_failures,
-                       liveness_state, tags, cdn_provider
-                FROM assets WHERE id = :id AND org_id = :org_id
-            """),
-            {"id": asset_id, "org_id": org_id},
-        )
-        asset = row.fetchone()
-        if not asset:
-            continue
+    if not asset_ids:
+        return summary
 
+    result = await db.execute(
+        text("""
+            SELECT id, hostname, host(ip) as ip, open_ports, consecutive_failures,
+                   liveness_state, tags, cdn_provider
+            FROM assets WHERE id = ANY(:ids) AND org_id = :org_id
+        """),
+        {"ids": list(asset_ids), "org_id": org_id},
+    )
+    assets = result.fetchall()
+    if not assets:
+        return summary
+
+    dns_map = await _resolve_hostnames_async([a.hostname for a in assets])
+
+    updates: list[dict] = []
+    for asset in assets:
         hostname = asset.hostname
-        checks_passed = 0
-
-        # Check 1: DNS resolution
-        resolved_ips = check_dns_resolution(hostname)
+        resolved_ips = dns_map.get(hostname, [])
         dns_ok = len(resolved_ips) > 0
-        if dns_ok:
-            checks_passed += 1
-
-        # Check 2: Port response (from naabu recheck)
         port_ok = port_check_results.get(hostname, False)
-        if port_ok:
-            checks_passed += 1
-
-        # Check 3: HTTP probe (from httpx probe)
         http_ok = http_check_results.get(hostname, False)
-        if http_ok:
-            checks_passed += 1
+        checks_passed = int(dns_ok) + int(port_ok) + int(http_ok)
 
-        # Determine state
         old_failures = asset.consecutive_failures or 0
         tags = list(asset.tags or [])
 
@@ -300,52 +325,109 @@ async def validate_and_update_assets(
             if cloud_provider:
                 break
 
-        # Dangling DNS detection: DNS resolves but no port responds
         is_dangling = dns_ok and not port_ok
         if is_dangling:
             if "dangling_dns" not in tags:
                 tags.append("dangling_dns")
             summary["dangling_dns"] += 1
-
             if cloud_provider and "potential_takeover" not in tags:
                 tags.append("potential_takeover")
         else:
-            # Remove dangling tags if asset is now responding
             tags = [t for t in tags if t not in ("dangling_dns", "potential_takeover")]
 
-        # Only touch cloud_provider when DNS actually resolved — if the
-        # lookup returns None on a successful resolve we want to clear a
-        # stale value (asset moved off the cloud), but if DNS failed we
-        # have no signal and should leave the previous classification
-        # alone.
-        await db.execute(
-            text("""
-                UPDATE assets SET
-                    liveness_state = :state,
-                    consecutive_failures = :failures,
-                    last_validated_at = :now,
-                    tags = :tags,
-                    cloud_provider = CASE WHEN :did_resolve
-                        THEN :cloud_provider ELSE cloud_provider END,
-                    liveness_score = LEAST(100, GREATEST(0,
-                        COALESCE(liveness_score, 100) + :score_delta))
-                WHERE id = :id
-            """),
-            {
-                "state": new_state,
-                "failures": new_failures,
-                "now": now,
-                "tags": tags,
-                "did_resolve": dns_ok,
-                "cloud_provider": cloud_provider,
-                "score_delta": score_delta,
-                "id": asset_id,
-            },
-        )
+        updates.append({
+            "id": asset.id,
+            "state": new_state,
+            "failures": new_failures,
+            "tags": tags,
+            "did_resolve": dns_ok,
+            "cloud_provider": cloud_provider,
+            "score_delta": score_delta,
+        })
+
+    # One UPDATE per chunk via a VALUES-driven join. cloud_provider is only
+    # overwritten when DNS actually resolved (CASE WHEN v.did_resolve) — a
+    # failed lookup leaves the previous classification alone, since the
+    # absence of an answer isn't a signal that the asset moved off the cloud.
+    # SQLAlchemy's text() bind parser refuses to bind `:name` when it's
+    # followed by `::` (the parser disambiguates against Postgres casts), so
+    # we wrap each bind in CAST(... AS type) instead. The casts are needed
+    # so Postgres can infer column types for the synthetic VALUES table.
+    for start in range(0, len(updates), _LIVENESS_UPDATE_CHUNK):
+        chunk = updates[start:start + _LIVENESS_UPDATE_CHUNK]
+        values_parts: list[str] = []
+        params: dict = {"now": now}
+        for i, u in enumerate(chunk):
+            values_parts.append(
+                f"(CAST(:id_{i} AS uuid), CAST(:state_{i} AS text), "
+                f"CAST(:failures_{i} AS int), CAST(:tags_{i} AS text[]), "
+                f"CAST(:did_resolve_{i} AS bool), "
+                f"CAST(:cloud_provider_{i} AS text), "
+                f"CAST(:score_delta_{i} AS int))"
+            )
+            params[f"id_{i}"] = u["id"]
+            params[f"state_{i}"] = u["state"]
+            params[f"failures_{i}"] = u["failures"]
+            params[f"tags_{i}"] = u["tags"]
+            params[f"did_resolve_{i}"] = u["did_resolve"]
+            params[f"cloud_provider_{i}"] = u["cloud_provider"]
+            params[f"score_delta_{i}"] = u["score_delta"]
+
+        sql = f"""
+            UPDATE assets SET
+                liveness_state = v.state,
+                consecutive_failures = v.failures,
+                last_validated_at = :now,
+                tags = v.tags,
+                cloud_provider = CASE WHEN v.did_resolve
+                    THEN v.cloud_provider ELSE assets.cloud_provider END,
+                liveness_score = LEAST(100, GREATEST(0,
+                    COALESCE(assets.liveness_score, 100) + v.score_delta))
+            FROM (VALUES {', '.join(values_parts)})
+                AS v(id, state, failures, tags, did_resolve, cloud_provider, score_delta)
+            WHERE assets.id = v.id
+        """
+        await db.execute(text(sql), params)
 
     await db.commit()
     logger.info("org=%s liveness validation: %s", org_id, summary)
     return summary
+
+
+# Sentinel telling create_dangling_dns_finding to run the probe itself.
+# Distinct from None, which is a valid pre-computed result meaning "probed
+# and found nothing." Lets callers gather probes in parallel and pass the
+# results through without the helper re-probing serially.
+_PROBE_PENDING = object()
+
+
+async def probe_dangling_asset(
+    hostname: str,
+    cname_targets: list[str] | None,
+    session: aiohttp.ClientSession,
+) -> tuple[list[str], str | None, dict | None]:
+    """Run all I/O for a single dangling asset: DNS, cloud attribution, takeover probe.
+
+    Returns ``(resolved_ips, cloud_provider, takeover_evidence)``. Designed to
+    be safe under ``asyncio.gather`` with a shared ``ClientSession`` so a
+    batch of dangling hosts isn't probed serially. Never raises — a probe
+    failure becomes ``takeover_evidence = None`` so the caller still creates
+    the legacy dangling-DNS finding.
+    """
+    resolved_ips = await asyncio.to_thread(check_dns_resolution, hostname)
+    cloud_provider: str | None = None
+    for ip in resolved_ips:
+        cloud_provider = identify_cloud_provider(ip)
+        if cloud_provider:
+            break
+    try:
+        evidence = await check_takeover_fingerprint(
+            hostname, cname_targets=cname_targets, session=session,
+        )
+    except Exception:
+        logger.debug("takeover fingerprint probe failed for %s", hostname, exc_info=True)
+        evidence = None
+    return resolved_ips, cloud_provider, evidence
 
 
 async def create_dangling_dns_finding(
@@ -357,6 +439,7 @@ async def create_dangling_dns_finding(
     cloud_provider: str | None,
     cname_targets: list[str] | None = None,
     session: aiohttp.ClientSession | None = None,
+    takeover_evidence: dict | None | object = _PROBE_PENDING,
 ) -> uuid.UUID:
     """Create a finding record for dangling DNS / potential subdomain takeover.
 
@@ -367,20 +450,23 @@ async def create_dangling_dns_finding(
     finding to ``subdomain_takeover`` with severity taken from the fingerprint
     entry. Falls back to the legacy cloud-provider IP-prefix heuristic when
     no fingerprint matches.
+
+    Pass ``takeover_evidence`` (a dict or None) when the caller has already
+    probed — this skips the internal probe so a batch of dangling hosts can
+    be processed without re-probing serially.
     """
     finding_id = uuid.uuid4()
     now = datetime.now(timezone.utc)
 
-    # Try fingerprint-based detection first — strongest signal available.
-    takeover_evidence: dict | None = None
-    try:
-        takeover_evidence = await check_takeover_fingerprint(
-            hostname, cname_targets=cname_targets, session=session,
-        )
-    except Exception as exc:
-        # Never let probe errors break finding creation.
-        logger.debug("takeover fingerprint probe failed for %s: %s", hostname, exc)
-        takeover_evidence = None
+    if takeover_evidence is _PROBE_PENDING:
+        try:
+            takeover_evidence = await check_takeover_fingerprint(
+                hostname, cname_targets=cname_targets, session=session,
+            )
+        except Exception as exc:
+            # Never let probe errors break finding creation.
+            logger.debug("takeover fingerprint probe failed for %s: %s", hostname, exc)
+            takeover_evidence = None
 
     if takeover_evidence is not None:
         service_name = takeover_evidence.get("service") or "unknown-service"

@@ -29,11 +29,15 @@ _AssetRow = namedtuple(
 
 
 class _RecordingResult:
-    def __init__(self, row=None):
+    def __init__(self, row=None, rows=None):
         self._row = row
+        self._rows = rows or []
 
     def fetchone(self):
         return self._row
+
+    def fetchall(self):
+        return self._rows
 
 
 class _RecordingSession:
@@ -49,8 +53,9 @@ class _RecordingSession:
         params = params or {}
         self.executed.append((sql, params))
         if "SELECT id, hostname" in sql:
-            row = self.asset_rows.get(params.get("id"))
-            return _RecordingResult(row)
+            ids = params.get("ids") or []
+            rows = [self.asset_rows[i] for i in ids if i in self.asset_rows]
+            return _RecordingResult(rows=rows)
         return _RecordingResult()
 
     async def commit(self):
@@ -78,12 +83,37 @@ def _make_row(*, hostname="ex.example.com", failures=0, state="unconfirmed", tag
     )
 
 
-def _captured_update(session: _RecordingSession) -> dict:
-    """Return the params dict from the UPDATE assets statement."""
+def _captured_updates(session: _RecordingSession) -> list[dict]:
+    """Return per-asset update dicts from the bulk UPDATE assets statement.
+
+    The production code issues one chunked `UPDATE … FROM (VALUES …)` with
+    positional keys (`state_0`, `state_1`, …). Reassemble per-asset dicts
+    so tests can assert on the same field names as before.
+    """
     for sql, params in session.executed:
         if "UPDATE assets SET" in sql and "liveness_score" in sql:
-            return params
+            updates: list[dict] = []
+            i = 0
+            while f"state_{i}" in params:
+                updates.append({
+                    "id": params[f"id_{i}"],
+                    "state": params[f"state_{i}"],
+                    "failures": params[f"failures_{i}"],
+                    "tags": params[f"tags_{i}"],
+                    "did_resolve": params[f"did_resolve_{i}"],
+                    "cloud_provider": params[f"cloud_provider_{i}"],
+                    "score_delta": params[f"score_delta_{i}"],
+                })
+                i += 1
+            return updates
     raise AssertionError("no UPDATE assets liveness_score statement was issued")
+
+
+def _captured_update(session: _RecordingSession) -> dict:
+    """Single-asset convenience wrapper used by all the score tests."""
+    updates = _captured_updates(session)
+    assert len(updates) == 1, f"expected 1 update, got {len(updates)}"
+    return updates[0]
 
 
 def test_score_bumps_on_confirmed_alive():

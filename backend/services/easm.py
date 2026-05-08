@@ -3373,10 +3373,24 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
     run_id = meta.get("run_id")
     domain = meta.get("domain")
     current_status = meta.get("status")
+    # Capture easm_org_id (and org.id, used by notifications later) to locals
+    # so we can release the SQLAlchemy transaction across scanner HTTP calls
+    # without triggering ORM auto-refresh and reopening it.
+    easm_org_id = org.easm_org_id
+    org_id = org.id
 
     # Already completed — nothing to do
     if current_status == "completed":
         return {"scan_id": scan.id, "status": "completed", "domain": domain}
+
+    # Release the read-only transaction opened by the lookups above before
+    # awaiting the scanner. Postgres's idle_in_transaction_session_timeout
+    # (set to 60s in core.database for every checked-out connection) will
+    # otherwise kill the connection while we wait on a slow scanner — and
+    # a 30s httpx timeout plus a retry can comfortably exceed that. Calling
+    # commit() here issues COMMIT on the connection without releasing it
+    # back to the pool; the next query autobegins a fresh transaction.
+    db.commit()
 
     # Check status in hakuna. Distinguish between three outcomes:
     #   1. Scanner reachable + returned a known status → use it
@@ -3389,7 +3403,7 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
     fetch_error: Optional[str] = None
     if run_id:
         run_status, fetch_status, fetch_error = await _hakuna_request_detailed(
-            "GET", f"/orgs/{org.easm_org_id}/scans/{run_id}",
+            "GET", f"/orgs/{easm_org_id}/scans/{run_id}",
         )
     else:
         # No run_id at all — the original trigger never produced one. Terminal failure.
@@ -3439,6 +3453,18 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
                 for a in db.query(Asset).filter(Asset.scan_id == scan.id).all()
             }
 
+            # Fetch assets from the scanner BEFORE we touch the DB further.
+            # This used to live after _clear_scan_data, which meant a slow
+            # scanner held the (clear+import) write transaction open across
+            # the HTTP call — long enough for Postgres's
+            # idle_in_transaction_session_timeout to kill the connection and
+            # mark the whole import failed even when the scanner eventually
+            # responded. Releasing the tx here keeps the connection alive
+            # while we wait; the clear+import below is still atomic among
+            # themselves because they share the next autobegun transaction.
+            db.commit()
+            easm_assets = await get_easm_assets(easm_org_id) or []
+
             # If we've been doing incremental imports mid-scan, assets are
             # already present with stable IDs (possibly linked to VM findings
             # or other integrations). Wiping them here would orphan those
@@ -3449,9 +3475,6 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
             did_incremental = bool(meta.get("incremental_since"))
             if not did_incremental:
                 _clear_scan_data(db, scan.id)
-
-            # Import assets now that scan is done
-            easm_assets = await get_easm_assets(org.easm_org_id) or []
 
             # Pull NVD CVEs for any new CPEs detected during enrichment.
             # This must run BEFORE _import_assets_for_domain so the CPE→CVE
@@ -3485,7 +3508,9 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
             gh_asset_count = 0
             gh_finding_count = 0
             try:
-                gh_result = await trigger_github_npm_scan(org.easm_org_id, domain)
+                # Use the local capture so the await doesn't auto-refresh
+                # the expired `org` instance and reopen the transaction.
+                gh_result = await trigger_github_npm_scan(easm_org_id, domain)
                 if gh_result:
                     gh_asset_count, gh_finding_count, _gh_aids, _gh_fids = (
                         _import_github_npm_assets(db, scan, gh_result, domain)
@@ -3579,6 +3604,10 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
             # auto-scanned; DNS-probe guesses require operator confirmation
             # via POST /easm/corporate/scan-subsidiaries.
             try:
+                # Release the transaction left open by the corporate-tree
+                # sync block above so the fan-out HTTP wait can't keep us
+                # idle-in-transaction past the 60s connection limit.
+                db.commit()
                 fanout = await fan_out_subsidiary_scans(
                     db, org,
                     scan_type="discovery",
@@ -3744,8 +3773,13 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
                 # last_seen lands exactly on the next tick aren't missed.
                 fetch_started = datetime.utcnow()
                 since = meta.get("incremental_since")
+                # Release the open transaction before the scanner HTTP call
+                # — same reason as the initial poll above. Nothing has been
+                # written in this branch yet, so the commit is a no-op
+                # transactionally but does release the idle-in-tx state.
+                db.commit()
                 easm_assets = await get_easm_assets(
-                    org.easm_org_id, updated_since=since,
+                    easm_org_id, updated_since=since,
                 )
                 if easm_assets:
                     (
