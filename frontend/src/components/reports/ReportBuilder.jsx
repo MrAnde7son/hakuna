@@ -5030,7 +5030,7 @@ export default function ReportBuilder() {
         navigate(target, { replace: false })
       }
     } else if (activeReport === null && window.location.pathname.startsWith('/reports/')) {
-      navigate('/', { replace: false })
+      navigate('/reports', { replace: false })
     }
   }, [activeReport])
 
