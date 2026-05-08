@@ -22,6 +22,7 @@ import aiohttp
 logger = logging.getLogger(__name__)
 
 _SEARCH_URL = "https://api.shodan.io/shodan/host/search"
+_DNS_DOMAIN_URL = "https://api.shodan.io/dns/domain/{domain}"
 _TIMEOUT = aiohttp.ClientTimeout(total=30)
 _RATE_LIMIT_DELAY = 1.1  # Shodan: 1 req/sec on most plans
 
@@ -44,27 +45,104 @@ async def _search_page(
     api_key: str,
     query: str,
     page: int,
-) -> dict | None:
+) -> tuple[dict | None, bool]:
+    """Run one Shodan host/search page.
+
+    Returns ``(payload_or_None, paid_only)`` — ``paid_only`` is True only when
+    the API responded 403, signalling the search filters require a paid plan
+    and the caller should fall back to the free /dns/domain endpoint. All
+    other failure modes (401 auth, 429 rate-limit, network) come back as
+    ``(None, False)`` so the caller doesn't paper over a real misconfig with
+    fallback data.
+    """
     params = {"key": api_key, "query": query, "page": page}
     url = f"{_SEARCH_URL}?{urlencode(params)}"
     try:
         async with session.get(url) as resp:
             if resp.status == 401:
                 logger.warning("shodan: 401 unauthorized — check SHODAN_API_KEY")
-                return None
+                return None, False
             if resp.status == 403:
                 logger.warning("shodan: 403 forbidden — query '%s' requires a paid plan", query)
-                return None
+                return None, True
             if resp.status == 429:
                 logger.warning("shodan: 429 rate-limited on '%s'", query)
-                return None
+                return None, False
             if resp.status != 200:
                 logger.warning("shodan: HTTP %d for '%s'", resp.status, query)
-                return None
-            return await resp.json(content_type=None)
+                return None, False
+            return await resp.json(content_type=None), False
     except Exception as exc:
-        logger.warning("shodan: request failed for '%s': %s", query, exc)
-        return None
+        logger.warning(
+            "shodan: request failed for '%s': %s (%s)",
+            query, exc, type(exc).__name__,
+        )
+        return None, False
+
+
+async def _query_dns_domain(
+    session: aiohttp.ClientSession,
+    api_key: str,
+    domain: str,
+) -> list[dict]:
+    """Free-tier subdomain enumeration via /dns/domain/{domain}.
+
+    Unlike the host/search endpoint, this is available on every Shodan plan
+    including the free dev key. It returns subdomain prefixes plus the DNS
+    records Shodan has observed for them (A/AAAA/CNAME/...). We flatten
+    those into the same host-dict shape the host/search path produces, but
+    without paid-tier metadata (port/product/vulns) since the DNS endpoint
+    doesn't include service banners.
+    """
+    url = _DNS_DOMAIN_URL.format(domain=domain) + f"?{urlencode({'key': api_key})}"
+    try:
+        async with session.get(url) as resp:
+            if resp.status == 401:
+                logger.warning("shodan dns: 401 unauthorized — check SHODAN_API_KEY")
+                return []
+            if resp.status == 404:
+                # Free endpoint returns 404 when Shodan has no records for the
+                # domain — common for fresh/parked domains. Not an error.
+                return []
+            if resp.status != 200:
+                logger.warning("shodan dns: HTTP %d for %s", resp.status, domain)
+                return []
+            data = await resp.json(content_type=None)
+    except Exception as exc:
+        logger.warning(
+            "shodan dns: request failed for %s: %s (%s)",
+            domain, exc, type(exc).__name__,
+        )
+        return []
+
+    hosts: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for entry in data.get("data") or []:
+        subdomain = (entry.get("subdomain") or "").strip().lower()
+        record_type = (entry.get("type") or "").upper()
+        value = (entry.get("value") or "").strip()
+        if not value:
+            continue
+        # Empty subdomain means apex.
+        fqdn = domain if not subdomain else f"{subdomain}.{domain}"
+        ip = value if record_type in ("A", "AAAA") else None
+        key = (fqdn, ip or "")
+        if key in seen:
+            continue
+        seen.add(key)
+        hosts.append({
+            "host": fqdn,
+            "ip": ip,
+            "asn": None,
+            "asn_org": None,
+            "shodan_port": None,
+            "shodan_product": None,
+            "shodan_version": None,
+            "shodan_vulns": None,
+        })
+
+    logger.info("shodan dns: domain=%s hosts=%d", domain, len(hosts))
+    return hosts
 
 
 def _matches_to_hosts(matches: list[dict]) -> list[dict]:
@@ -131,11 +209,14 @@ async def query_shodan(
 
     all_hosts: list[dict] = []
     seen: set[tuple[str, str]] = set()
+    saw_paid_only = False
 
     async with aiohttp.ClientSession(timeout=_TIMEOUT) as session:
         for query in _build_queries(domain):
             for page in range(1, max_pages + 1):
-                data = await _search_page(session, api_key, query, page)
+                data, paid_only = await _search_page(session, api_key, query, page)
+                if paid_only:
+                    saw_paid_only = True
                 if data is None:
                     break
                 matches = data.get("matches") or []
@@ -156,6 +237,20 @@ async def query_shodan(
                 await asyncio.sleep(_RATE_LIMIT_DELAY)
 
             await asyncio.sleep(_RATE_LIMIT_DELAY)
+
+        # Free-tier fallback: the host/search filters above are paid-only.
+        # When the API key can't run them but is otherwise valid, hit the
+        # free /dns/domain endpoint so free-tier deployments still
+        # contribute subdomain coverage to discovery. We only fall back
+        # when the search yielded nothing — paid users keep their richer
+        # banner/CVE-bearing matches and skip the redundant DNS call.
+        if saw_paid_only and not all_hosts:
+            for h in await _query_dns_domain(session, api_key, domain):
+                key = (h["host"], h.get("ip") or "")
+                if key in seen:
+                    continue
+                seen.add(key)
+                all_hosts.append(h)
 
     logger.info("shodan: domain=%s hosts=%d", domain, len(all_hosts))
     return all_hosts

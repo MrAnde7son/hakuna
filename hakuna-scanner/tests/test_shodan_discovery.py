@@ -120,6 +120,67 @@ class TestQueryShodan:
 
         assert hosts == []
 
+    def test_falls_back_to_dns_domain_on_paid_only_403(self):
+        """On free tier the host/search filters return 403. When that happens
+        we should fall through to /dns/domain/{domain} (free for all tiers)
+        and surface its subdomains as host records — otherwise free-tier
+        deployments contribute no Shodan data at all."""
+        from app.ingest import shodan_discovery
+
+        dns_payload = {
+            "domain": "example.com",
+            "subdomains": ["www", "api"],
+            "data": [
+                {"subdomain": "www", "type": "A", "value": "203.0.113.10"},
+                {"subdomain": "api", "type": "CNAME", "value": "lb.example.net"},
+                # Apex record — empty subdomain.
+                {"subdomain": "", "type": "A", "value": "203.0.113.1"},
+                # Duplicate (www, A, 203.0.113.10) should dedup.
+                {"subdomain": "www", "type": "A", "value": "203.0.113.10"},
+            ],
+        }
+        # Two 403s for the search queries, then 200 for the DNS fallback.
+        responses = [
+            _FakeResponse(403, {}),
+            _FakeResponse(403, {}),
+            _FakeResponse(200, dns_payload),
+        ]
+
+        with patch.object(
+            shodan_discovery.aiohttp,
+            "ClientSession",
+            return_value=_FakeSession(responses),
+        ), patch.object(shodan_discovery.asyncio, "sleep", new=AsyncMock()):
+            hosts = _run(shodan_discovery.query_shodan("free-key", "example.com"))
+
+        by_host = {h["host"]: h for h in hosts}
+        assert "www.example.com" in by_host
+        assert "api.example.com" in by_host
+        assert "example.com" in by_host  # apex
+        assert by_host["www.example.com"]["ip"] == "203.0.113.10"
+        # CNAMEs don't carry IPs at this stage — dnsx resolves them later.
+        assert by_host["api.example.com"]["ip"] is None
+        # Paid-tier metadata is absent on the DNS fallback path.
+        assert by_host["www.example.com"]["shodan_port"] is None
+
+    def test_no_fallback_on_401(self):
+        """A 401 means the key itself is bad. Falling back to /dns/domain
+        with the same key would just 401 again — and worse, would mask the
+        real misconfig from the operator."""
+        from app.ingest import shodan_discovery
+
+        # If the fallback fired, this test would fail because there's no
+        # third response queued; _FakeSession would return a default 500.
+        responses = [_FakeResponse(401, {}), _FakeResponse(401, {})]
+        with patch.object(
+            shodan_discovery.aiohttp,
+            "ClientSession",
+            return_value=_FakeSession(responses),
+        ), patch.object(shodan_discovery.asyncio, "sleep", new=AsyncMock()):
+            hosts = _run(shodan_discovery.query_shodan("bad-key", "example.com"))
+
+        assert hosts == []
+
     def test_dedups_across_queries(self):
         """ssl: and hostname: queries often overlap — same (host, ip) once."""
         from app.ingest import shodan_discovery
