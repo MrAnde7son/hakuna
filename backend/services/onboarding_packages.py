@@ -14,6 +14,7 @@ from models.models import (
     Organization, Tag, AutoTagRule, OwnershipRule, SLAConfig,
     Campaign, Agent, ReportTemplate, FindingException, CustomRole,
     Workflow, WorkflowNode, WorkflowEdge,
+    ComplianceFramework, OrgFrameworkSubscription,
 )
 
 logger = logging.getLogger(__name__)
@@ -161,6 +162,7 @@ NOTIFICATION_OPTIONS = [
 INDUSTRY_CONFIG: dict[str, dict[str, Any]] = {
     "financial_services": {
         "compliance_frameworks": ["PCI DSS", "SOX", "GLBA", "FFIEC"],
+        "framework_slugs": ["pci_dss_4_0"],
         "tags": [
             {"category": "compliance", "value": "PCI DSS", "color": "#a855f7"},
             {"category": "compliance", "value": "SOX", "color": "#6366f1"},
@@ -216,6 +218,7 @@ INDUSTRY_CONFIG: dict[str, dict[str, Any]] = {
     },
     "healthcare": {
         "compliance_frameworks": ["HIPAA", "HITECH", "FDA 21 CFR Part 11"],
+        "framework_slugs": ["hipaa_security"],
         "tags": [
             {"category": "compliance", "value": "HIPAA", "color": "#ef4444"},
             {"category": "compliance", "value": "HITECH", "color": "#f97316"},
@@ -259,6 +262,7 @@ INDUSTRY_CONFIG: dict[str, dict[str, Any]] = {
     },
     "technology": {
         "compliance_frameworks": ["SOC 2", "ISO 27001", "GDPR"],
+        "framework_slugs": ["soc2_2017", "iso_27001_2022"],
         "tags": [
             {"category": "compliance", "value": "SOC 2", "color": "#3b82f6"},
             {"category": "compliance", "value": "ISO 27001", "color": "#6366f1"},
@@ -292,6 +296,7 @@ INDUSTRY_CONFIG: dict[str, dict[str, Any]] = {
     },
     "government": {
         "compliance_frameworks": ["NIST 800-53", "FISMA", "CMMC", "FedRAMP"],
+        "framework_slugs": ["nist_800_53_r5", "cmmc_2_0_l2", "nist_800_171_r3"],
         "tags": [
             {"category": "compliance", "value": "NIST 800-53", "color": "#1e40af"},
             {"category": "compliance", "value": "CMMC", "color": "#3b82f6"},
@@ -324,6 +329,7 @@ INDUSTRY_CONFIG: dict[str, dict[str, Any]] = {
     },
     "retail": {
         "compliance_frameworks": ["PCI DSS", "GDPR", "CCPA"],
+        "framework_slugs": ["pci_dss_4_0"],
         "tags": [
             {"category": "compliance", "value": "PCI DSS", "color": "#a855f7"},
             {"category": "compliance", "value": "GDPR", "color": "#3b82f6"},
@@ -348,6 +354,7 @@ INDUSTRY_CONFIG: dict[str, dict[str, Any]] = {
     },
     "manufacturing": {
         "compliance_frameworks": ["IEC 62443", "NIST CSF", "ISO 27001"],
+        "framework_slugs": ["iec_62443_3_3", "nist_csf_2_0", "iso_27001_2022"],
         "tags": [
             {"category": "compliance", "value": "IEC 62443", "color": "#f59e0b"},
             {"category": "compliance", "value": "NIST CSF", "color": "#3b82f6"},
@@ -372,6 +379,7 @@ INDUSTRY_CONFIG: dict[str, dict[str, Any]] = {
     },
     "energy": {
         "compliance_frameworks": ["NERC CIP", "NIST CSF", "IEC 62443"],
+        "framework_slugs": ["nist_csf_2_0", "iec_62443_3_3"],
         "tags": [
             {"category": "compliance", "value": "NERC CIP", "color": "#ef4444"},
             {"category": "compliance", "value": "NIST CSF", "color": "#3b82f6"},
@@ -396,6 +404,7 @@ INDUSTRY_CONFIG: dict[str, dict[str, Any]] = {
     },
     "education": {
         "compliance_frameworks": ["FERPA", "NIST CSF", "GDPR"],
+        "framework_slugs": ["nist_csf_2_0"],
         "tags": [
             {"category": "compliance", "value": "FERPA", "color": "#6366f1"},
             {"category": "data_class", "value": "Student Records", "color": "#ef4444"},
@@ -418,6 +427,7 @@ INDUSTRY_CONFIG: dict[str, dict[str, Any]] = {
     },
     "telecom": {
         "compliance_frameworks": ["SOC 2", "ISO 27001", "GDPR", "CPNI"],
+        "framework_slugs": ["soc2_2017", "iso_27001_2022"],
         "tags": [
             {"category": "compliance", "value": "SOC 2", "color": "#3b82f6"},
             {"category": "data_class", "value": "CPNI", "color": "#ef4444"},
@@ -1204,6 +1214,7 @@ def apply_packages(
         "ownership_rules": 0,
         "workflows": 0,
         "exceptions": 0,
+        "compliance_subscriptions": 0,
     }
 
     # Collect what to provision (deduplicated)
@@ -1509,6 +1520,37 @@ def apply_packages(
                     exclude_from_reports=True,
                 ))
                 created["exceptions"] += 1
+
+    # ── Subscribe to industry compliance frameworks ──────────
+    # Pick the highest-version built-in pack per slug (org_id IS NULL) and
+    # opt the org in via OrgFrameworkSubscription. Unmatched names in
+    # compliance_frameworks (e.g. "GDPR", "SOX") are skipped silently —
+    # those packs aren't shipped as YAML yet.
+    for slug in industry_cfg.get("framework_slugs", []):
+        framework = (
+            db.query(ComplianceFramework)
+            .filter(
+                ComplianceFramework.slug == slug,
+                ComplianceFramework.org_id.is_(None),
+            )
+            .order_by(ComplianceFramework.version.desc())
+            .first()
+        )
+        if not framework:
+            continue
+        existing = db.query(OrgFrameworkSubscription).filter(
+            OrgFrameworkSubscription.org_id == org_id,
+            OrgFrameworkSubscription.framework_id == framework.id,
+        ).first()
+        if existing:
+            continue
+        db.add(OrgFrameworkSubscription(
+            org_id=org_id,
+            framework_id=framework.id,
+            enabled=True,
+            activated_by=user_id,
+        ))
+        created["compliance_subscriptions"] += 1
 
     # ── Save onboarding profile to org settings ──────────────
     org = db.query(Organization).filter(Organization.id == org_id).first()
