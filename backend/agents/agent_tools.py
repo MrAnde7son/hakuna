@@ -810,9 +810,16 @@ _FEED_ENTRY_SEVERITIES = {"critical", "high", "medium", "low", "info"}
                 "'unassign_tags' (same args), "
                 "'set_asset_ownership' (args: {asset_id, owner_name?, owner_email?, owner_role?, team?, notes?}), "
                 "'set_finding_ownership' (args: {finding_id, owner_name?, owner_email?, owner_role?, team?}), "
-                "'confirm_asset_owner' (args: {asset_id}). "
-                "Use confirm_text when the change isn't trivially reversible. Resolve tag names to ids "
-                "via list_tags before constructing assign_tags args."
+                "'confirm_asset_owner' (args: {asset_id}), "
+                "'download_report' (args: {run_id, framework_slug?, fmt?} — exports a compliance report run as a file download), "
+                "'run_report' (args: {schedule_id} — kicks off a scheduled report run now), "
+                "'sync_finding_tickets' (args: {finding_id} — reconciles a finding's tickets with the connected ticketing integration), "
+                "'trigger_ticket_sync' (args: {} — org-wide reconciliation; use sparingly), "
+                "'create_campaign_slack_channel' (args: {campaign_id} — touches Slack, require confirm_text). "
+                "Use confirm_text when the change isn't trivially reversible. For NET-NEW external "
+                "side effects (creating a ticket, sending a message), use approve_action with a "
+                "draft + approval_id instead — apply_inline only covers idempotent reconciliations. "
+                "Resolve tag names to ids via list_tags before constructing assign_tags args."
             ),
             "items": {"type": "object"},
         },
@@ -4449,6 +4456,54 @@ def build_report(db: Session, params: dict):
         "widget_count": len(normalized),
         "message": f"Report '{name}' created with {len(normalized)} widgets. "
                    f"View it at /reports/{template.id}",
+    }
+
+
+@agent_tool(
+    "list_report_schedules",
+    "List the org's saved report schedules with their cadence and last-run state. "
+    "WHEN TO CALL: When the narrator wants to suggest re-running a scheduled report inline "
+    "(e.g. 'a scan just landed PCI-relevant findings — refresh the PCI report?'). "
+    "Pair the returned schedule.id with the apply_inline op 'run_report'.",
+    {
+        "enabled_only": {"type": "boolean", "description": "If true, only return enabled schedules (default: true)"},
+    },
+)
+def list_report_schedules(db: Session, params: dict):
+    from models.models import ReportSchedule, ReportTemplate
+
+    org_id = params.get("_org_id")
+    if not org_id:
+        return {"schedules": [], "count": 0}
+
+    enabled_only = params.get("enabled_only")
+    if enabled_only is None:
+        enabled_only = True
+
+    q = (
+        db.query(ReportSchedule, ReportTemplate)
+        .join(ReportTemplate, ReportTemplate.id == ReportSchedule.report_template_id)
+        .filter(ReportSchedule.org_id == org_id)
+    )
+    if enabled_only:
+        q = q.filter(ReportSchedule.is_enabled.is_(True))
+    rows = q.order_by(ReportSchedule.last_run_at.desc().nullslast()).all()
+
+    return {
+        "schedules": [
+            {
+                "id": s.id,
+                "name": s.name or t.name,
+                "template_name": t.name,
+                "frequency": s.frequency,
+                "is_enabled": bool(s.is_enabled),
+                "last_run_at": s.last_run_at.isoformat() if s.last_run_at else None,
+                "last_status": s.last_status,
+                "next_run_at": s.next_run_at.isoformat() if s.next_run_at else None,
+            }
+            for s, t in rows
+        ],
+        "count": len(rows),
     }
 
 

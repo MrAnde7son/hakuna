@@ -278,7 +278,7 @@ TOOL_CATEGORIES = {
     },
     "reports": {
         "keywords": ["report", "dashboard", "widget", "executive"],
-        "tools": ["build_report"],
+        "tools": ["build_report", "list_report_schedules"],
     },
     "analysis": {
         "keywords": ["attack surface", "attack path", "analyze"],

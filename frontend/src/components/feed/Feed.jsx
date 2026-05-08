@@ -14,18 +14,31 @@ import {
   streamCopilotMessage,
   assignTags, unassignTags,
   setAssetOwnership, setFindingOwnership, confirmAssetOwner,
+  downloadComplianceReport, runReportScheduleNow,
+  syncFindingTickets, triggerTicketSync, createCampaignSlackChannel,
 } from '../../api.js'
 
 // Whitelist of mutations a narrator can request inline. Keeps the
 // agent → user contract narrow: anything not in this map degrades to a
 // muted pill so a stale or hallucinated op can't trigger arbitrary
 // requests.
+//
+// Tagging / ownership are SOFT_WRITE and trivially reversible. Report
+// ops are read-shaped (download) or low-impact triggers (re-run a
+// scheduled run). Ticket-sync ops touch external systems but are
+// idempotent reconciliations against existing tickets — not net-new
+// tickets/messages, which keep flowing through approve_action.
 const APPLY_INLINE_OPS = {
-  assign_tags:           ({ args }) => assignTags(args),
-  unassign_tags:         ({ args }) => unassignTags(args),
-  set_asset_ownership:   ({ args }) => setAssetOwnership(args.asset_id, args),
-  set_finding_ownership: ({ args }) => setFindingOwnership(args.finding_id, args),
-  confirm_asset_owner:   ({ args }) => confirmAssetOwner(args.asset_id),
+  assign_tags:                  ({ args }) => assignTags(args),
+  unassign_tags:                ({ args }) => unassignTags(args),
+  set_asset_ownership:          ({ args }) => setAssetOwnership(args.asset_id, args),
+  set_finding_ownership:        ({ args }) => setFindingOwnership(args.finding_id, args),
+  confirm_asset_owner:          ({ args }) => confirmAssetOwner(args.asset_id),
+  download_report:              ({ args }) => downloadComplianceReport(args.run_id, args.framework_slug, args.fmt),
+  run_report:                   ({ args }) => runReportScheduleNow(args.schedule_id),
+  sync_finding_tickets:         ({ args }) => syncFindingTickets(args.finding_id),
+  trigger_ticket_sync:          () => triggerTicketSync(),
+  create_campaign_slack_channel: ({ args }) => createCampaignSlackChannel(args.campaign_id),
 }
 import {
   Card, EmptyState, Button, Pill, SeverityBadge,
