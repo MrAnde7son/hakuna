@@ -87,7 +87,7 @@ function ProposedAction({ entry, action, onActed }) {
     if (!action.approval_id) return
     setBusy(true); setError(null)
     try {
-      await decideAgentApproval(action.approval_id, 'approve')
+      await decideAgentApproval(action.approval_id, 'approved')
       await recordFeedEntryDecision(entry.id, 'acted')
       onActed?.(entry.id, 'acted')
     } catch (e) {
@@ -99,7 +99,7 @@ function ProposedAction({ entry, action, onActed }) {
     if (!action.approval_id) return
     setBusy(true); setError(null)
     try {
-      await decideAgentApproval(action.approval_id, 'reject', t('feed.rejectedFromFeed'))
+      await decideAgentApproval(action.approval_id, 'rejected', t('feed.rejectedFromFeed'))
       await recordFeedEntryDecision(entry.id, 'dismissed')
       onActed?.(entry.id, 'dismissed')
     } catch (e) {
