@@ -721,12 +721,12 @@ export function Pill({ label, color = 'var(--text-muted)', children }) {
 
 export function PageHeader({ title, subtitle, action }) {
   return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16, marginBottom: 24 }}>
-      <div style={{ minWidth: 0, flex: 1 }}>
+    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16, marginBottom: 24, flexWrap: 'wrap' }}>
+      <div style={{ minWidth: 0, flex: '1 1 240px' }}>
         <h1 style={{ fontSize: 22, fontWeight: 700, color: 'var(--text-primary)' }}>{title}</h1>
         {subtitle && <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 4 }}>{subtitle}</div>}
       </div>
-      {action && <div style={{ flexShrink: 0, whiteSpace: 'nowrap' }}>{action}</div>}
+      {action && <div style={{ flexShrink: 0, maxWidth: '100%' }}>{action}</div>}
     </div>
   )
 }
