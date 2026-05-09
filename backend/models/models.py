@@ -27,6 +27,16 @@ class Organization(Base):
     easm_org_id = Column(String, nullable=True)       # UUID of org in hakuna-scanner
     easm_domain = Column(String, nullable=True)        # Corporate domain extracted from email
 
+    # Domain-based auto-join. ``claimed_domain`` is the corporate email domain
+    # this org owns (e.g., ``acme.com``). When another user registers with that
+    # domain, ``domain_join_mode`` decides what happens:
+    #   ``disabled`` — fall through to creating a new tenant (default)
+    #   ``request``  — create an OrgJoinRequest the admin must approve
+    #   ``auto``     — add the user once they verify their email
+    claimed_domain = Column(String(253), nullable=True, unique=True, index=True)
+    domain_join_mode = Column(String(20), default="disabled", nullable=False)
+    domain_join_default_role = Column(String(50), default="viewer", nullable=False)
+
     # Stripe billing
     stripe_customer_id = Column(String, nullable=True, index=True)
     stripe_subscription_id = Column(String, nullable=True)
@@ -134,6 +144,37 @@ class OrgInvite(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     mssp_org = relationship("Organization", foreign_keys=[mssp_org_id])
+
+
+class OrgJoinRequest(Base):
+    """Pending request from a new user to join an existing org via domain match.
+
+    Created when registration hits an org with ``domain_join_mode='request'``.
+    The user's chosen password is hashed and stored here so we don't need to
+    re-collect it on approval. Approval creates a real ``User`` row; denial
+    leaves the request as a tombstone for audit.
+    """
+    __tablename__ = "org_join_requests"
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
+    email = Column(String, nullable=False, index=True)
+    hashed_password = Column(String, nullable=False)
+    display_name = Column(String, nullable=True)
+    requested_role = Column(String, default="viewer", nullable=False)
+    status = Column(String, default="pending", nullable=False)  # pending | approved | denied | expired
+    denial_reason = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    decided_at = Column(DateTime, nullable=True)
+    decided_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    organization = relationship("Organization")
+    decided_by = relationship("User", foreign_keys=[decided_by_user_id])
+
+    __table_args__ = (
+        Index("ix_org_join_requests_org_status", "org_id", "status"),
+    )
 
 
 # ─────────────────────────────────────────────────────────
