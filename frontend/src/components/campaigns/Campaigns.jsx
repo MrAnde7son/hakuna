@@ -6,7 +6,7 @@ import {
   ChevronRight, ChevronDown, GitBranch, Zap, Settings, Download, Search, Eye, Info,
   Flame, Shield, Timer, Wrench, Globe, Sparkles, FileText, CalendarClock, Siren, Ticket, ShieldAlert,
 } from 'lucide-react'
-import { useScan } from '../../App.jsx'
+import { useScan, useIsMobile } from '../../App.jsx'
 import { getCampaigns, createCampaign, deleteCampaign, runCampaign, getWorkflows, createWorkflow, deleteWorkflow, getWorkflowTemplates, createWorkflowFromTemplate, exportConfig, importConfig, authListUsers, getIntegrations, previewCampaignQuery, nlpToCampaignConditions, generateWorkflow, createWorkflowFromGenerated } from '../../api.js'
 import { Card, PageHeader, Button, Spinner, EmptyState, Pill, ExportImportButtons, ErrorBanner, SkeletonCard, useToast } from '../shared/ui.jsx'
 import { capture } from '../../utils/analytics.js'
@@ -869,6 +869,7 @@ function CreateCampaignModal({ scanId, onClose, onCreate, prefill }) {
 function CampaignCard({ campaign, onDelete, onRun }) {
   const { t } = useTranslation()
   const navigate = useNavigate()
+  const isMobile = useIsMobile()
   const [running, setRunning] = useState(false)
   const [confirming, setConfirming] = useState(false)
 
@@ -889,7 +890,10 @@ function CampaignCard({ campaign, onDelete, onRun }) {
       onClick={() => navigate(`/campaigns/${campaign.id}`)}
       style={{
         background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 10,
-        padding: '16px 20px', cursor: 'pointer', display: 'flex', gap: 16, alignItems: 'center',
+        padding: isMobile ? '14px 14px' : '16px 20px', cursor: 'pointer',
+        display: 'flex', gap: isMobile ? 12 : 16,
+        alignItems: isMobile ? 'flex-start' : 'center',
+        flexWrap: isMobile ? 'wrap' : 'nowrap',
         transition: 'border-color 0.15s',
       }}
       onMouseEnter={e => e.currentTarget.style.borderColor = 'var(--accent)'}
@@ -905,8 +909,8 @@ function CampaignCard({ campaign, onDelete, onRun }) {
 
       {/* Info */}
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4 }}>
-          <span style={{ fontWeight: 600, fontSize: 14, color: 'var(--text-primary)' }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4, flexWrap: 'wrap' }}>
+          <span style={{ fontWeight: 600, fontSize: 14, color: 'var(--text-primary)', overflowWrap: 'anywhere' }}>
             {campaign.name}
           </span>
           <StatusBadge status={campaign.status} />
@@ -916,7 +920,7 @@ function CampaignCard({ campaign, onDelete, onRun }) {
             {campaign.description}
           </div>
         )}
-        <div style={{ display: 'flex', gap: 16, fontSize: 11, color: 'var(--text-muted)' }}>
+        <div style={{ display: 'flex', gap: isMobile ? 10 : 16, fontSize: 11, color: 'var(--text-muted)', flexWrap: 'wrap' }}>
           <span>{t('campaigns.conditions', { count: conditionCount })}</span>
           {campaign.finding_count > 0 && (
             <span style={{ color: '#f87171' }}>{t('campaigns.findingsCount', { count: campaign.finding_count })}</span>
@@ -930,7 +934,16 @@ function CampaignCard({ campaign, onDelete, onRun }) {
       </div>
 
       {/* Actions */}
-      <div style={{ display: 'flex', gap: 8, flexShrink: 0 }} onClick={e => e.stopPropagation()}>
+      <div
+        style={{
+          display: 'flex', gap: 8, flexShrink: 0,
+          width: isMobile ? '100%' : 'auto',
+          marginTop: isMobile ? 4 : 0,
+          justifyContent: isMobile ? 'flex-end' : 'flex-start',
+          flexWrap: 'wrap',
+        }}
+        onClick={e => e.stopPropagation()}
+      >
         <button
           onClick={handleRun}
           disabled={running || conditionCount === 0}
@@ -988,7 +1001,7 @@ function CampaignCard({ campaign, onDelete, onRun }) {
         )}
       </div>
 
-      <ChevronRight size={16} color='var(--text-muted)' />
+      {!isMobile && <ChevronRight size={16} color='var(--text-muted)' />}
     </div>
   )
 }
@@ -997,6 +1010,7 @@ function CampaignCard({ campaign, onDelete, onRun }) {
 function WorkflowCard({ workflow, onDelete }) {
   const { t } = useTranslation()
   const navigate = useNavigate()
+  const isMobile = useIsMobile()
   const [confirming, setConfirming] = useState(false)
 
   return (
@@ -1004,7 +1018,10 @@ function WorkflowCard({ workflow, onDelete }) {
       onClick={() => navigate(`/workflows/${workflow.id}`)}
       style={{
         background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 10,
-        padding: '16px 20px', cursor: 'pointer', display: 'flex', gap: 16, alignItems: 'center',
+        padding: isMobile ? '14px 14px' : '16px 20px', cursor: 'pointer',
+        display: 'flex', gap: isMobile ? 12 : 16,
+        alignItems: isMobile ? 'flex-start' : 'center',
+        flexWrap: isMobile ? 'wrap' : 'nowrap',
         transition: 'border-color 0.15s',
       }}
       onMouseEnter={e => e.currentTarget.style.borderColor = '#818cf866'}
@@ -1018,8 +1035,8 @@ function WorkflowCard({ workflow, onDelete }) {
       </div>
 
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4 }}>
-          <span style={{ fontWeight: 600, fontSize: 14 }}>{workflow.name}</span>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4, flexWrap: 'wrap' }}>
+          <span style={{ fontWeight: 600, fontSize: 14, overflowWrap: 'anywhere' }}>{workflow.name}</span>
           <Pill color={workflow.status === 'active' ? '#22c55e' : '#71717a'}>
             {workflow.status}
           </Pill>
@@ -1029,7 +1046,7 @@ function WorkflowCard({ workflow, onDelete }) {
             {workflow.description}
           </div>
         )}
-        <div style={{ display: 'flex', gap: 16, fontSize: 11, color: 'var(--text-muted)' }}>
+        <div style={{ display: 'flex', gap: isMobile ? 10 : 16, fontSize: 11, color: 'var(--text-muted)', flexWrap: 'wrap' }}>
           <span>{t('campaigns.nodes', { count: workflow.node_count || 0 })}</span>
           <span>{t('campaigns.runs', { count: workflow.run_count || 0 })}</span>
           {workflow.last_run_at && (
@@ -1038,7 +1055,16 @@ function WorkflowCard({ workflow, onDelete }) {
         </div>
       </div>
 
-      <div style={{ display: 'flex', gap: 8, flexShrink: 0 }} onClick={e => e.stopPropagation()}>
+      <div
+        style={{
+          display: 'flex', gap: 8, flexShrink: 0,
+          width: isMobile ? '100%' : 'auto',
+          marginTop: isMobile ? 4 : 0,
+          justifyContent: isMobile ? 'flex-end' : 'flex-start',
+          flexWrap: 'wrap',
+        }}
+        onClick={e => e.stopPropagation()}
+      >
         {confirming ? (
           <>
             <button onClick={() => { onDelete(workflow.id); setConfirming(false) }}
@@ -1058,7 +1084,7 @@ function WorkflowCard({ workflow, onDelete }) {
         )}
       </div>
 
-      <ChevronRight size={16} color='var(--text-muted)' />
+      {!isMobile && <ChevronRight size={16} color='var(--text-muted)' />}
     </div>
   )
 }
@@ -1378,6 +1404,7 @@ export default function Campaigns() {
   const toast = useToast()
   const { activeScanId } = useScan()
   const navigate = useNavigate()
+  const isMobile = useIsMobile()
   const [searchParams, setSearchParams] = useSearchParams()
   const [campaigns, setCampaigns] = useState([])
   const [workflows, setWorkflows] = useState([])
@@ -1464,7 +1491,7 @@ export default function Campaigns() {
         title={t('campaigns.campaignsAndWorkflows')}
         subtitle={t('campaigns.subtitle')}
         action={
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <ExportImportButtons
               configType="campaign_workflow"
               exportFn={null}
@@ -1524,8 +1551,8 @@ export default function Campaigns() {
           </EmptyState>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-              <div style={{ position: 'relative', maxWidth: 320, flex: 1 }}>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <div style={{ position: 'relative', maxWidth: isMobile ? '100%' : 320, flex: '1 1 200px' }}>
                 <Search size={14} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
                 <input
                   value={campSearch}
@@ -1545,6 +1572,7 @@ export default function Campaigns() {
                   padding: '8px 12px', background: 'var(--bg-secondary)',
                   border: '1px solid var(--border)', borderRadius: 8, fontSize: 13,
                   color: 'var(--text-primary)', cursor: 'pointer',
+                  flexShrink: 0,
                 }}
               >
                 <option value="">All owners</option>
