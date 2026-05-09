@@ -1,7 +1,8 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { useAuth } from '../../contexts/AuthContext.jsx'
+import { authLookupOrgByDomain } from '../../api.js'
 import GoogleSignInButton from './GoogleSignInButton.jsx'
 
 function HakunaLogo({ size = 40 }) {
@@ -21,9 +22,43 @@ export default function Register() {
   const [confirmPassword, setConfirmPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  // intent: 'create' (default) or 'join' — toggled by the Join CTA below.
+  const [intent, setIntent] = useState('create')
+  // Existing claimed-org match for the email domain. Null until we look it up.
+  const [domainMatch, setDomainMatch] = useState(null)
+  const [postSubmitMessage, setPostSubmitMessage] = useState(null)
+  const lookupAbortRef = useRef(null)
   const { register } = useAuth()
   const navigate = useNavigate()
   const { t } = useTranslation()
+
+  // Debounced domain lookup — runs whenever the email field looks complete.
+  useEffect(() => {
+    setDomainMatch(null)
+    if (!email || !email.includes('@')) return
+    const after = email.split('@')[1]
+    if (!after || !after.includes('.') || after.length < 4) return
+
+    const handle = setTimeout(async () => {
+      try {
+        const res = await authLookupOrgByDomain({ email })
+        if (res?.matched) {
+          setDomainMatch(res)
+        } else {
+          setDomainMatch(null)
+        }
+      } catch {
+        // Silent — lookup is purely advisory.
+      }
+    }, 350)
+    return () => clearTimeout(handle)
+  }, [email])
+
+  // If the user manually changed away from join intent (e.g., picked "create"),
+  // and then their email no longer matches a claimable domain, reset intent.
+  useEffect(() => {
+    if (intent === 'join' && !domainMatch) setIntent('create')
+  }, [domainMatch, intent])
 
   const handleSubmit = async (e) => {
     e.preventDefault()
@@ -38,7 +73,29 @@ export default function Register() {
     }
     setLoading(true)
     try {
-      const data = await register(orgName, email, password, displayName)
+      const data = await register({
+        orgName: intent === 'create' ? orgName : undefined,
+        email,
+        password,
+        displayName,
+        intent,
+      })
+
+      if (data?.status === 'pending_approval') {
+        setPostSubmitMessage({
+          title: `Request sent to ${data.joined_org_name}`,
+          body: data.message || `An admin at ${data.joined_org_name} will review your request. You'll get an email when it's approved.`,
+        })
+        return
+      }
+      if (data?.status === 'verification_required') {
+        setPostSubmitMessage({
+          title: `Welcome to ${data.joined_org_name}`,
+          body: data.message || 'Please check your email to verify your address before signing in.',
+        })
+        return
+      }
+
       if (data?.user?.email_verified === false) {
         navigate('/verify-email')
       } else {
@@ -58,6 +115,40 @@ export default function Register() {
     border: '1px solid var(--border)',
     fontSize: 14,
     boxSizing: 'border-box',
+  }
+
+  // Post-submit confirmation screen for the join paths.
+  if (postSubmitMessage) {
+    return (
+      <div style={{
+        minHeight: '100vh',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        background: 'var(--bg-muted, #f4f4f5)',
+      }}>
+        <div style={{
+          width: 420,
+          background: 'var(--bg-card)',
+          borderRadius: 12,
+          border: '1px solid var(--border)',
+          padding: 32,
+          boxShadow: '0 4px 24px rgba(0,0,0,0.06)',
+          textAlign: 'center',
+        }}>
+          <HakunaLogo size={40} />
+          <h1 style={{ fontSize: 20, fontWeight: 700, margin: '8px 0' }}>{postSubmitMessage.title}</h1>
+          <p style={{ fontSize: 14, color: 'var(--muted, #71717a)', lineHeight: 1.5 }}>
+            {postSubmitMessage.body}
+          </p>
+          <div style={{ marginTop: 24 }}>
+            <Link to="/login" style={{ color: 'var(--text-primary)', fontWeight: 600, textDecoration: 'none', fontSize: 14 }}>
+              Back to sign in
+            </Link>
+          </div>
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -111,17 +202,93 @@ export default function Register() {
           )}
 
           <div style={{ marginBottom: 14 }}>
-            <label style={{ display: 'block', fontSize: 13, fontWeight: 500, marginBottom: 4 }}>{t('auth.orgName')}</label>
+            <label style={{ display: 'block', fontSize: 13, fontWeight: 500, marginBottom: 4 }}>{t('auth.email')}</label>
             <input
-              type="text"
-              value={orgName}
-              onChange={e => setOrgName(e.target.value)}
+              type="email"
+              value={email}
+              onChange={e => setEmail(e.target.value)}
               required
               autoFocus
-              placeholder="Acme Corp"
+              placeholder="you@example.com"
               style={inputStyle}
             />
           </div>
+
+          {/* Join CTA: shown when the email's domain is already claimed by an
+              existing org that opted into domain-based onboarding. */}
+          {domainMatch && (
+            <div style={{
+              border: '1px solid var(--accent, #6366f1)',
+              background: 'rgba(99,102,241,0.08)',
+              borderRadius: 8,
+              padding: 12,
+              marginBottom: 14,
+              fontSize: 13,
+            }}>
+              <div style={{ marginBottom: 8 }}>
+                It looks like <strong>{domainMatch.org_name}</strong> already has a Hakuna workspace for <strong>{domainMatch.domain}</strong>.
+              </div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  onClick={() => setIntent('join')}
+                  style={{
+                    flex: 1,
+                    padding: '6px 10px',
+                    borderRadius: 6,
+                    border: intent === 'join' ? '1px solid var(--accent)' : '1px solid var(--border)',
+                    background: intent === 'join' ? 'var(--accent, #6366f1)' : 'var(--bg-card)',
+                    color: intent === 'join' ? '#fff' : 'var(--text)',
+                    fontSize: 13,
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                  }}
+                >
+                  {domainMatch.join_mode === 'auto'
+                    ? `Join ${domainMatch.org_name}`
+                    : `Request to join ${domainMatch.org_name}`}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIntent('create')}
+                  style={{
+                    flex: 1,
+                    padding: '6px 10px',
+                    borderRadius: 6,
+                    border: intent === 'create' ? '1px solid var(--accent)' : '1px solid var(--border)',
+                    background: intent === 'create' ? 'var(--accent, #6366f1)' : 'var(--bg-card)',
+                    color: intent === 'create' ? '#fff' : 'var(--text)',
+                    fontSize: 13,
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                  }}
+                >
+                  Create new org
+                </button>
+              </div>
+              {intent === 'join' && (
+                <div style={{ marginTop: 8, fontSize: 12, color: 'var(--muted, #71717a)' }}>
+                  {domainMatch.join_mode === 'auto'
+                    ? "You'll need to verify your email before signing in."
+                    : `An admin at ${domainMatch.org_name} will review your request.`}
+                </div>
+              )}
+            </div>
+          )}
+
+          {intent === 'create' && (
+            <div style={{ marginBottom: 14 }}>
+              <label style={{ display: 'block', fontSize: 13, fontWeight: 500, marginBottom: 4 }}>{t('auth.orgName')}</label>
+              <input
+                type="text"
+                value={orgName}
+                onChange={e => setOrgName(e.target.value)}
+                required
+                placeholder="Acme Corp"
+                style={inputStyle}
+              />
+            </div>
+          )}
 
           <div style={{ marginBottom: 14 }}>
             <label style={{ display: 'block', fontSize: 13, fontWeight: 500, marginBottom: 4 }}>{t('auth.yourName')}</label>
@@ -130,18 +297,6 @@ export default function Register() {
               value={displayName}
               onChange={e => setDisplayName(e.target.value)}
               placeholder="Jane Smith"
-              style={inputStyle}
-            />
-          </div>
-
-          <div style={{ marginBottom: 14 }}>
-            <label style={{ display: 'block', fontSize: 13, fontWeight: 500, marginBottom: 4 }}>{t('auth.email')}</label>
-            <input
-              type="email"
-              value={email}
-              onChange={e => setEmail(e.target.value)}
-              required
-              placeholder="you@example.com"
               style={inputStyle}
             />
           </div>
@@ -185,7 +340,11 @@ export default function Register() {
               opacity: loading ? 0.6 : 1,
             }}
           >
-            {loading ? t('auth.creatingAccount') : t('auth.createAccount')}
+            {loading
+              ? t('auth.creatingAccount')
+              : intent === 'join'
+                ? (domainMatch?.join_mode === 'auto' ? `Join ${domainMatch.org_name}` : 'Send join request')
+                : t('auth.createAccount')}
           </button>
         </form>
 

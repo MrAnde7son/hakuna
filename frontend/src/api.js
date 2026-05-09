@@ -236,6 +236,37 @@ export const authResendVerification = () => request('/auth/resend-verification',
   method: 'POST',
 })
 
+// ── Domain claim & join requests ─────────────────────────
+
+export const authLookupOrgByDomain = ({ email, domain } = {}) => {
+  const params = new URLSearchParams()
+  if (email) params.set('email', email)
+  if (domain) params.set('domain', domain)
+  const qs = params.toString()
+  return request(`/auth/org-by-domain${qs ? `?${qs}` : ''}`)
+}
+
+export const authGetDomainSettings = () => request('/auth/domain-settings')
+
+export const authUpdateDomainSettings = (data) => request('/auth/domain-settings', {
+  method: 'PATCH',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(data),
+})
+
+export const authListJoinRequests = (status = 'pending') =>
+  request(`/auth/join-requests?status=${encodeURIComponent(status)}`)
+
+export const authApproveJoinRequest = (id) => request(`/auth/join-requests/${id}/approve`, {
+  method: 'POST',
+})
+
+export const authDenyJoinRequest = (id, reason) => request(`/auth/join-requests/${id}/deny`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ reason: reason || null }),
+})
+
 export const authChangePassword = (data) => request('/auth/change-password', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },

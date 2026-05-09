@@ -92,16 +92,36 @@ export function AuthProvider({ children }) {
     return data
   }, [])
 
-  const register = useCallback(async (orgName, email, password, displayName) => {
-    const data = await authRegister({ org_name: orgName, email, password, display_name: displayName })
+  const register = useCallback(async (...args) => {
+    // Accept either the legacy (orgName, email, password, displayName) signature
+    // or an options object that also carries an `intent` ('create' | 'join').
+    const first = args[0]
+    const opts = (typeof first === 'object' && first !== null && 'email' in first)
+      ? first
+      : { orgName: args[0], email: args[1], password: args[2], displayName: args[3], intent: 'create' }
+    const { orgName, email, password, displayName, intent = 'create' } = opts
+
+    const data = await authRegister({
+      org_name: orgName,
+      email,
+      password,
+      display_name: displayName,
+      intent,
+    })
+
+    // Join paths return no token — caller should redirect to a status page.
+    if (data?.status === 'pending_approval' || data?.status === 'verification_required') {
+      capture('user_registered', { method: 'password', intent, status: data.status })
+      return data
+    }
+
     setStoredToken(data.access_token)
     setUser(data.user)
     setOrg(data.user.org)
     setAccessibleOrgs([data.user.org])
     setIsAuthenticated(true)
     identifyUser(data.user, data.user.org)
-    capture('user_registered', { method: 'password', org_name: orgName })
-    // Fetch full user info (includes effective_permissions for nav visibility)
+    capture('user_registered', { method: 'password', org_name: orgName, intent })
     try {
       const me = await authMe()
       setUser(me)

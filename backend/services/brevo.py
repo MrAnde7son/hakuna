@@ -270,6 +270,117 @@ def send_campaign_collaborator_invite(
     send_email(to, subject, body_text, body_html)
 
 
+def send_domain_join_request_to_admin(
+    to: str,
+    admin_display_name: str,
+    org_name: str,
+    requester_email: str,
+    requester_display_name: str,
+) -> None:
+    """Notify an org admin that someone with their corporate email domain has
+    requested to join. Admin must approve in the app."""
+    review_url = f"{APP_URL}/settings?tab=domain-join"
+    subject = f"New join request for {org_name}"
+
+    body_text = (
+        f"Hello {admin_display_name},\n\n"
+        f"{requester_display_name} ({requester_email}) has requested to join "
+        f"{org_name} on Hakuna.\n\n"
+        f"Review and approve or deny the request here:\n"
+        f"{review_url}\n\n"
+        f"— The Hakuna Team"
+    )
+
+    body_html = f"""<html>
+<body style="font-family:sans-serif;color:#1a1a1a;max-width:480px;margin:auto;padding:32px">
+  <h2 style="margin-bottom:8px">New join request for {org_name}</h2>
+  <p>Hello <strong>{admin_display_name}</strong>,</p>
+  <p><strong>{requester_display_name}</strong> ({requester_email}) has requested to join your Hakuna organization.</p>
+  <p style="margin:24px 0">
+    <a href="{review_url}"
+       style="background:#590202;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600">
+      Review Request
+    </a>
+  </p>
+  <p style="font-size:13px;color:#71717a">
+    They'll receive an email once you approve or deny their request.
+  </p>
+  <hr style="border:none;border-top:1px solid #e4e4e7;margin:24px 0"/>
+  <p style="font-size:12px;color:#a1a1aa">The Hakuna Team</p>
+</body>
+</html>"""
+
+    send_email(to, subject, body_text, body_html)
+
+
+def send_domain_join_approved(to: str, display_name: str, org_name: str) -> None:
+    """Tell the requester their join request was approved and they can now log in."""
+    login_url = f"{APP_URL}/login"
+    subject = f"You're in — welcome to {org_name}"
+
+    body_text = (
+        f"Hello {display_name},\n\n"
+        f"Your request to join {org_name} on Hakuna has been approved.\n\n"
+        f"Sign in with the email and password you used to sign up:\n"
+        f"{login_url}\n\n"
+        f"— The Hakuna Team"
+    )
+
+    body_html = f"""<html>
+<body style="font-family:sans-serif;color:#1a1a1a;max-width:480px;margin:auto;padding:32px">
+  <h2 style="margin-bottom:8px">Welcome to {org_name}</h2>
+  <p>Hello <strong>{display_name}</strong>,</p>
+  <p>Your request to join <strong>{org_name}</strong> on Hakuna has been approved.</p>
+  <p style="margin:24px 0">
+    <a href="{login_url}"
+       style="background:#590202;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600">
+      Sign In
+    </a>
+  </p>
+  <p style="font-size:13px;color:#71717a">
+    Use the email and password you provided when you signed up.
+  </p>
+  <hr style="border:none;border-top:1px solid #e4e4e7;margin:24px 0"/>
+  <p style="font-size:12px;color:#a1a1aa">The Hakuna Team</p>
+</body>
+</html>"""
+
+    send_email(to, subject, body_text, body_html)
+
+
+def send_domain_join_denied(to: str, display_name: str, org_name: str, reason: str = None) -> None:
+    """Tell the requester their join request was denied."""
+    subject = f"Your request to join {org_name} was not approved"
+    reason_line = f"\n\nReason: {reason}\n" if reason else ""
+    reason_html = (
+        f'<p style="font-size:13px;color:#71717a"><strong>Reason:</strong> {reason}</p>'
+        if reason else ""
+    )
+
+    body_text = (
+        f"Hello {display_name},\n\n"
+        f"Your request to join {org_name} on Hakuna was not approved.{reason_line}\n"
+        f"If you believe this was a mistake, please contact your organization's administrator.\n\n"
+        f"— The Hakuna Team"
+    )
+
+    body_html = f"""<html>
+<body style="font-family:sans-serif;color:#1a1a1a;max-width:480px;margin:auto;padding:32px">
+  <h2 style="margin-bottom:8px">Request not approved</h2>
+  <p>Hello <strong>{display_name}</strong>,</p>
+  <p>Your request to join <strong>{org_name}</strong> on Hakuna was not approved.</p>
+  {reason_html}
+  <p style="font-size:13px;color:#71717a">
+    If you believe this was a mistake, please contact your organization's administrator.
+  </p>
+  <hr style="border:none;border-top:1px solid #e4e4e7;margin:24px 0"/>
+  <p style="font-size:12px;color:#a1a1aa">The Hakuna Team</p>
+</body>
+</html>"""
+
+    send_email(to, subject, body_text, body_html)
+
+
 def send_client_invite(to: str, mssp_org_name: str, invite_url: str, client_org_name: str = None) -> None:
     """Send an MSSP client onboarding invite email."""
     subject = f"You've been invited to join {mssp_org_name} on Hakuna"

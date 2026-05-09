@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Settings as SettingsIcon, Play, Save, RotateCcw, ChevronDown, ChevronRight, ShieldAlert, ScanLine, Tag, Clock, Plug, Blocks, ShieldOff, ClipboardList, UserCheck, Users, ShieldCheck, Building2, KeyRound, Plus, X, GripVertical, Layers, Antenna, Brain } from 'lucide-react'
+import { Settings as SettingsIcon, Play, Save, RotateCcw, ChevronDown, ChevronRight, ShieldAlert, ScanLine, Tag, Clock, Plug, Blocks, ShieldOff, ClipboardList, UserCheck, Users, ShieldCheck, Building2, KeyRound, Plus, X, GripVertical, Layers, Antenna, Brain, Globe } from 'lucide-react'
 import { getDedupConfig, saveDedupConfig, deleteDedupOrgOverride, runDedup, exportConfig, getAvailableSources, runRollup } from '../../api.js'
 import { Card, ExportImportButtons } from '../shared/ui.jsx'
 import { useAuth } from '../../contexts/AuthContext.jsx'
@@ -17,6 +17,7 @@ import OwnershipRules from './OwnershipRules.jsx'
 import RoleManager from './RoleManager.jsx'
 import UsersPanel from './UsersPanel.jsx'
 import OrgsPanel from './OrgsPanel.jsx'
+import DomainJoinPanel from './DomainJoinPanel.jsx'
 import IntegrationBuilderTab from './IntegrationBuilderTab.jsx'
 import SSOSettings from './SSOSettings.jsx'
 import RelayAgentManager from '../integrations/relay/RelayAgentManager.jsx'
@@ -454,7 +455,7 @@ function EntityCard({ entityKey, label, cfg, onChange, runEntityKey, availableSo
 export default function Settings() {
   const [searchParams, setSearchParams] = useSearchParams()
   const { isAdmin, isSuperadmin, isMSSP } = useAuth()
-  const VALID_TABS = ['scans', 'auth-profiles', 'dedup', 'risk', 'tags', 'custom-fields', 'sla', 'exceptions', 'integrations', 'integration-builder', 'relay-agents', 'audit-log', 'ownership', 'users', 'roles', 'orgs', 'sso', 'api-tokens', 'org-memory']
+  const VALID_TABS = ['scans', 'auth-profiles', 'dedup', 'risk', 'tags', 'custom-fields', 'sla', 'exceptions', 'integrations', 'integration-builder', 'relay-agents', 'audit-log', 'ownership', 'users', 'roles', 'orgs', 'domain-join', 'sso', 'api-tokens', 'org-memory']
   const rawTabParam = searchParams.get('tab')
   const tabParam = rawTabParam === 'upload' ? 'scans' : rawTabParam
   const activeTab = VALID_TABS.includes(tabParam) ? tabParam : 'scans'
@@ -544,6 +545,7 @@ export default function Settings() {
   if (isAdmin) accessControlItems.push({ id: 'users', label: 'Users', icon: <Users size={14} /> })
   if (isAdmin) accessControlItems.push({ id: 'roles', label: 'Roles', icon: <ShieldCheck size={14} /> })
   if (isSuperadmin || isMSSP) accessControlItems.push({ id: 'orgs', label: 'Organizations', icon: <Building2 size={14} /> })
+  if (isAdmin) accessControlItems.push({ id: 'domain-join', label: 'Domain & Auto-Join', icon: <Globe size={14} /> })
   if (isAdmin) accessControlItems.push({ id: 'sso', label: 'SAML SSO', icon: <KeyRound size={14} /> })
 
   const NAV_GROUPS = [
@@ -686,6 +688,9 @@ export default function Settings() {
 
       {/* Organizations tab */}
       {activeTab === 'orgs' && (isSuperadmin || isMSSP) && <OrgsPanel />}
+
+      {/* Domain & Auto-Join tab */}
+      {activeTab === 'domain-join' && isAdmin && <DomainJoinPanel />}
 
       {/* SSO tab */}
       {activeTab === 'sso' && isAdmin && <SSOSettings />}

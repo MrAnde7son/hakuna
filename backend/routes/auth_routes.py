@@ -15,7 +15,8 @@ from sqlalchemy import func, text
 
 from core.database import get_db
 from core.limiter import limiter
-from models.models import Organization, User, MSSPOrgAccess, OrgInvite, Scan, CustomRole, TagPermission, UserCustomRole, Tag
+from models.models import Organization, User, MSSPOrgAccess, OrgInvite, OrgJoinRequest, Scan, CustomRole, TagPermission, UserCustomRole, Tag
+from core.public_email_domains import extract_domain, is_public_email_domain
 from core.auth import (
     hash_password, verify_password, create_access_token, decode_access_token,
     require_auth, require_role, get_current_user, get_accessible_org_ids,
@@ -59,10 +60,14 @@ def _track_auth(user: User, org: Organization, event: str) -> None:
 # ── Pydantic schemas ─────────────────────────────────────
 
 class RegisterRequest(BaseModel):
-    org_name: str
+    # ``org_name`` is required for ``intent='create'`` and ignored otherwise.
+    # Default kept Optional so the join path doesn't force callers to invent
+    # one — the org they're joining already has a name.
+    org_name: Optional[str] = None
     email: str
     password: str
     display_name: Optional[str] = None
+    intent: Optional[str] = "create"  # create | join
 
 class LoginRequest(BaseModel):
     email: str
@@ -160,11 +165,12 @@ def _org_response(org: Organization) -> dict:
 @router.post("/register")
 @limiter.limit("3/minute")
 async def register(body: RegisterRequest, request: Request, db: Session = Depends(get_db)):
-    """Register a new organization and its first admin user.
+    """Register a new organization (intent='create') or request to join an
+    existing one matched by email domain (intent='join').
+
     Also serves as the bootstrap route for the first superadmin.
     """
     locale = get_locale_from_request(request)
-    # Check if email already exists
     if db.query(User).filter(User.email == body.email).first():
         raise HTTPException(400, translate("email_exists", locale))
 
@@ -172,30 +178,62 @@ async def register(body: RegisterRequest, request: Request, db: Session = Depend
     if pw_error:
         raise HTTPException(400, pw_error)
 
-    # Create org
+    domain = extract_domain(body.email)
+    if not domain:
+        raise HTTPException(400, "Invalid email address")
+
+    intent = (body.intent or "create").lower()
+    if intent not in ("create", "join"):
+        raise HTTPException(400, "intent must be 'create' or 'join'")
+
+    matched_org = None
+    if not is_public_email_domain(domain):
+        matched_org = db.query(Organization).filter(
+            Organization.claimed_domain == domain,
+            Organization.is_active == True,
+        ).first()
+
+    # ── Join an existing org by domain ──────────────────────
+    if intent == "join":
+        if not matched_org:
+            raise HTTPException(404, "No organization claims that email domain")
+        if matched_org.domain_join_mode == "disabled":
+            # Don't leak that the org exists if its admin has turned join off.
+            raise HTTPException(404, "No organization claims that email domain")
+        return await _register_join_existing_org(db, body, matched_org)
+
+    # ── Create a new org (default path) ─────────────────────
+    if not body.org_name:
+        raise HTTPException(400, "org_name is required when creating a new organization")
+
     slug = _slugify(body.org_name)
-    # Ensure slug uniqueness
     base_slug = slug
     counter = 1
     while db.query(Organization).filter(Organization.slug == slug).first():
         slug = f"{base_slug}-{counter}"
         counter += 1
 
-    org = Organization(name=body.org_name, slug=slug)
+    # Auto-claim the email domain for the new org if it's a corporate domain
+    # and no other org has claimed it yet. The unique index guards against a
+    # race so this is a soft check.
+    auto_claim = (
+        not is_public_email_domain(domain)
+        and matched_org is None
+    )
+
+    org = Organization(
+        name=body.org_name,
+        slug=slug,
+        claimed_domain=domain if auto_claim else None,
+    )
     db.add(org)
     db.flush()
 
-    # Seed one built-in, team-scoped role per ownership team (IT, DevOps, SOC, VM, …)
-    # so org admins can immediately assign team-level access to users.
     seed_builtin_team_roles(db, org.id)
 
-    # First user in the entire system becomes superadmin
     user_count = db.query(func.count(User.id)).scalar()
     role = "superadmin" if user_count == 0 else "org_admin"
-
-    # Superadmin (first user) is auto-verified; others must verify email
     is_first_user = role == "superadmin"
-
     verify_token = None if is_first_user else secrets.token_urlsafe(32)
 
     user = User(
@@ -214,9 +252,11 @@ async def register(body: RegisterRequest, request: Request, db: Session = Depend
     db.refresh(org)
 
     token = create_access_token(user.id, org.id, user.role)
-    logger.info(f"New registration: {body.email} → org '{org.name}' (role={role})")
+    logger.info(
+        f"New registration: {body.email} → org '{org.name}' (role={role}"
+        f"{', claimed_domain=' + domain if auto_claim else ''})"
+    )
 
-    # Send verification email (non-blocking)
     if not is_first_user:
         try:
             from services.brevo import send_email_verification, is_configured as brevo_configured
@@ -228,7 +268,6 @@ async def register(body: RegisterRequest, request: Request, db: Session = Depend
         except Exception as e:
             logger.warning(f"Failed to send verification email (non-fatal): {e}")
 
-    # Trigger EASM discovery for corporate email domains (non-blocking)
     try:
         await trigger_easm_for_new_org(db, org, body.email)
     except Exception as e:
@@ -240,6 +279,112 @@ async def register(body: RegisterRequest, request: Request, db: Session = Depend
         "access_token": token,
         "token_type": "bearer",
         "user": _user_response(user, org),
+    }
+
+
+async def _register_join_existing_org(db: Session, body: RegisterRequest, org: Organization) -> dict:
+    """Handle ``intent='join'``. Branches on the org's ``domain_join_mode``:
+      * ``auto``    — create the User immediately (email_verified=False, no
+                      access token issued); they verify, then log in.
+      * ``request`` — store an OrgJoinRequest, notify org admins. No User
+                      is created until an admin approves.
+    """
+    from services.brevo import (
+        send_email_verification,
+        send_domain_join_request_to_admin,
+        is_configured as brevo_configured,
+    )
+
+    if org.domain_join_mode == "auto":
+        verify_token = secrets.token_urlsafe(32)
+        user = User(
+            email=body.email,
+            hashed_password=hash_password(body.password),
+            display_name=body.display_name or body.email.split("@")[0],
+            org_id=org.id,
+            role=org.domain_join_default_role or "viewer",
+            email_verified=False,
+            email_verify_token=verify_token,
+            email_verify_expires=datetime.utcnow() + timedelta(hours=24),
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+        logger.info(f"Domain auto-join: {body.email} → org '{org.name}' (pending email verification)")
+
+        if brevo_configured():
+            try:
+                send_email_verification(body.email, user.display_name, verify_token)
+            except Exception as e:
+                logger.warning(f"Failed to send verification email (non-fatal): {e}")
+
+        # Auto-join requires the user to verify their inbox before they get a
+        # session — otherwise anyone could spoof an `@acme.com` address and
+        # walk into ACME's tenant.
+        return {
+            "status": "verification_required",
+            "joined_org_name": org.name,
+            "email": body.email,
+            "message": (
+                "Account created. Please check your email to verify your "
+                "address before signing in."
+            ),
+        }
+
+    # mode == 'request'
+    # Replace any existing pending request for this email+org so users can
+    # retry without admin intervention. Old denied/approved rows are kept
+    # for audit.
+    existing = db.query(OrgJoinRequest).filter(
+        OrgJoinRequest.org_id == org.id,
+        OrgJoinRequest.email == body.email,
+        OrgJoinRequest.status == "pending",
+    ).first()
+    if existing:
+        existing.hashed_password = hash_password(body.password)
+        existing.display_name = body.display_name or existing.display_name
+        existing.created_at = datetime.utcnow()
+        existing.expires_at = datetime.utcnow() + timedelta(days=30)
+    else:
+        jr = OrgJoinRequest(
+            org_id=org.id,
+            email=body.email,
+            hashed_password=hash_password(body.password),
+            display_name=body.display_name or body.email.split("@")[0],
+            requested_role=org.domain_join_default_role or "viewer",
+            status="pending",
+            expires_at=datetime.utcnow() + timedelta(days=30),
+        )
+        db.add(jr)
+    db.commit()
+    logger.info(f"Domain join request: {body.email} → org '{org.name}' (pending admin approval)")
+
+    if brevo_configured():
+        admins = db.query(User).filter(
+            User.org_id == org.id,
+            User.role.in_(("org_admin", "superadmin")),
+            User.is_active == True,
+        ).all()
+        for admin in admins:
+            try:
+                send_domain_join_request_to_admin(
+                    to=admin.email,
+                    admin_display_name=admin.display_name or admin.email,
+                    org_name=org.name,
+                    requester_email=body.email,
+                    requester_display_name=body.display_name or body.email.split("@")[0],
+                )
+            except Exception as e:
+                logger.warning(f"Failed to notify admin {admin.email} (non-fatal): {e}")
+
+    return {
+        "status": "pending_approval",
+        "joined_org_name": org.name,
+        "email": body.email,
+        "message": (
+            f"Your request to join {org.name} has been sent to its administrators. "
+            f"You'll get an email when it's approved."
+        ),
     }
 
 
@@ -405,27 +550,57 @@ async def google_auth(body: GoogleAuthRequest, request: Request, db: Session = D
     else:
         # ── New user: register ──
         display_name = idinfo.get("name") or email.split("@")[0]
+        domain = extract_domain(email)
 
-        # Create org from email domain
-        domain = email.split("@")[1]
-        org_name = domain.split(".")[0].title()
-        slug = _slugify(org_name)
-        base_slug = slug
-        counter = 1
-        while db.query(Organization).filter(Organization.slug == slug).first():
-            slug = f"{base_slug}-{counter}"
-            counter += 1
+        # If another org already claims this domain and has domain auto-join
+        # enabled, drop the new user into it. Google guarantees email
+        # verification, so this is safe without an extra round-trip.
+        claimed_org = None
+        if not is_public_email_domain(domain):
+            claimed_org = db.query(Organization).filter(
+                Organization.claimed_domain == domain,
+                Organization.is_active == True,
+            ).first()
 
-        org = Organization(name=org_name, slug=slug)
-        db.add(org)
-        db.flush()
+        if claimed_org and claimed_org.domain_join_mode == "auto":
+            org = claimed_org
+            new_org_created = False
+        else:
+            # Create a new org from the email domain. Auto-claim the domain
+            # iff it's a corporate (non-public) domain not already claimed.
+            org_name = domain.split(".")[0].title() if domain else "My Org"
+            slug = _slugify(org_name)
+            base_slug = slug
+            counter = 1
+            while db.query(Organization).filter(Organization.slug == slug).first():
+                slug = f"{base_slug}-{counter}"
+                counter += 1
 
-        # Seed one built-in, team-scoped role per ownership team (IT, DevOps, SOC, VM, …).
-        seed_builtin_team_roles(db, org.id)
+            auto_claim = (
+                not is_public_email_domain(domain)
+                and claimed_org is None
+            )
+            org = Organization(
+                name=org_name,
+                slug=slug,
+                claimed_domain=domain if auto_claim else None,
+            )
+            db.add(org)
+            db.flush()
+            new_org_created = True
 
-        # First user in the system becomes superadmin
-        user_count = db.query(func.count(User.id)).scalar()
-        role = "superadmin" if user_count == 0 else "org_admin"
+        # Seed built-in team-scoped roles only when we created the org —
+        # otherwise we'd reseed the existing org on every domain auto-join.
+        if new_org_created:
+            seed_builtin_team_roles(db, org.id)
+
+        if not new_org_created:
+            # Joining a claimed org via Google: assume the org's configured
+            # default role for new domain joiners, never admin.
+            role = org.domain_join_default_role or "viewer"
+        else:
+            user_count = db.query(func.count(User.id)).scalar()
+            role = "superadmin" if user_count == 0 else "org_admin"
 
         user = User(
             email=email,
@@ -442,13 +617,18 @@ async def google_auth(body: GoogleAuthRequest, request: Request, db: Session = D
         db.refresh(org)
 
         token = create_access_token(user.id, org.id, user.role)
-        logger.info(f"Google registration: {email} → org '{org.name}' (role={role})")
+        logger.info(
+            f"Google registration: {email} → org '{org.name}' "
+            f"(role={role}, {'joined existing' if not new_org_created else 'new org'})"
+        )
 
-        # Trigger EASM discovery for corporate email domains (non-blocking)
-        try:
-            await trigger_easm_for_new_org(db, org, email)
-        except Exception as e:
-            logger.warning(f"EASM trigger failed (non-fatal): {e}")
+        # Trigger EASM discovery for newly-created corporate email orgs only —
+        # the existing org already had its EASM trigger fired at signup.
+        if new_org_created:
+            try:
+                await trigger_easm_for_new_org(db, org, email)
+            except Exception as e:
+                logger.warning(f"EASM trigger failed (non-fatal): {e}")
 
         _track_auth(user, org, "user_registered")
 
@@ -984,6 +1164,280 @@ async def delete_org(
     log_audit(db, "delete", "organization", org_id, entity_name=_org_name, actor=user)
     db.commit()
     return {"status": "deleted", "id": org_id}
+
+
+# ── Domain claim & auto-join ──────────────────────────────
+
+class DomainSettingsRequest(BaseModel):
+    claimed_domain: Optional[str] = None  # "" or null clears the claim
+    domain_join_mode: Optional[str] = None  # disabled | request | auto
+    domain_join_default_role: Optional[str] = None  # viewer | analyst | org_admin
+
+
+def _domain_settings_response(org: Organization) -> dict:
+    return {
+        "org_id": org.id,
+        "org_name": org.name,
+        "claimed_domain": org.claimed_domain,
+        "domain_join_mode": org.domain_join_mode or "disabled",
+        "domain_join_default_role": org.domain_join_default_role or "viewer",
+    }
+
+
+@router.get("/org-by-domain")
+@limiter.limit("30/minute")
+async def lookup_org_by_domain(
+    request: Request,
+    email: Optional[str] = Query(None),
+    domain: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """Public lookup. Given an email or domain, return the org that has
+    claimed it — but only when its admin has opened domain-based join.
+    Returns 200 with ``{"matched": false}`` if no joinable match (so we
+    don't expose orgs that have join disabled)."""
+    raw = (domain or extract_domain(email or "")).lower().strip()
+    if not raw or is_public_email_domain(raw):
+        return {"matched": False}
+
+    org = db.query(Organization).filter(
+        Organization.claimed_domain == raw,
+        Organization.is_active == True,
+    ).first()
+    if not org or org.domain_join_mode == "disabled":
+        return {"matched": False}
+    return {
+        "matched": True,
+        "org_name": org.name,
+        "domain": raw,
+        "join_mode": org.domain_join_mode,  # 'request' or 'auto'
+    }
+
+
+@router.get("/domain-settings")
+async def get_domain_settings(
+    user: User = Depends(require_role("superadmin", "org_admin")),
+    db: Session = Depends(get_db),
+):
+    """Return the current org's domain-claim and auto-join configuration."""
+    org = db.query(Organization).filter(Organization.id == user.org_id).first()
+    if not org:
+        raise HTTPException(404, "Organization not found")
+    return _domain_settings_response(org)
+
+
+@router.patch("/domain-settings")
+async def update_domain_settings(
+    body: DomainSettingsRequest,
+    user: User = Depends(require_role("superadmin", "org_admin")),
+    db: Session = Depends(get_db),
+):
+    """Update domain claim & auto-join settings for the current org.
+
+    A domain can only be claimed if (a) it's not on the public-email
+    blocklist, and (b) no other org has already claimed it. The admin's
+    own email domain is always considered a valid claim — they
+    self-served the org so they implicitly own it.
+    """
+    org = db.query(Organization).filter(Organization.id == user.org_id).first()
+    if not org:
+        raise HTTPException(404, "Organization not found")
+
+    _old = {
+        "claimed_domain": org.claimed_domain,
+        "domain_join_mode": org.domain_join_mode,
+        "domain_join_default_role": org.domain_join_default_role,
+    }
+
+    if body.claimed_domain is not None:
+        new_domain = body.claimed_domain.strip().lower() or None
+        if new_domain and new_domain != org.claimed_domain:
+            if is_public_email_domain(new_domain):
+                raise HTTPException(400, (
+                    "Public email domains (gmail.com, outlook.com, etc.) "
+                    "cannot be claimed."
+                ))
+            # Basic shape check; matches the email-extraction rules.
+            if "." not in new_domain or " " in new_domain:
+                raise HTTPException(400, "Invalid domain")
+            # Require the admin's own email to be on the domain unless
+            # they're a superadmin overriding the rule.
+            if user.role != "superadmin":
+                admin_domain = extract_domain(user.email)
+                if admin_domain != new_domain:
+                    raise HTTPException(403, (
+                        f"You can only claim a domain matching your own "
+                        f"email ({admin_domain}). Ask a superadmin if you "
+                        f"need to claim a different domain."
+                    ))
+            existing = db.query(Organization).filter(
+                Organization.claimed_domain == new_domain,
+                Organization.id != org.id,
+            ).first()
+            if existing:
+                raise HTTPException(409, (
+                    f"That domain is already claimed by another organization."
+                ))
+        org.claimed_domain = new_domain
+
+    if body.domain_join_mode is not None:
+        if body.domain_join_mode not in ("disabled", "request", "auto"):
+            raise HTTPException(400, "domain_join_mode must be disabled, request, or auto")
+        if body.domain_join_mode != "disabled" and not org.claimed_domain and body.claimed_domain in (None, ""):
+            raise HTTPException(400, "Claim a domain before enabling auto-join")
+        org.domain_join_mode = body.domain_join_mode
+
+    if body.domain_join_default_role is not None:
+        if body.domain_join_default_role not in ("viewer", "analyst", "org_admin"):
+            raise HTTPException(400, "domain_join_default_role must be viewer, analyst, or org_admin")
+        if body.domain_join_default_role == "org_admin" and user.role != "superadmin":
+            raise HTTPException(403, "Only superadmin can default new joiners to org_admin")
+        org.domain_join_default_role = body.domain_join_default_role
+
+    _new = {
+        "claimed_domain": org.claimed_domain,
+        "domain_join_mode": org.domain_join_mode,
+        "domain_join_default_role": org.domain_join_default_role,
+    }
+    log_audit(db, "update", "organization", org.id, entity_name=org.name,
+              changes=_diff(_old, _new), actor=user)
+    db.commit()
+    db.refresh(org)
+    return _domain_settings_response(org)
+
+
+def _join_request_response(jr: OrgJoinRequest) -> dict:
+    return {
+        "id": jr.id,
+        "org_id": jr.org_id,
+        "email": jr.email,
+        "display_name": jr.display_name,
+        "requested_role": jr.requested_role,
+        "status": jr.status,
+        "denial_reason": jr.denial_reason,
+        "created_at": iso_utc(jr.created_at),
+        "expires_at": iso_utc(jr.expires_at),
+        "decided_at": iso_utc(jr.decided_at),
+        "decided_by_user_id": jr.decided_by_user_id,
+    }
+
+
+@router.get("/join-requests")
+async def list_join_requests(
+    status_filter: Optional[str] = Query(None, alias="status"),
+    user: User = Depends(require_role("superadmin", "org_admin")),
+    db: Session = Depends(get_db),
+):
+    """List join requests targeting the current admin's org. Defaults to
+    ``pending`` only; pass ``?status=all`` to include decided ones."""
+    q = db.query(OrgJoinRequest).filter(OrgJoinRequest.org_id == user.org_id)
+    if status_filter and status_filter != "all":
+        q = q.filter(OrgJoinRequest.status == status_filter)
+    elif not status_filter:
+        q = q.filter(OrgJoinRequest.status == "pending")
+    return [_join_request_response(jr) for jr in q.order_by(OrgJoinRequest.created_at.desc()).all()]
+
+
+class JoinRequestDecisionRequest(BaseModel):
+    reason: Optional[str] = None  # only used on deny
+
+
+@router.post("/join-requests/{request_id}/approve")
+async def approve_join_request(
+    request_id: int,
+    user: User = Depends(require_role("superadmin", "org_admin")),
+    db: Session = Depends(get_db),
+):
+    """Approve a pending join request. Creates the User in the admin's org
+    using the password the requester chose at signup. Their email_verified
+    flag is set to True — the admin's approval acts as the vouch."""
+    from services.brevo import send_domain_join_approved, is_configured as brevo_configured
+
+    jr = db.query(OrgJoinRequest).filter(OrgJoinRequest.id == request_id).first()
+    if not jr:
+        raise HTTPException(404, "Join request not found")
+    if jr.org_id != user.org_id and user.role != "superadmin":
+        raise HTTPException(403, "Cannot manage join requests for another organization")
+    if jr.status != "pending":
+        raise HTTPException(400, f"Request is already {jr.status}")
+    if jr.expires_at and jr.expires_at < datetime.utcnow():
+        jr.status = "expired"
+        db.commit()
+        raise HTTPException(400, "Request has expired")
+
+    if db.query(User).filter(User.email == jr.email).first():
+        raise HTTPException(409, "A user with that email already exists")
+
+    new_user = User(
+        email=jr.email,
+        hashed_password=jr.hashed_password,
+        display_name=jr.display_name or jr.email.split("@")[0],
+        org_id=jr.org_id,
+        role=jr.requested_role or "viewer",
+        email_verified=True,
+    )
+    db.add(new_user)
+    jr.status = "approved"
+    jr.decided_at = datetime.utcnow()
+    jr.decided_by_user_id = user.id
+    db.flush()
+
+    org = db.query(Organization).filter(Organization.id == jr.org_id).first()
+    log_audit(db, "create", "user", new_user.id,
+              entity_name=new_user.email,
+              changes={"email": new_user.email, "role": new_user.role, "via": "domain_join_request"},
+              actor=user)
+    db.commit()
+    db.refresh(new_user)
+
+    if brevo_configured():
+        try:
+            send_domain_join_approved(new_user.email, new_user.display_name, org.name)
+        except Exception as e:
+            logger.warning(f"Failed to send approval email (non-fatal): {e}")
+
+    return {"status": "approved", "user": _user_response(new_user, org)}
+
+
+@router.post("/join-requests/{request_id}/deny")
+async def deny_join_request(
+    request_id: int,
+    body: JoinRequestDecisionRequest,
+    user: User = Depends(require_role("superadmin", "org_admin")),
+    db: Session = Depends(get_db),
+):
+    """Deny a pending join request. The requester gets an email notice."""
+    from services.brevo import send_domain_join_denied, is_configured as brevo_configured
+
+    jr = db.query(OrgJoinRequest).filter(OrgJoinRequest.id == request_id).first()
+    if not jr:
+        raise HTTPException(404, "Join request not found")
+    if jr.org_id != user.org_id and user.role != "superadmin":
+        raise HTTPException(403, "Cannot manage join requests for another organization")
+    if jr.status != "pending":
+        raise HTTPException(400, f"Request is already {jr.status}")
+
+    jr.status = "denied"
+    jr.denial_reason = body.reason
+    jr.decided_at = datetime.utcnow()
+    jr.decided_by_user_id = user.id
+    org = db.query(Organization).filter(Organization.id == jr.org_id).first()
+    log_audit(db, "deny", "join_request", jr.id, entity_name=jr.email,
+              changes={"reason": body.reason or ""}, actor=user)
+    db.commit()
+
+    if brevo_configured():
+        try:
+            send_domain_join_denied(
+                jr.email,
+                jr.display_name or jr.email.split("@")[0],
+                org.name,
+                body.reason,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to send denial email (non-fatal): {e}")
+
+    return {"status": "denied", "id": jr.id}
 
 
 # ── MSSP management ──────────────────────────────────────
