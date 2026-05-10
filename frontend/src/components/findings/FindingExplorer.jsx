@@ -54,6 +54,7 @@ function TtpPill({ ttp }) {
 
 const getGroupOptions = (t) => [
   { value: 'severity', label: t('findings.severity') },
+  { value: 'plugin', label: t('findings.plugin') },
   { value: 'plugin_family', label: t('findings.pluginFamily') },
   { value: 'asset', label: t('findings.asset') },
   { value: 'owner_suggestion', label: t('findings.owner') },
@@ -81,6 +82,7 @@ function getGroupKey(finding, groupBy) {
   if (groupBy === 'severity') return String(finding.severity)
   if (groupBy === 'asset') return getFindingAssetDisplay(finding)
   if (groupBy === 'root_cause') return finding.aggregated_solution_id ? String(finding.aggregated_solution_id) : 'ungrouped'
+  if (groupBy === 'plugin') return finding.plugin_name || (finding.plugin_id ? `Plugin ${finding.plugin_id}` : 'Other')
   return finding[groupBy] || 'Other'
 }
 
