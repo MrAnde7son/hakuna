@@ -281,6 +281,7 @@ jobs:
       - name: Pull and restart on scanner VM
         run: |
           gcloud compute ssh hakuna-scanners --zone="${{ env.ZONE }}" --tunnel-through-iap \
+            --ssh-key-expire-after=10m \
             --command="cd /opt/hakuna-scanners && sudo docker compose pull && sudo docker compose up -d" \
             --quiet
 
@@ -323,6 +324,7 @@ jobs:
       - name: Pull and restart on cloud-scanner VM
         run: |
           gcloud compute ssh hakuna-cloud-scanner --zone="${{ env.ZONE }}" --tunnel-through-iap \
+            --ssh-key-expire-after=10m \
             --command="cd /opt/hakuna-cloud-scanner && sudo docker compose pull && sudo docker compose up -d" \
             --quiet
 
@@ -352,6 +354,7 @@ jobs:
         # swaps containers in place once the new image is local.
         run: |
           gcloud compute ssh hakuna-audit-worker --zone="${{ env.ZONE }}" --tunnel-through-iap \
+            --ssh-key-expire-after=10m \
             --command="cd /opt/hakuna-audit-worker && sudo docker system prune -af --filter 'until=24h' && sudo docker compose pull && sudo docker compose up -d" \
             --quiet
 
@@ -414,5 +417,6 @@ jobs:
       - name: Run scanner migrations
         run: |
           gcloud compute ssh hakuna-scanners --zone="${{ env.ZONE }}" --tunnel-through-iap \
+            --ssh-key-expire-after=10m \
             --command="cd /opt/hakuna-scanners && sudo docker compose exec -T -e PYTHONPATH=/app easm-api alembic upgrade head" \
             --quiet
