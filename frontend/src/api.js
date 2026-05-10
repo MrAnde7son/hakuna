@@ -112,8 +112,18 @@ async function _doRequest(path, opts = {}) {
       })
       clearTimeout(timeoutId)
 
-      // Handle 401 — attempt token refresh, then redirect to login
-      if (res.status === 401) {
+      // Handle 401 — attempt token refresh, then redirect to login.
+      // Public auth endpoints (login/register/etc.) skip this dance: a 401
+      // there means "credentials rejected", not "session expired", so we let
+      // the backend's specific error message reach the UI.
+      const isPublicAuthPath = (
+        path === '/auth/login' ||
+        path === '/auth/register' ||
+        path === '/auth/google' ||
+        path === '/auth/verify-email' ||
+        path === '/auth/accept-invite'
+      )
+      if (res.status === 401 && !isPublicAuthPath) {
         // Collaborators don't have a refresh path — clear and bounce to the
         // expired-session page (a fresh invite email is needed to re-accept).
         if (collab) {

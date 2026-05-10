@@ -443,13 +443,19 @@ async def login(body: LoginRequest, request: Request, db: Session = Depends(get_
     locale = get_locale_from_request(request)
     user = db.query(User).filter(User.email == body.email).first()
 
-    # Per-account lockout — returns the same 401 as invalid creds while active
-    # to avoid account-enumeration via differential responses.
     now = datetime.utcnow()
     if user and user.locked_until and user.locked_until > now:
-        raise HTTPException(401, translate("invalid_credentials", locale))
+        minutes_remaining = max(1, int((user.locked_until - now).total_seconds() // 60) + 1)
+        raise HTTPException(
+            423,
+            translate("account_locked", locale, minutes=minutes_remaining),
+        )
 
-    if not user or not user.hashed_password or not verify_password(body.password, user.hashed_password):
+    # Account exists but has no password → was created via Google SSO.
+    if user and not user.hashed_password:
+        raise HTTPException(401, translate("use_google_signin", locale))
+
+    if not user or not verify_password(body.password, user.hashed_password):
         if user:
             user.failed_login_count = (user.failed_login_count or 0) + 1
             if user.failed_login_count >= LOGIN_FAILURE_THRESHOLD:
