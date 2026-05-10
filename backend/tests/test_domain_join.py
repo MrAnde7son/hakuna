@@ -55,8 +55,7 @@ class TestDomainAutoClaim:
         org = db_session.query(Organization).filter_by(slug="acme").first()
         assert org is not None
         assert org.claimed_domain == "acme.test"
-        # Defaults to 'disabled' so existing behavior is unchanged.
-        assert org.domain_join_mode == "disabled"
+        assert org.domain_join_mode == "auto"
 
     def test_public_email_signup_does_not_claim(self, client, db_session):
         from models.models import Organization
