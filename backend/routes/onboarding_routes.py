@@ -200,6 +200,26 @@ async def apply_onboarding_packages(
             "apply_onboarding_packages: org_onboarded emit failed for org=%d", org_id,
         )
 
+    # Seed the deterministic onboarding-tour cards under the welcome
+    # narrative. Independent of the LLM-driven welcome agent above so a
+    # missing API key or template parse error doesn't leave the user
+    # staring at an empty feed.
+    try:
+        from services.onboarding_tour import seed_onboarding_tour
+        seed_onboarding_tour(
+            db,
+            org_id=org_id,
+            payload={
+                "objectives": objectives,
+                "team_functions": body.team_functions,
+                "provisioning": created,
+            },
+        )
+    except Exception:
+        logger.exception(
+            "apply_onboarding_packages: tour seed failed for org=%d", org_id,
+        )
+
     return {
         "success": True,
         "created": created,
