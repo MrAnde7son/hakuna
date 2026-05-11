@@ -75,6 +75,16 @@ resource "google_cloud_run_v2_service" "api" {
         value = "production"
       }
 
+      # Split-deployment marker. `_deferred_startup` in app.py skips every
+      # in-process APScheduler when HAKUNA_ROLE=api so the FastAPI event loop
+      # is never starved by background CPU/IO. The hakuna-scheduler Cloud Run
+      # service (cloudrun_scheduler.tf) sets HAKUNA_ROLE=scheduler and owns
+      # all cron/interval jobs.
+      env {
+        name  = "HAKUNA_ROLE"
+        value = "api"
+      }
+
       # Database URL (with password) from Secret Manager
       env {
         name = "DATABASE_URL"
