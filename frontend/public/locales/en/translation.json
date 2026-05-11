@@ -488,6 +488,8 @@
     "runCampaignFirst": "Run the campaign first to populate findings. Workflows will process the campaign results.",
     "noWorkflowsAttached": "No workflows attached",
     "noWorkflowsAttachedDesc": "Add a workflow from a template or create a custom one to automate remediation actions.",
+    "suggestedWorkflows": "Suggested",
+    "browseAllWorkflows": "Browse all workflows",
     "addWorkflowToCampaign": "Add Workflow to Campaign",
     "fromTemplate": "From Template",
     "or": "Or",

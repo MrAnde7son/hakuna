@@ -82,6 +82,31 @@ def test_draft_creates_campaign_in_draft_state(db_session, test_org, scan, asset
     assert {m.finding_id for m in members} == {f1.id, f2.id}
 
 
+def test_draft_seeds_match_rule_with_finding_id_list(db_session, test_org, scan, asset):
+    """The Match panel should show what the agent matched on, so the user
+    can broaden the rule. We seed Campaign.query with a single
+    finding.id eq <csv> condition and pin the rendered set via the
+    CampaignFinding rows independently. IDs are sorted for stable diffs."""
+    f1 = _mk_finding(db_session, scan, asset, plugin_id="100")
+    f2 = _mk_finding(db_session, scan, asset, plugin_id="101")
+    f3 = _mk_finding(db_session, scan, asset, plugin_id="102")
+
+    out = _draft(
+        db_session, org_id=test_org.id,
+        name="x", description="y",
+        # Out of order on purpose — output must be sorted.
+        finding_ids=[f3.id, f1.id, f2.id],
+    )
+
+    campaign = db_session.query(Campaign).filter(Campaign.id == out["campaign_id"]).first()
+    assert campaign.query == [{
+        "field": "finding.id",
+        "op": "eq",
+        "value": ",".join(str(i) for i in sorted([f1.id, f2.id, f3.id])),
+    }]
+    assert campaign.query_logic == "AND"
+
+
 def test_draft_creates_paired_approval(db_session, test_org, scan, asset):
     f1 = _mk_finding(db_session, scan, asset)
 

@@ -1439,7 +1439,13 @@ function CampaignWorkflows({ campaignId, hasResults, onWorkflowsChange }) {
             title={t('campaigns.noWorkflowsAttached')}
             sub={t('campaigns.noWorkflowsAttachedDesc')}
           >
-            <Button onClick={() => setShowAdd(true)}><GitBranch size={14} /> {t('campaigns.addWorkflow')}</Button>
+            <SuggestedWorkflows
+              templates={templates}
+              onPick={handleCreateFromTemplate}
+            />
+            <div style={{ marginTop: 14 }}>
+              <Button onClick={() => setShowAdd(true)}><GitBranch size={14} /> {t('campaigns.browseAllWorkflows')}</Button>
+            </div>
           </EmptyState>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -1557,6 +1563,86 @@ function CampaignWorkflows({ campaignId, hasResults, onWorkflowsChange }) {
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+
+// ─── Suggested Workflows (empty-state quick picks) ────────
+// Curated shortlist that fits most remediation campaigns: triage routing
+// first, owner-routing second, plain email as a credential-free fallback.
+// Falls back to whatever's first in the catalog if these IDs are missing
+// so the empty state never collapses to zero suggestions.
+const SUGGESTED_TEMPLATE_IDS = ['critical_triage', 'owner_routing', 'email_notification']
+
+function SuggestedWorkflows({ templates, onPick }) {
+  const { t } = useTranslation()
+  if (!templates || templates.length === 0) return null
+
+  const byId = new Map(templates.map(tpl => [tpl.id, tpl]))
+  const picked = []
+  for (const id of SUGGESTED_TEMPLATE_IDS) {
+    const tpl = byId.get(id)
+    if (tpl) picked.push(tpl)
+  }
+  // Top-up to 3 from the catalog head if curated IDs aren't all present.
+  for (const tpl of templates) {
+    if (picked.length >= 3) break
+    if (!picked.includes(tpl)) picked.push(tpl)
+  }
+
+  const [busy, setBusy] = useState(null)
+  const handleClick = async (tpl) => {
+    if (busy) return
+    setBusy(tpl.id)
+    try {
+      await onPick(tpl)
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  return (
+    <div style={{ marginTop: 18, width: '100%', maxWidth: 540 }}>
+      <div style={{
+        fontSize: 11, fontWeight: 700, textTransform: 'uppercase',
+        color: '#818cf8', letterSpacing: '0.05em', marginBottom: 8, textAlign: 'left',
+      }}>
+        {t('campaigns.suggestedWorkflows')}
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {picked.map(tpl => (
+          <button
+            key={tpl.id}
+            onClick={() => handleClick(tpl)}
+            disabled={busy != null}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 12,
+              padding: '12px 14px', borderRadius: 10,
+              border: '1px solid var(--border)', background: 'var(--bg-card)',
+              cursor: busy ? 'wait' : 'pointer', textAlign: 'left', width: '100%',
+              opacity: busy && busy !== tpl.id ? 0.55 : 1,
+              transition: 'border-color 0.15s',
+            }}
+            onMouseEnter={e => { if (!busy) e.currentTarget.style.borderColor = '#818cf8' }}
+            onMouseLeave={e => e.currentTarget.style.borderColor = 'var(--border)'}
+          >
+            <div style={{
+              width: 36, height: 36, borderRadius: 8, background: '#312e8122',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+            }}>
+              <GitBranch size={16} color='#818cf8' />
+            </div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontWeight: 600, fontSize: 13 }}>{tpl.name}</div>
+              {tpl.description && (
+                <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{tpl.description}</div>
+              )}
+            </div>
+            <Plus size={14} color='#94a3b8' />
+          </button>
+        ))}
+      </div>
     </div>
   )
 }

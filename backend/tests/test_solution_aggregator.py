@@ -182,13 +182,12 @@ def test_fingerprint_ldap_audit_finding():
     assert fp.root_cause_type == "misconfiguration"
 
 
-def test_fingerprint_snmp_audit_finding_via_family():
+def test_fingerprint_generic_snmp_family_not_bucketed():
+    """Generic SNMP findings without a specific misconfig regex match are
+    left un-aggregated — each one carries its own remediation."""
     f = _FakeFinding(plugin_name="Some custom check",
                      plugin_family="SNMP")
-    fp = fingerprint_finding(f)
-    assert fp is not None
-    assert fp.component == "SNMP Hardening"
-    assert fp.root_cause_type == "misconfiguration"
+    assert fingerprint_finding(f) is None
 
 
 def test_fingerprint_smb_signing_misconfig():
@@ -280,32 +279,25 @@ def test_cve_hunt_smb_with_cves_routes_to_outdated_not_misconfig():
     assert fp.component == "Samba"
 
 
-def test_audit_family_no_cves_falls_back_to_misconfig_bucket():
-    """Audit: Windows finding without CVEs lands in the Windows Audit bucket."""
+def test_audit_family_no_cves_is_not_bucketed():
+    """Audit-profile findings without CVEs and without a specific misconfig
+    match are left un-aggregated so their per-finding remediation surfaces."""
     f = _FakeFinding(
         plugin_name="Some custom Windows policy check",
         plugin_family="Audit: Windows",
         cves=[],
         severity=2,
     )
-    fp = fingerprint_finding(f)
-    assert fp is not None
-    assert fp.root_cause_type == "misconfiguration"
-    assert fp.component == "Windows Audit"
+    assert fingerprint_finding(f) is None
 
 
-def test_audit_kerberos_family_falls_back_to_kerberos_config():
+def test_audit_kerberos_generic_not_bucketed():
     f = _FakeFinding(plugin_name="Generic Kerberos check",
                      plugin_family="Audit: Kerberos")
-    fp = fingerprint_finding(f)
-    assert fp is not None
-    assert fp.root_cause_type == "misconfiguration"
-    assert fp.component == "Kerberos Config"
+    assert fingerprint_finding(f) is None
 
 
-def test_audit_cloud_aws_family_falls_back_to_cloud_audit():
+def test_audit_cloud_aws_generic_not_bucketed():
     f = _FakeFinding(plugin_name="S3 bucket misconfiguration",
                      plugin_family="Audit: Cloud (AWS)")
-    fp = fingerprint_finding(f)
-    assert fp is not None
-    assert fp.component == "Cloud (AWS) Audit"
+    assert fingerprint_finding(f) is None

@@ -245,21 +245,22 @@ def _classify_vuln_class(finding):
 
 # ── Agent CVE Hunt support (audit families) ───────────────────────────────
 
-# Per-protocol fallback bucket when a CVE Hunt finding's title is too generic
-# to extract a component name. First slot = outdated_version bucket (CVE
-# present), second slot = misconfiguration bucket (no CVE).
+# Per-protocol upgrade bucket used only when a CVE-bearing audit finding's
+# title is too generic to extract a real component. Misconfiguration audit
+# findings without CVEs are intentionally NOT bucketed — each one has its own
+# specific config fix in finding.solution and should surface individually.
 _AUDIT_FAMILY_BUCKETS = {
-    "audit: windows":         ("Windows Software", "Windows Audit"),
-    "audit: ssh":             ("Linux Packages",   "SSH Audit"),
-    "audit: smb":             ("Windows Software", "SMB Hardening"),
-    "audit: kerberos":        ("Active Directory", "Kerberos Config"),
-    "audit: winrm":           ("Windows Software", "WinRM Audit"),
-    "audit: snmp":            ("Network Devices",  "SNMP Hardening"),
-    "audit: active directory": ("Active Directory", "Active Directory Hardening"),
-    "audit: ldap":            ("Active Directory", "LDAP Hardening"),
-    "audit: cloud (aws)":     ("AWS Resources",    "Cloud (AWS) Audit"),
-    "audit: cloud (azure)":   ("Azure Resources",  "Cloud (Azure) Audit"),
-    "audit: cloud (gcp)":     ("GCP Resources",    "Cloud (GCP) Audit"),
+    "audit: windows":         "Windows Software",
+    "audit: ssh":             "Linux Packages",
+    "audit: smb":             "Windows Software",
+    "audit: kerberos":        "Active Directory",
+    "audit: winrm":           "Windows Software",
+    "audit: snmp":            "Network Devices",
+    "audit: active directory": "Active Directory",
+    "audit: ldap":            "Active Directory",
+    "audit: cloud (aws)":     "AWS Resources",
+    "audit: cloud (azure)":   "Azure Resources",
+    "audit: cloud (gcp)":     "GCP Resources",
 }
 
 _AUDIT_TITLE_PREFIX_RE = re.compile(
@@ -492,9 +493,7 @@ def fingerprint_finding(finding):
     if family_lower.startswith("audit:") and (finding.cves or []):
         component = _extract_audit_component(name)
         if component is None:
-            bucket = _AUDIT_FAMILY_BUCKETS.get(family_lower)
-            if bucket:
-                component = bucket[0]
+            component = _AUDIT_FAMILY_BUCKETS.get(family_lower)
         if component:
             fp.component = component
             fp.target_version = _extract_target_version(solution)
@@ -502,40 +501,12 @@ def fingerprint_finding(finding):
             fp.group_key = (fp.component, fp.root_cause_type)
             return fp
 
-    # ── Rule 8.6: Configuration-audit family fallback ─────
-    # Catches audit-profile output (SMB / WMI / SNMP / LDAP / Policy
-    # Compliance) whose finding name doesn't match a specific misconfig
-    # regex but whose plugin_family signals a configuration check.
-    audit_family_component = None
-    if "policy compliance" in family_lower or "compliance check" in family_lower:
-        audit_family_component = "Compliance Baseline"
-    elif "snmp" in family_lower:
-        audit_family_component = "SNMP Hardening"
-    elif "ldap" in family_lower or "active directory" in family_lower:
-        audit_family_component = "LDAP Hardening"
-    elif "smb" in family_lower or "cifs" in family_lower:
-        audit_family_component = "SMB Hardening"
-    elif family_lower.startswith("settings") or family_lower == "misc.":
-        if re.search(r"\b(?:disabled|enabled|misconfigur|hardening|signing|policy|baseline)\b",
-                     name, re.I):
-            audit_family_component = "Configuration Audit"
-    if audit_family_component:
-        fp.component = audit_family_component
-        fp.root_cause_type = "misconfiguration"
-        fp.group_key = (fp.component, fp.root_cause_type)
-        return fp
-
-    # ── Rule 8.7: Catch-all audit family → misconfiguration ──
-    # Audit-profile findings (Audit: Windows / Audit: SSH / Audit: Cloud)
-    # without CVEs route to a per-protocol misconfig bucket so they
-    # don't silently disappear from aggregation.
-    if family_lower.startswith("audit:"):
-        bucket = _AUDIT_FAMILY_BUCKETS.get(family_lower)
-        if bucket:
-            fp.component = bucket[1]
-            fp.root_cause_type = "misconfiguration"
-            fp.group_key = (fp.component, fp.root_cause_type)
-            return fp
+    # Audit-family misconfiguration findings without a specific match in
+    # Rule 3 (_MISCONFIG_PATTERNS) are left un-aggregated. Each one carries
+    # its own concrete remediation in finding.solution (disable cipher X,
+    # set MaxAuthTries=N, etc.), so collapsing them behind a generic
+    # "Fix SSH Audit" / "SMB Hardening" / "Compliance Baseline" card hides
+    # the actual work. They surface individually in the findings list.
 
     # ── Rule 9: CWE / vuln-class fallback ─────────────────
     # Catches app-layer findings (EASM, agent, DAST) where the rules above

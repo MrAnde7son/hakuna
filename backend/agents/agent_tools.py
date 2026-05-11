@@ -1049,12 +1049,19 @@ def draft_campaign(db: Session, params: dict):
         return {"error": "none of the supplied finding_ids are in this org"}
     valid_ids = {f.id for f in valid_findings}
 
+    # Seed Match conditions with the explicit id list so the user sees
+    # *what* the agent matched on (and can broaden it). Sorted for stable
+    # diffs and readable rendering. The CampaignFinding rows below still
+    # pin the original set independently of the rule.
+    id_csv = ",".join(str(i) for i in sorted(valid_ids))
     campaign = Campaign(
         org_id=org_id,
         name=name,
         description=description,
         status="draft",
         finding_count=len(valid_ids),
+        query=[{"field": "finding.id", "op": "eq", "value": id_csv}],
+        query_logic="AND",
     )
     db.add(campaign)
     db.flush()
