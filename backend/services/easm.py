@@ -1409,24 +1409,26 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
             days_left = None
 
         # Severity based on expiry
+        # Expired certs break trust/availability but aren't directly exploitable —
+        # map to High, not Critical.
         if days_left is not None and days_left < 0:
-            sev, sev_label, risk = 4, "Critical", "Critical"
-        elif days_left is not None and days_left < 30:
             sev, sev_label, risk = 3, "High", "High"
-        elif days_left is not None and days_left < 90:
+        elif days_left is not None and days_left < 30:
             sev, sev_label, risk = 2, "Medium", "Medium"
+        elif days_left is not None and days_left < 90:
+            sev, sev_label, risk = 1, "Low", "Low"
         else:
             sev, sev_label, risk = 0, "Info", "None"
 
         # Priority based on cert urgency
         if days_left is not None and days_left < 0:
-            tls_priority = 9.0
+            tls_priority = 7.5
             tls_effort = "medium"
         elif days_left is not None and days_left < 30:
-            tls_priority = 7.0
+            tls_priority = 5.0
             tls_effort = "medium"
         elif days_left is not None and days_left < 90:
-            tls_priority = 4.0
+            tls_priority = 3.0
             tls_effort = "quick_win"
         else:
             tls_priority = 1.0
