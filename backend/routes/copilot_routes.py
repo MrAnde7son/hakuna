@@ -452,8 +452,13 @@ async def send_message(
     conv_id = conv.id
     user_id = current_user.id
 
-    # Dynamic tool selection: pick only relevant tools instead of all ~111
-    selected_tools = select_tools_for_message(body.message, messages[:-1])
+    # Dynamic tool selection: pick only relevant tools instead of all ~111.
+    # Pass body.context so feed-driven turns (e.g. "who owns the last critical
+    # finding") activate categories from what the feed card is about, not only
+    # the user's words.
+    selected_tools = select_tools_for_message(
+        body.message, messages[:-1], context=body.context
+    )
 
     # Build native multi-turn history for provider-level prompt caching.
     # Prior messages are sent as separate user/assistant turns instead of being

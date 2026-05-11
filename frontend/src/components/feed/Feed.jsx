@@ -5,7 +5,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import {
   Bot, AlertTriangle, AlertCircle, Info, Check, X, ExternalLink,
-  RefreshCw, Sparkles, Inbox, Send, Plug, Wand2,
+  RefreshCw, Sparkles, Inbox, Send, Plug, Wand2, Trash2,
 } from 'lucide-react'
 
 import {
@@ -43,6 +43,7 @@ const APPLY_INLINE_OPS = {
 import {
   Card, EmptyState, Button, Pill, SeverityBadge,
 } from '../shared/ui.jsx'
+import { tryRenderRichBlock } from '../copilot/RichBlockRenderer.jsx'
 
 // ── Markdown renderer (mirrors CopilotPanel's inline style) ─────────
 const mdComponents = {
@@ -54,9 +55,26 @@ const mdComponents = {
   ol: ({ children }) => <ol style={{ margin: '4px 0', paddingLeft: 18, color: 'var(--text-secondary)' }}>{children}</ol>,
   li: ({ children }) => <li style={{ margin: '2px 0' }}>{children}</li>,
   strong: ({ children }) => <strong style={{ fontWeight: 700, color: 'var(--text-primary)' }}>{children}</strong>,
-  code: ({ children }) => (
-    <code style={{ background: 'var(--bg-secondary)', padding: '1px 5px', borderRadius: 3, fontSize: 12, fontFamily: 'monospace', color: 'var(--text-primary)' }}>{children}</code>
-  ),
+  // Mirror CopilotPanel: passthrough `pre` so the `code` handler owns the
+  // block wrapper and can swap fenced JSON for a rich block (stat_cards,
+  // finding_list, charts, …) instead of dumping raw JSON.
+  pre: ({ children }) => <>{children}</>,
+  code: ({ className, children }) => {
+    const match = /language-(\w+)/.exec(className || '')
+    const raw = String(children).replace(/\n$/, '')
+    const isBlock = !!match || raw.includes('\n')
+    if (!isBlock) {
+      return <code style={{ background: 'var(--bg-secondary)', padding: '1px 5px', borderRadius: 3, fontSize: 12, fontFamily: 'monospace', color: 'var(--text-primary)' }}>{children}</code>
+    }
+    const lang = match ? match[1] : ''
+    const rich = tryRenderRichBlock(lang, raw)
+    if (rich) return rich
+    return (
+      <pre style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 6, padding: 8, overflowX: 'auto', fontSize: 12, fontFamily: 'monospace', margin: '6px 0', color: 'var(--text-primary)' }}>
+        <code>{children}</code>
+      </pre>
+    )
+  },
   blockquote: ({ children }) => (
     <blockquote style={{ borderLeft: '3px solid var(--accent)', paddingLeft: 10, margin: '6px 0', color: 'var(--text-muted)' }}>{children}</blockquote>
   ),
@@ -392,14 +410,50 @@ function FeedEntryCard({ entry, onActed, onMarkedRead }) {
 // so the thread survives page reload.
 const FEED_CONV_KEY = 'hakuna.feed.copilot_conv_id'
 
+// Suggested starter prompts shown when the thread is empty. Kept locally so
+// they can be tuned without touching i18n; the localized chat.placeholder
+// remains the source of truth for tone.
+const FEED_CHAT_SUGGESTIONS = [
+  'Summarize my top critical findings',
+  'What changed in the last scan?',
+  'Draft a campaign for unpatched TLS',
+]
+
+// Three-dot bouncing indicator shown while the assistant is generating.
+function ThinkingDots() {
+  return (
+    <div
+      aria-label="Thinking"
+      style={{
+        display: 'inline-flex', alignItems: 'center', gap: 4,
+        padding: '10px 14px', borderRadius: 14,
+        background: 'var(--bg-card)', border: '1px solid var(--border)',
+      }}
+    >
+      {[0, 1, 2].map(i => (
+        <span
+          key={i}
+          style={{
+            width: 6, height: 6, borderRadius: 3,
+            background: 'var(--text-muted)',
+            animation: `feedchat-bounce 1.2s ${i * 0.15}s infinite ease-in-out`,
+          }}
+        />
+      ))}
+    </div>
+  )
+}
+
 function FeedChat({ contextEntryCount }) {
   const { t } = useTranslation()
   const [messages, setMessages] = useState([])  // {role, content, error?}
   const [streamText, setStreamText] = useState('')
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
+  const [focused, setFocused] = useState(false)
   const convIdRef = useRef(null)
   const threadRef = useRef(null)
+  const inputRef = useRef(null)
 
   // Restore the cached conversation (if any) so the thread persists across
   // reload. A 404 means the conversation was deleted — drop the stale id
@@ -434,8 +488,8 @@ function FeedChat({ contextEntryCount }) {
     return conv.id
   }
 
-  const submit = useCallback(async () => {
-    const text = input.trim()
+  const submit = useCallback(async (override) => {
+    const text = (typeof override === 'string' ? override : input).trim()
     if (!text || busy) return
     setMessages(prev => [...prev, { role: 'user', content: text }])
     setInput('')
@@ -486,100 +540,245 @@ function FeedChat({ contextEntryCount }) {
     setStreamText('')
     convIdRef.current = null
     localStorage.removeItem(FEED_CONV_KEY)
+    inputRef.current?.focus()
   }
 
   const showThread = messages.length > 0 || busy
+  const canSend = input.trim() && !busy
 
   return (
     <Card style={{ padding: 0, marginBottom: 16, overflow: 'hidden' }}>
-      <div>
-        {showThread && (
-          <div
-            ref={threadRef}
-            style={{
-              maxHeight: 360, overflowY: 'auto',
-              padding: '12px 16px',
-              display: 'flex', flexDirection: 'column', gap: 10,
-              background: 'var(--bg-secondary)',
-            }}
-          >
-            {messages.map((m, i) => (
+      <style>{`
+        @keyframes feedchat-bounce {
+          0%, 80%, 100% { transform: translateY(0); opacity: 0.4 }
+          40% { transform: translateY(-4px); opacity: 1 }
+        }
+        .feedchat-suggest {
+          padding: 6px 12px; border-radius: 999px;
+          background: var(--bg-card); border: 1px solid var(--border);
+          color: var(--text-secondary); font-size: 12px; font-weight: 500;
+          cursor: pointer; transition: all 0.15s;
+          display: inline-flex; align-items: center; gap: 6px;
+        }
+        .feedchat-suggest:hover {
+          border-color: var(--accent); color: var(--accent);
+          background: var(--accent)10;
+        }
+        .feedchat-clear {
+          display: inline-flex; align-items: center; gap: 4px;
+          background: transparent; border: none; cursor: pointer;
+          color: var(--text-muted); font-size: 11px; font-weight: 500;
+          padding: 4px 8px; border-radius: 5px; transition: all 0.15s;
+        }
+        .feedchat-clear:hover { color: var(--text-primary); background: var(--bg-hover) }
+        .feedchat-clear:disabled { opacity: 0.5; cursor: default }
+      `}</style>
+
+      {/* Header strip */}
+      <div style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        gap: 12, padding: '12px 16px',
+        background: 'linear-gradient(180deg, var(--bg-secondary) 0%, var(--bg-card) 100%)',
+        borderBottom: showThread ? '1px solid var(--border)' : 'none',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+          <div style={{
+            width: 28, height: 28, borderRadius: 14, flexShrink: 0,
+            background: 'var(--accent)15',
+            display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+          }}>
+            <Sparkles size={14} color="var(--accent)" />
+          </div>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)', lineHeight: 1.2 }}>
+              {t('feed.chat.title')}
+            </div>
+            <div style={{
+              fontSize: 11, color: 'var(--text-muted)', marginTop: 2,
+              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+            }}>
+              {t('feed.chat.subtitle')}
+            </div>
+          </div>
+        </div>
+        {messages.length > 0 && (
+          <button onClick={clear} disabled={busy} className="feedchat-clear" title={t('feed.chat.clear')}>
+            <Trash2 size={11} />
+            {t('feed.chat.clear')}
+          </button>
+        )}
+      </div>
+
+      {/* Thread */}
+      {showThread && (
+        <div
+          ref={threadRef}
+          style={{
+            maxHeight: 380, overflowY: 'auto',
+            padding: '16px 16px 8px',
+            display: 'flex', flexDirection: 'column', gap: 12,
+            background: 'var(--bg-secondary)',
+          }}
+        >
+          {messages.map((m, i) => (
+            m.role === 'user' ? (
               <div
                 key={i}
                 style={{
-                  alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start',
-                  maxWidth: '85%',
-                  padding: '8px 12px',
-                  borderRadius: 10,
-                  background: m.role === 'user' ? 'var(--accent)' : 'var(--bg-card)',
-                  color: m.role === 'user' ? '#fff' : 'var(--text-primary)',
-                  border: m.role === 'user' ? 'none' : '1px solid var(--border)',
+                  alignSelf: 'flex-end', maxWidth: '78%',
+                  padding: '9px 13px',
+                  borderRadius: '14px 14px 4px 14px',
+                  background: 'var(--accent)',
+                  color: '#fff',
                   fontSize: 13, lineHeight: 1.5,
+                  whiteSpace: 'pre-wrap',
+                  boxShadow: '0 1px 2px rgba(0,0,0,0.06)',
                 }}
               >
-                {m.role === 'assistant' ? (
-                  <>
-                    {m.error && (
-                      <div style={{ color: 'var(--danger)', fontSize: 11, marginBottom: 4 }}>
-                        {t('feed.chat.failed')}
-                      </div>
-                    )}
-                    <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>
-                      {m.content || ''}
-                    </ReactMarkdown>
-                  </>
-                ) : (
-                  <div style={{ whiteSpace: 'pre-wrap' }}>{m.content}</div>
-                )}
+                {m.content}
               </div>
-            ))}
-            {busy && (streamText ? (
+            ) : (
+              <div key={i} style={{
+                alignSelf: 'flex-start', maxWidth: '88%',
+                display: 'flex', gap: 8, alignItems: 'flex-start',
+              }}>
+                <div style={{
+                  width: 24, height: 24, borderRadius: 12, flexShrink: 0,
+                  background: 'var(--bg-card)', border: '1px solid var(--border)',
+                  display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                  marginTop: 2,
+                }}>
+                  <Bot size={13} color="var(--accent)" />
+                </div>
+                <div style={{
+                  padding: '8px 13px',
+                  borderRadius: '14px 14px 14px 4px',
+                  background: 'var(--bg-card)',
+                  color: 'var(--text-primary)',
+                  border: `1px solid ${m.error ? 'var(--danger)40' : 'var(--border)'}`,
+                  fontSize: 13, lineHeight: 1.5,
+                  flex: 1, minWidth: 0,
+                }}>
+                  {m.error && (
+                    <div style={{ color: 'var(--danger)', fontSize: 11, fontWeight: 600, marginBottom: 4 }}>
+                      {t('feed.chat.failed')}
+                    </div>
+                  )}
+                  <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>
+                    {m.content || ''}
+                  </ReactMarkdown>
+                </div>
+              </div>
+            )
+          ))}
+          {busy && (streamText ? (
+            <div style={{
+              alignSelf: 'flex-start', maxWidth: '88%',
+              display: 'flex', gap: 8, alignItems: 'flex-start',
+            }}>
               <div style={{
-                alignSelf: 'flex-start', maxWidth: '85%',
-                padding: '8px 12px', borderRadius: 10,
+                width: 24, height: 24, borderRadius: 12, flexShrink: 0,
+                background: 'var(--bg-card)', border: '1px solid var(--border)',
+                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                marginTop: 2,
+              }}>
+                <Bot size={13} color="var(--accent)" />
+              </div>
+              <div style={{
+                padding: '8px 13px',
+                borderRadius: '14px 14px 14px 4px',
                 background: 'var(--bg-card)', color: 'var(--text-primary)',
-                border: '1px solid var(--border)', fontSize: 13, lineHeight: 1.5,
+                border: '1px solid var(--border)',
+                fontSize: 13, lineHeight: 1.5, flex: 1, minWidth: 0,
               }}>
                 <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>
                   {streamText}
                 </ReactMarkdown>
               </div>
-            ) : (
+            </div>
+          ) : (
+            <div style={{ alignSelf: 'flex-start', display: 'flex', gap: 8, alignItems: 'flex-start' }}>
               <div style={{
-                alignSelf: 'flex-start', fontSize: 12, color: 'var(--text-muted)',
-                fontStyle: 'italic', padding: '4px 8px',
+                width: 24, height: 24, borderRadius: 12, flexShrink: 0,
+                background: 'var(--bg-card)', border: '1px solid var(--border)',
+                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                marginTop: 2,
               }}>
-                {t('feed.chat.thinking')}
+                <Bot size={13} color="var(--accent)" />
               </div>
-            ))}
-          </div>
-        )}
+              <ThinkingDots />
+            </div>
+          ))}
+        </div>
+      )}
 
-        <div style={{ display: 'flex', gap: 8, padding: 12, alignItems: 'center' }}>
+      {/* Suggested prompts — only on the empty state */}
+      {!showThread && (
+        <div style={{
+          padding: '4px 16px 0',
+          display: 'flex', flexWrap: 'wrap', gap: 6,
+        }}>
+          {FEED_CHAT_SUGGESTIONS.map((s) => (
+            <button
+              key={s}
+              type="button"
+              className="feedchat-suggest"
+              onClick={() => submit(s)}
+              disabled={busy}
+            >
+              <Sparkles size={11} />
+              {s}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Composer */}
+      <div style={{ padding: 12 }}>
+        <div style={{
+          display: 'flex', gap: 8, alignItems: 'center',
+          padding: '4px 4px 4px 14px',
+          background: 'var(--bg-card)',
+          border: `1px solid ${focused ? 'var(--accent)' : 'var(--border)'}`,
+          borderRadius: 999,
+          transition: 'border-color 0.15s, box-shadow 0.15s',
+          boxShadow: focused ? '0 0 0 3px var(--accent)15' : 'none',
+        }}>
           <input
+            ref={inputRef}
             type="text"
             value={input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={onKeyDown}
+            onFocus={() => setFocused(true)}
+            onBlur={() => setFocused(false)}
             placeholder={t('feed.chat.placeholder')}
             disabled={busy}
             style={{
-              flex: 1, height: 36,
-              padding: '0 10px', borderRadius: 6,
-              border: '1px solid var(--border)', background: 'var(--bg-card)',
+              flex: 1, height: 34,
+              padding: 0,
+              border: 'none', background: 'transparent',
               color: 'var(--text-primary)', fontSize: 13, fontFamily: 'inherit',
-              outline: 'none',
+              outline: 'none', minWidth: 0,
             }}
           />
-          <Button onClick={submit} variant="primary" size="sm" disabled={busy || !input.trim()}>
-            <Send size={13} />
-            {t('feed.chat.send')}
-          </Button>
-          {messages.length > 0 && (
-            <Button onClick={clear} variant="ghost" size="sm" disabled={busy}>
-              {t('feed.chat.clear')}
-            </Button>
-          )}
+          <button
+            type="button"
+            onClick={() => submit()}
+            disabled={!canSend}
+            aria-label={t('feed.chat.send')}
+            title={t('feed.chat.send')}
+            style={{
+              width: 32, height: 32, borderRadius: 16, border: 'none',
+              background: canSend ? 'var(--accent)' : 'var(--bg-secondary)',
+              color: canSend ? '#fff' : 'var(--text-muted)',
+              cursor: canSend ? 'pointer' : 'default',
+              display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+              flexShrink: 0, transition: 'background 0.15s, color 0.15s',
+            }}
+          >
+            <Send size={14} />
+          </button>
         </div>
       </div>
     </Card>
@@ -591,6 +790,7 @@ export default function Feed() {
   const { t } = useTranslation()
   const [entries, setEntries] = useState([])
   const [loading, setLoading] = useState(true)
+  const [hasLoadedOnce, setHasLoadedOnce] = useState(false)
   const [error, setError] = useState(null)
   const [statusFilter, setStatusFilter] = useState('open')
   const reloadRef = useRef(0)
@@ -613,6 +813,7 @@ export default function Feed() {
       setError(e.message || t('feed.loadFailed'))
     } finally {
       setLoading(false)
+      setHasLoadedOnce(true)
     }
   }, [statusFilter, t])
 
@@ -672,7 +873,7 @@ export default function Feed() {
     setEntries((prev) => prev.map((e) => e.id === entryId ? { ...e, is_read: true } : e))
   }
 
-  const empty = !loading && entries.length === 0
+  const empty = hasLoadedOnce && entries.length === 0
 
   return (
     <div className="feed-page">
@@ -725,7 +926,7 @@ export default function Feed() {
         </div>
       )}
 
-      {loading && entries.length === 0 && !error && (
+      {loading && !hasLoadedOnce && entries.length === 0 && !error && (
         <div style={{ padding: '64px 0', textAlign: 'center', color: 'var(--text-muted)' }}>
           {t('feed.loading')}
         </div>

@@ -418,6 +418,10 @@ def _deferred_startup():
     can bind the port and pass Render's port-scan check immediately."""
     import threading, os
     logger.info("Deferred startup running in background thread: %s", threading.current_thread().name)
+    role = os.getenv("HAKUNA_ROLE", "").lower()
+    if role == "api":
+        logger.info("HAKUNA_ROLE=api — skipping in-process schedulers (owned by hakuna-scheduler service)")
+        return
     if not _try_acquire_scheduler_leadership():
         logger.info("Scheduler leadership held by another worker (pid=%d) — skipping scheduler startup", os.getpid())
         return

@@ -322,14 +322,23 @@ TOOL_CATEGORIES = {
 def select_tools_for_message(
     message: str,
     conversation_history: Optional[list] = None,
+    context: Optional[str] = None,
 ) -> list:
     """Pick relevant tools based on keywords in the user message and recent history.
+
+    ``context`` is the per-turn page-context block (e.g. the feed copilot's
+    recent-feed summary) that the caller prepends to the LLM input but does not
+    persist into history. Including it here lets feed-driven questions like
+    "who owns the last critical finding" activate the right categories from
+    what the feed card is about, not just the user's words.
 
     Returns a deduplicated list of tool names: core + matched categories,
     or core + fallback if nothing matched.
     """
-    # Build a combined text blob from the current message + recent history
+    # Build a combined text blob from the current message + recent history + page context
     text = message.lower()
+    if context:
+        text += " " + context.lower()
     if conversation_history:
         for msg in conversation_history[-6:]:
             content = msg.get("content", "")
