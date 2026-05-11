@@ -636,8 +636,22 @@ def _deferred_startup():
         finally:
             _db.close()
     _intel_scheduler.add_job(_run_patch_catalog_sync, _CronTrigger(hour=3, minute=0), id="patch_catalog_sync", replace_existing=True)
+
+    from threat_intel.threat_intel_sync import sync_nvd_scores as _sync_nvd_scores
+    _nvd_backfill_batch = int(os.getenv("NVD_BACKFILL_BATCH", "300"))
+    def _run_nvd_backfill():
+        from core.database import SessionLocal as _SL
+        _db = _SL()
+        try:
+            _sync_nvd_scores(_db, batch_size=_nvd_backfill_batch)
+        except Exception as _exc:
+            logger.warning("Scheduled NVD backfill failed: %s", _exc)
+        finally:
+            _db.close()
+    _intel_scheduler.add_job(_run_nvd_backfill, _IntervalTrigger(hours=1), id="nvd_backfill", replace_existing=True)
+
     _intel_scheduler.start()
-    logger.info("Intel auto-update scheduled (every 24h) + patch catalog sync (daily 3 AM)")
+    logger.info("Intel auto-update scheduled (every 24h) + patch catalog sync (daily 3 AM) + NVD backfill (hourly, batch=%d)", _nvd_backfill_batch)
     # Schedule audit log retention purge (90-day TTL, runs daily)
     from core.audit import purge_expired_audit_logs
     _audit_scheduler = _BGScheduler()

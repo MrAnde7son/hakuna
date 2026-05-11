@@ -530,14 +530,21 @@ def sync_cves_for_cpes(db, cpe_list: Optional[List[str]] = None) -> dict:
         return {"products_queried": 0, "cves_added": 0, "cves_updated": 0}
 
     # Step 2: Filter out products already covered in threat_cves.
-    # Check if any CVE's affected_products JSON contains the product name.
-    from sqlalchemy import cast, String
+    from sqlalchemy import cast
+    from sqlalchemy.dialects.postgresql import JSONB
     uncovered = []
     for vendor, product in products_to_query:
-        count = db.query(ThreatCVE).filter(
-            cast(ThreatCVE.affected_products, String).like(f'%"{product}"%'),
-        ).limit(1).count()
-        if count == 0:
+        exists = (
+            db.query(ThreatCVE.id)
+            .filter(
+                cast(ThreatCVE.affected_products, JSONB).contains(
+                    [{"vendor": vendor, "product": product}]
+                )
+            )
+            .limit(1)
+            .first()
+        )
+        if exists is None:
             uncovered.append((vendor, product))
 
     if not uncovered:
