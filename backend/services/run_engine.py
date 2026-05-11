@@ -132,6 +132,8 @@ async def execute(db: Session, integration_id: str, triggered_by: str = "manual"
         # Fire workflow triggers for integration completion
         _fire_integration_workflows(db, integration, run)
 
+        _post_integration_feed_card(db, integration, run)
+
     except Exception as e:
         logger.exception("Run %s failed", run.id)
         run.status = "error"
@@ -147,7 +149,19 @@ async def execute(db: Session, integration_id: str, triggered_by: str = "manual"
         # Fire workflow triggers for integration failure
         _fire_integration_workflows(db, integration, run)
 
+        _post_integration_feed_card(db, integration, run)
+
     return run.id
+
+
+def _post_integration_feed_card(db: Session, integration: Integration, run: IntegrationRun):
+    """Post a deterministic activity-feed card for the run. Best-effort —
+    never let feed posting break the run path."""
+    try:
+        from services.feed_emitters import post_integration_run_card
+        post_integration_run_card(db, integration=integration, run=run)
+    except Exception:
+        logger.warning("Failed to post integration_run feed card", exc_info=True)
 
 
 def _update_cursor_state(db: Session, integration: Integration, run: IntegrationRun):

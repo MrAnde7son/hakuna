@@ -403,6 +403,21 @@ resource "google_cloud_run_v2_service" "api" {
     google_secret_manager_secret_version.stripe_webhook_secret,
     google_project_iam_member.api_roles,
   ]
+
+  # deploy.sh / GitHub Actions own the API image tag and inject runtime env
+  # vars (GOOGLE_CLIENT_ID, GOOGLE_INTEGRATION_CLIENT_ID, OAUTH_CLIENT_SECRET,
+  # HAKUNA_SCANNER_URL, VM_SCANNER_URL) via `gcloud run services update
+  # --update-env-vars`. Without this guard, `terraform apply` would clobber
+  # those values and roll a broken revision (incident 2026-05-11). Terraform
+  # remains authoritative for the service shape — resources, scaling, probes,
+  # VPC, sidecar, IAM. To change env or image here, either remove the matching
+  # entry from ignore_changes or update via deploy.sh / CI.
+  lifecycle {
+    ignore_changes = [
+      template[0].containers[0].image,
+      template[0].containers[0].env,
+    ]
+  }
 }
 
 # ── Allow load balancer to invoke Cloud Run ───────────────────────────────────

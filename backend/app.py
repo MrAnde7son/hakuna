@@ -1736,6 +1736,21 @@ def _run_scan_ingest(
                 entity_type="scan", entity_id=scan.id,
                 metadata={"count": new_assets, "scan_name": scan.scan_name or filename})
 
+        try:
+            from services.feed_emitters import post_scan_ingest_card
+            post_scan_ingest_card(
+                db,
+                org_id=effective_org_id,
+                scan=scan,
+                source_type=source_parser.source_type,
+                total_assets=total_assets,
+                total_findings=total_findings,
+                crit_high=crit_high,
+                filename=filename,
+            )
+        except Exception:
+            logger.exception("Failed to post scan_ingested feed card for scan %s", scan.id)
+
         scan.status = "completed"
 
         # ── Activation milestone ──
