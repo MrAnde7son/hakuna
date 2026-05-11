@@ -727,24 +727,29 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
         ) : (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 12 }}>
             {connectors.map(c => (
-              <Card key={c.id} onClick={() => handleSelectConnector(c.id)} style={{ cursor: 'pointer', padding: 16 }}>
-                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 8 }}>
+              <Card key={c.id} onClick={() => handleSelectConnector(c.id)} style={{ cursor: 'pointer', padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }} title={c.name}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                   <VendorLogo src={c.logo} size={32} />
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-                      <div style={{ fontWeight: 600, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.name}</div>
-                      {c.category && (
-                        <span style={{
-                          fontSize: 9, fontWeight: 600, letterSpacing: 0.3, textTransform: 'uppercase',
-                          color: 'var(--text-muted)', padding: '2px 6px', borderRadius: 4,
-                          border: '1px solid var(--border)', whiteSpace: 'nowrap', flexShrink: 0,
-                        }}>{c.category}</span>
-                      )}
-                    </div>
-                    <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{c.description}</div>
-                  </div>
+                  <div style={{
+                    flex: 1, minWidth: 0, fontWeight: 600, fontSize: 13, lineHeight: 1.3,
+                    display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
+                    overflow: 'hidden', wordBreak: 'break-word',
+                  }}>{c.name}</div>
                 </div>
-                <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                {c.description && (
+                  <div style={{
+                    fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.4,
+                    display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
+                  }}>{c.description}</div>
+                )}
+                <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 'auto' }}>
+                  {c.category && (
+                    <span style={{
+                      fontSize: 9, fontWeight: 600, letterSpacing: 0.3, textTransform: 'uppercase',
+                      color: 'var(--text-muted)', padding: '2px 6px', borderRadius: 4,
+                      border: '1px solid var(--border)', whiteSpace: 'nowrap',
+                    }}>{c.category}</span>
+                  )}
                   <Badge bg={DIRECTION_BADGE[c.direction]?.bg} text={DIRECTION_BADGE[c.direction]?.text} label={c.direction.toUpperCase()} />
                   <Badge bg={(ENTITY_BADGE[c.entity] || DEFAULT_ENTITY_BADGE).bg} text={(ENTITY_BADGE[c.entity] || DEFAULT_ENTITY_BADGE).text} label={c.entity.replace(/_/g, ' ').toUpperCase()} />
                   <Badge bg="var(--border)" text="var(--text-muted)" label={c.transport_type.toUpperCase()} />
