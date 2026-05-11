@@ -1821,17 +1821,30 @@ export function SaveAsRuleModal({ conditions = [], scanId, onClose, onCreated })
 // ── Source / Data-source helpers ──────────────────────────────────────
 
 export const SOURCE_TYPES = {
-  nessus:     { label: 'Nessus',   color: '#6366f1', bg: '#6366f122' },
-  easm:       { label: 'EASM',     color: '#0ea5e9', bg: '#0ea5e922' },
-  qualys:     { label: 'Qualys',   color: '#8b5cf6', bg: '#8b5cf622' },
-  rapid7:     { label: 'Rapid7',   color: '#f97316', bg: '#f9731622' },
-  openvas:    { label: 'OpenVAS',  color: '#22c55e', bg: '#22c55e22' },
-  vm_scanner: { label: 'VM',       color: '#ec4899', bg: '#ec489922' },
-  audit_agent:{ label: 'Audit',    color: '#14b8a6', bg: '#14b8a622' },
+  nessus:             { label: 'Nessus',   color: '#6366f1', bg: '#6366f122' },
+  easm:               { label: 'EASM',     color: '#0ea5e9', bg: '#0ea5e922' },
+  qualys:             { label: 'Qualys',   color: '#8b5cf6', bg: '#8b5cf622' },
+  rapid7:             { label: 'Rapid7',   color: '#f97316', bg: '#f9731622' },
+  openvas:            { label: 'OpenVAS',  color: '#22c55e', bg: '#22c55e22' },
+  vm_scanner:         { label: 'VM',       color: '#ec4899', bg: '#ec489922' },
+  audit_agent:        { label: 'Audit',    color: '#14b8a6', bg: '#14b8a622' },
+  // Identity discovery — the data origin is LinkedIn (via DDGS SERP);
+  // label after the source the user recognizes, not the pipeline name.
+  // Branded LinkedIn blue so it visually anchors the asset type.
+  identity_discovery: { label: 'LinkedIn', color: '#0a66c2', bg: '#0a66c222' },
 }
 
 export function getSourceMeta(type) {
-  return SOURCE_TYPES[type] || { label: type || 'Unknown', color: '#71717a', bg: '#71717a22' }
+  // Source-system strings may carry a provider suffix (e.g.
+  // ``identity_discovery:linkedin`` from observations) — match on the
+  // pipeline prefix so any provider lights up the same badge.
+  const direct = SOURCE_TYPES[type]
+  if (direct) return direct
+  if (typeof type === 'string') {
+    const prefix = type.split(':', 1)[0]
+    if (SOURCE_TYPES[prefix]) return SOURCE_TYPES[prefix]
+  }
+  return { label: type || 'Unknown', color: '#71717a', bg: '#71717a22' }
 }
 
 export function SourceBadge({ source }) {

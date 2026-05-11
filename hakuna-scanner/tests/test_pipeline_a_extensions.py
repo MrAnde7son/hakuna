@@ -413,3 +413,29 @@ class TestPipelineBHandoff:
         assert "confirmed_alive" in query
         assert "last_validated_at" in query
         assert "7 days" in query
+
+
+class TestJsonbNulStripping:
+    """`_jsonb_dumps` strips NULs that would otherwise crash a jsonb cast."""
+
+    def test_strips_raw_nul_char(self):
+        from app.ingest._jsonb import jsonb_dumps as _jsonb_dumps
+
+        out = _jsonb_dumps({"body": 'content:"\x00prefix"'})
+        assert "\\u0000" not in out
+        assert "\x00" not in out
+        assert json.loads(out) == {"body": 'content:"prefix"'}
+
+    def test_strips_literal_backslash_u0000_substring(self):
+        # The httpx_full payload that triggered the prod bug had the literal
+        # 6-char sequence  inside a captured CSS body.
+        from app.ingest._jsonb import jsonb_dumps as _jsonb_dumps
+
+        out = _jsonb_dumps({"body": r'content:" after"'})
+        assert "\\u0000" not in out
+
+    def test_preserves_normal_unicode(self):
+        from app.ingest._jsonb import jsonb_dumps as _jsonb_dumps
+
+        out = _jsonb_dumps({"title": "héllo — wörld"})
+        assert json.loads(out) == {"title": "héllo — wörld"}

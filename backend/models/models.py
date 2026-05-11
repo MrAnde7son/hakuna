@@ -37,6 +37,11 @@ class Organization(Base):
     domain_join_mode = Column(String(20), default="disabled", nullable=False)
     domain_join_default_role = Column(String(50), default="viewer", nullable=False)
 
+    # Identity discovery (EASM enrichment). Off by default — the discovery
+    # worker hard-skips unless this flag AND an active DataProcessingConsent
+    # row for purpose='identity_discovery' both exist.
+    identity_discovery_enabled = Column(Boolean, default=False, nullable=False)
+
     # Stripe billing
     stripe_customer_id = Column(String, nullable=True, index=True)
     stripe_subscription_id = Column(String, nullable=True)
@@ -174,6 +179,62 @@ class OrgJoinRequest(Base):
 
     __table_args__ = (
         Index("ix_org_join_requests_org_status", "org_id", "status"),
+    )
+
+
+class DataProcessingConsent(Base):
+    """Typed consent ledger for processing purposes that need explicit
+    lawful-basis acknowledgment (LinkedIn ToS / GDPR for identity
+    discovery; future purposes can reuse the same shape).
+
+    ``acknowledgment_text`` snapshots the legal copy at grant time so the
+    record stays accurate even if the wording changes. Multiple rows per
+    (org, purpose) are allowed — the active one is the most recent
+    non-revoked, non-expired row.
+    """
+    __tablename__ = "data_processing_consents"
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False)
+    purpose = Column(String(64), nullable=False)
+    granted_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    granted_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    expires_at = Column(DateTime, nullable=True)
+    revoked_at = Column(DateTime, nullable=True)
+    acknowledgment_text = Column(Text, nullable=False)
+    meta = Column("metadata", JSON, nullable=True)
+
+    organization = relationship("Organization")
+    granted_by = relationship("User", foreign_keys=[granted_by_user_id])
+
+    __table_args__ = (
+        Index("ix_consents_org_purpose", "org_id", "purpose"),
+    )
+
+
+class IdentitySuppression(Base):
+    """GDPR Article 17 erasure list — slugs the discovery worker must skip.
+
+    Hard-deleting a person's row from ``assets`` doesn't stop tomorrow's
+    discovery run from re-creating it; this is the durable signal that
+    prevents rediscovery. Per-org so erasure in one tenant doesn't leak
+    into others.
+    """
+    __tablename__ = "identity_suppressions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False)
+    source = Column(String(32), nullable=False)         # e.g. "linkedin"
+    slug = Column(String(255), nullable=False)
+    suppressed_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    suppressed_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    reason = Column(Text, nullable=True)
+
+    organization = relationship("Organization")
+    suppressed_by = relationship("User", foreign_keys=[suppressed_by_user_id])
+
+    __table_args__ = (
+        UniqueConstraint("org_id", "source", "slug", name="uq_identity_suppression"),
     )
 
 

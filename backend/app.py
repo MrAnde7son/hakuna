@@ -94,6 +94,7 @@ from routes.mcp_routes import router as mcp_router
 from routes.feed_routes import router as feed_router
 from routes.api_token_routes import router as api_token_router
 from routes.org_memory_routes import router as org_memory_router
+from routes.identity_discovery_routes import router as identity_discovery_router
 from routes.billing_routes import router as billing_router
 from routes.copilot_routes import router as copilot_router
 from routes.workflow_routes import router as workflow_router
@@ -332,6 +333,7 @@ app.include_router(mcp_router)
 app.include_router(feed_router)
 app.include_router(api_token_router)
 app.include_router(org_memory_router)
+app.include_router(identity_discovery_router)
 app.include_router(billing_router)
 app.include_router(workflow_router)
 app.include_router(notification_router)
@@ -650,8 +652,52 @@ def _deferred_startup():
             _db.close()
     _intel_scheduler.add_job(_run_nvd_backfill, _IntervalTrigger(hours=1), id="nvd_backfill", replace_existing=True)
 
+    # Refresh corporate profile data (industry, employee band, founded year,
+    # homepage) for every org with a linked CorporateEntity. Initial fetch
+    # happens after the first EASM scan in services/easm.py; this keeps
+    # it current as Wikidata is edited. Monthly is plenty — corporate
+    # facts rarely change, and the helper protects operator-set onboarding
+    # values from being overwritten.
+    from services.corporate_refresh import refresh_all_corporate_profiles as _refresh_corp
+    def _run_corporate_refresh():
+        from core.database import SessionLocal as _SL
+        _db = _SL()
+        try:
+            _refresh_corp(_db)
+        except Exception as _exc:
+            logger.warning("Scheduled corporate refresh failed: %s", _exc)
+        finally:
+            _db.close()
+    _intel_scheduler.add_job(
+        _run_corporate_refresh,
+        _CronTrigger(day=1, hour=5, minute=0),
+        id="corporate_profile_refresh",
+        replace_existing=True,
+    )
+
+    # Identity discovery — weekly fan-out across orgs that have opted in
+    # (kill switch + active consent both required, double-checked per org
+    # inside the dispatcher). Sunday early morning to avoid colliding with
+    # the daily discovery / enrichment passes.
+    from services.identity_discovery import run_weekly_dispatch as _identity_dispatch
+    def _run_identity_dispatch():
+        from core.database import SessionLocal as _SL
+        _db = _SL()
+        try:
+            _identity_dispatch(_db)
+        except Exception as _exc:
+            logger.warning("Scheduled identity discovery dispatch failed: %s", _exc)
+        finally:
+            _db.close()
+    _intel_scheduler.add_job(
+        _run_identity_dispatch,
+        _CronTrigger(day_of_week="sun", hour=6, minute=0),
+        id="identity_discovery_dispatch",
+        replace_existing=True,
+    )
+
     _intel_scheduler.start()
-    logger.info("Intel auto-update scheduled (every 24h) + patch catalog sync (daily 3 AM) + NVD backfill (hourly, batch=%d)", _nvd_backfill_batch)
+    logger.info("Intel auto-update scheduled (every 24h) + patch catalog sync (daily 3 AM) + NVD backfill (hourly, batch=%d) + corporate refresh (monthly) + identity discovery (weekly)", _nvd_backfill_batch)
     # Schedule audit log retention purge (90-day TTL, runs daily)
     from core.audit import purge_expired_audit_logs
     _audit_scheduler = _BGScheduler()

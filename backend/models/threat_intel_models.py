@@ -565,6 +565,14 @@ class CorporateEntity(Base):
     # Org linkage
     org_id = Column(Integer, index=True, nullable=True)  # Link to Hakuna organization
 
+    # Company profile (populated from Wikidata; auto-fills onboarding gaps).
+    # User-set onboarding values always win — see services/company_profile.py.
+    industry = Column(String)
+    # Banded: '1-10' | '11-50' | '51-200' | '201-1000' | '1k-10k' | '10k+'.
+    employee_count_band = Column(String)
+    founded_year = Column(Integer)
+    homepage_url = Column(String)
+
     raw_data = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

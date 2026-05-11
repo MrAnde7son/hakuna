@@ -3600,6 +3600,40 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
                 logger.exception(f"Corporate structure sync failed for domain '{domain}' (non-fatal)")
                 db.rollback()
 
+            # Identity discovery (LinkedIn via DDGS). The function fails closed
+            # if consent / kill switch is missing, so it's safe to call
+            # unconditionally — orgs that haven't opted in get a fast no-op.
+            # Internal 7-day cooldown prevents re-querying DDGS when an org
+            # runs back-to-back EASM scans; the weekly cron picks up the
+            # rest. Wrapped non-fatal — DDGS flakiness shouldn't fail an
+            # EASM scan.
+            try:
+                from services.identity_discovery.discovery import (
+                    run_identity_discovery,
+                )
+                from services.identity_discovery.scheduler import (
+                    _last_successful_run_at, _MIN_INTERVAL_BETWEEN_SUCCESSFUL_RUNS,
+                )
+                from datetime import datetime as _dt
+
+                last = _last_successful_run_at(db, org.id)
+                cutoff = _dt.utcnow() - _MIN_INTERVAL_BETWEEN_SUCCESSFUL_RUNS
+                if last is None or last <= cutoff:
+                    id_result = run_identity_discovery(db, org.id)
+                    logger.info(
+                        f"EASM identity discovery for '{domain}': {id_result}"
+                    )
+                else:
+                    logger.info(
+                        f"EASM identity discovery skipped for '{domain}' "
+                        f"(last run {last.isoformat()} within cooldown)"
+                    )
+            except Exception:
+                logger.exception(
+                    f"Identity discovery failed for domain '{domain}' (non-fatal)"
+                )
+                db.rollback()
+
             # Fan out EASM scans to high-confidence subsidiary domains. Only
             # domains tagged from official registries (Wikidata/EDGAR/GLEIF) or
             # name-matched against this org's existing EASM scope get

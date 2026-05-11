@@ -415,7 +415,27 @@ def list_assets(
             ]
             q = q.filter(or_(Asset.scan_id == scan_id, Asset.id.in_(finding_asset_ids)))
         else:
-            q = q.filter(Asset.scan_id == scan_id)
+            # Identity-discovery scans are rolling per-org enrichment jobs that
+            # don't show up in the active-scan picker. When the user picks a
+            # regular scan (typically the EASM one for the same domain), also
+            # surface this org's identity assets — otherwise they're stranded
+            # behind a filter the user can't change.
+            identity_scan_ids = (
+                target_scan and [
+                    s.id for s in db.query(Scan.id)
+                    .filter(
+                        Scan.org_id == target_scan.org_id,
+                        Scan.source_type == "identity_discovery",
+                    ).all()
+                ]
+            ) or []
+            if identity_scan_ids:
+                q = q.filter(or_(
+                    Asset.scan_id == scan_id,
+                    Asset.scan_id.in_(identity_scan_ids),
+                ))
+            else:
+                q = q.filter(Asset.scan_id == scan_id)
     if min_risk is not None:
         q = q.filter(Asset.risk_score >= min_risk)
     if max_risk is not None:

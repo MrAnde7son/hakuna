@@ -1,6 +1,5 @@
 """Normalize tool output → Asset ORM rows via upsert."""
 
-import json
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -8,6 +7,7 @@ from datetime import datetime, timezone
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ingest._jsonb import jsonb_dumps
 from app.models.asset import Asset
 
 logger = logging.getLogger(__name__)
@@ -140,7 +140,7 @@ async def update_dns_records(
                 WHERE org_id = :org_id AND hostname = :hostname
             """),
             {
-                "dns": json.dumps(dns_data),
+                "dns": jsonb_dumps(dns_data),
                 "ip": ip,
                 "org_id": org_id,
                 "hostname": hostname,
@@ -200,7 +200,7 @@ async def update_ports(
     for host, ports in host_ports.items():
         ports = sorted(set(ports))
         services = host_services.get(host, {})
-        services_json = json.dumps({str(p): services[p] for p in sorted(services)}) if services else None
+        services_json = jsonb_dumps({str(p): services[p] for p in sorted(services)}) if services else None
 
         await db.execute(
             text("""
@@ -374,7 +374,7 @@ async def update_enrichment(
             security_audit = audit_response(primary)
         except Exception:  # noqa: BLE001
             security_audit = None
-        services_json = json.dumps(services_dict) if services_dict else None
+        services_json = jsonb_dumps(services_dict) if services_dict else None
 
         await db.execute(
             text("""
@@ -395,11 +395,11 @@ async def update_enrichment(
                 "status": primary.get("status_code") or primary.get("status-code"),
                 "title": primary.get("title"),
                 "url": primary_url,
-                "tech": json.dumps(primary_tech) if primary_tech else None,
+                "tech": jsonb_dumps(primary_tech) if primary_tech else None,
                 "cdn": cdn_name if isinstance(cdn_name, str) else (cdn_name[0] if cdn_name else None),
                 "waf": waf if isinstance(waf, str) else (waf[0] if waf else None),
                 "services": services_json,
-                "security": json.dumps(security_audit) if security_audit else None,
+                "security": jsonb_dumps(security_audit) if security_audit else None,
                 "org_id": org_id,
                 "host": host,
                 "now": now,
@@ -445,7 +445,7 @@ async def update_tls(
                     last_seen = :now
                 WHERE org_id = :org_id AND hostname = :host
             """),
-            {"tls": json.dumps(tls_cert), "org_id": org_id, "host": host, "now": now},
+            {"tls": jsonb_dumps(tls_cert), "org_id": org_id, "host": host, "now": now},
         )
         updated += 1
 

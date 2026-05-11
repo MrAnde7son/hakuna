@@ -27,6 +27,12 @@ from routes.finding_routes import _finding_to_dict
 router = APIRouter()
 
 
+# Rolling, per-org enrichment scans that should NOT appear in the asset
+# inventory's "active scan" picker. They're background jobs, not discrete
+# scan events the user reasons about. Add new internal source_types here.
+_INTERNAL_SCAN_TYPES = ("identity_discovery",)
+
+
 # ─────────────────────────────────────────────
 # Health
 # ─────────────────────────────────────────────
@@ -86,8 +92,22 @@ def get_sources():
 # ─────────────────────────────────────────────
 
 @router.get("/api/scans")
-def list_scans(db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
+def list_scans(
+    include_internal: bool = False,
+    db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    """List scans for the active org.
+
+    By default, hides rolling enrichment scans (``source_type`` in
+    ``_INTERNAL_SCAN_TYPES``) — they're per-org background jobs, not
+    discrete scan events the user picks from the inventory's "active scan"
+    picker. The identity-discovery rolling scan is the first of these.
+    Pass ``include_internal=true`` to surface everything (admin/debug).
+    """
     q = apply_org_filter(db.query(Scan), Scan, org_ids)
+    if not include_internal:
+        q = q.filter(~Scan.source_type.in_(_INTERNAL_SCAN_TYPES))
     # Order by most recent activity: last_run_at if present, else created_at
     scans = q.order_by(desc(func.coalesce(Scan.last_run_at, Scan.created_at))).all()
 

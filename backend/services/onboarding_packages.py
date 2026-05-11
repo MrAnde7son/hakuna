@@ -784,24 +784,6 @@ FUNCTION_DEFAULT_DASHBOARD = {
 # ── Auto-tag rule templates ─────────────────────────────────────
 
 AUTO_TAG_RULES = {
-    "windows_servers": {
-        "name": "Auto-tag Windows Servers",
-        "target_type": "asset",
-        "conditions": [{"field": "os", "op": "contains", "value": "Windows Server"}],
-        "condition_logic": "AND",
-        "tag_category": "os_family",
-        "tag_value": "Windows Server",
-        "tag_color": "#3b82f6",
-    },
-    "linux_servers": {
-        "name": "Auto-tag Linux Servers",
-        "target_type": "asset",
-        "conditions": [{"field": "os", "op": "contains", "value": "Linux"}],
-        "condition_logic": "AND",
-        "tag_category": "os_family",
-        "tag_value": "Linux",
-        "tag_color": "#f59e0b",
-    },
     "exploitable_findings": {
         "name": "Flag Exploitable Findings",
         "target_type": "finding",
@@ -1024,7 +1006,7 @@ OBJECTIVE_PACKAGES: dict[str, dict[str, Any]] = {
         "description": "Tags, auto-tag rules, and risk-based prioritization config",
         "provisions": {
             "tags": ["base", "network"],
-            "auto_tag_rules": ["windows_servers", "linux_servers", "exploitable_findings"],
+            "auto_tag_rules": ["exploitable_findings"],
             "sla_preset": "standard",
             "campaigns": ["quick_wins", "critical_path"],
             "reports": ["executive_summary"],
@@ -1055,7 +1037,6 @@ OBJECTIVE_PACKAGES: dict[str, dict[str, Any]] = {
         "description": "Network zone tags, exposure mapping, and threat-aware prioritization",
         "provisions": {
             "tags": ["base", "network"],
-            "auto_tag_rules": ["windows_servers", "linux_servers"],
             "campaigns": ["critical_path"],
         },
     },

@@ -184,17 +184,17 @@ def history(db: Session, org_id: int, namespace: str, key: str) -> list[dict]:
 
 ORG_PROFILE_NAMESPACE = "org_profile"
 
-# Map of (settings.onboarding field path → memory key). Each entry becomes a
-# fact in `org_profile` so an agent's prompt can read industry, team-shape,
-# and stated objectives without wiring a custom tool. Confidence is high —
-# the user typed these into the wizard.
-_PROFILE_FIELDS: list[tuple[str, str]] = [
-    ("profile.industry",       "industry"),
-    ("profile.org_size",       "org_size"),
+# Onboarding-only fields — no external source can fill these. Memory key
+# matches the dotted path key.
+_ONBOARDING_ONLY_FIELDS: list[tuple[str, str]] = [
     ("profile.team_size",      "team_size"),
     ("profile.team_functions", "team_functions"),
     ("objectives",             "objectives"),
 ]
+
+# Fields routed through ``effective_company_profile`` so the corporate
+# enrichment fallback (Wikidata) can fill blanks the operator skipped.
+_EFFECTIVE_PROFILE_FIELDS: list[str] = ["industry", "org_size"]
 
 
 def _dig(obj: dict, dotted: str):
@@ -207,31 +207,62 @@ def _dig(obj: dict, dotted: str):
 
 
 def sync_org_profile_to_memory(db: Session, org_id: int) -> int:
-    """Mirror `Organization.settings.onboarding` into `org_profile` namespace.
+    """Mirror the effective org profile into the ``org_profile`` namespace.
 
-    Idempotent — values that match the active fact are skipped, values that
-    changed are superseded via `remember`. The wizard's settings blob remains
-    the source-of-truth for "is onboarding complete?"; this is a one-way
-    write so agents have a uniform read path.
+    Industry and org_size come from ``effective_company_profile``, which
+    prefers operator-entered onboarding values but falls back to the linked
+    ``CorporateEntity`` so agents see auto-filled values when onboarding was
+    skipped. Team shape and objectives still come straight from the
+    onboarding blob — nothing fetches those.
+
+    Idempotent — unchanged values are skipped, changed values are superseded
+    via ``remember``. Confidence is annotated by source so downstream
+    consumers can distinguish operator-confirmed (0.95) from auto-filled (0.6).
 
     Returns the number of facts written (created or superseded) this call.
     """
     from models.models import Organization
+    from services.company_profile import effective_company_profile
+
     org = db.query(Organization).filter(Organization.id == org_id).first()
     if not org:
         return 0
     onboarding = (org.settings or {}).get("onboarding") or {}
-    if not onboarding:
-        return 0
 
     written = 0
-    for path, key in _PROFILE_FIELDS:
+
+    # Onboarding-only fields. If onboarding was never completed these are
+    # all blank and we skip writing — same as before.
+    for path, key in _ONBOARDING_ONLY_FIELDS:
         new_value = _dig(onboarding, path)
         if new_value in (None, "", [], {}):
             continue
         existing = recall(db, org_id, ORG_PROFILE_NAMESPACE, key=key, limit=1)
         if existing and existing[0].get("value") == new_value:
-            continue  # unchanged — don't churn the supersede chain
+            continue
+        remember(
+            db,
+            org_id=org_id,
+            namespace=ORG_PROFILE_NAMESPACE,
+            key=key,
+            value=new_value,
+            evidence={"source": "onboarding_wizard", "field": path},
+            confidence=0.95,
+        )
+        written += 1
+
+    # Effective-profile fields. Only consult the helper when at least one
+    # source might have data — keeps ``test_sync_noop_when_no_onboarding``
+    # honest when no CorporateEntity is linked.
+    profile = effective_company_profile(db, org_id)
+    for key in _EFFECTIVE_PROFILE_FIELDS:
+        new_value = profile.get(key)
+        if new_value in (None, "", [], {}):
+            continue
+        source = (profile.get("_sources") or {}).get(key)
+        existing = recall(db, org_id, ORG_PROFILE_NAMESPACE, key=key, limit=1)
+        if existing and existing[0].get("value") == new_value:
+            continue
         remember(
             db,
             org_id=org_id,
@@ -239,12 +270,13 @@ def sync_org_profile_to_memory(db: Session, org_id: int) -> int:
             key=key,
             value=new_value,
             evidence={
-                "source": "onboarding_wizard",
-                "field": path,
+                "source": source or "unknown",
+                "field": key,
             },
-            confidence=0.95,
+            confidence=0.95 if source == "onboarding" else 0.6,
         )
         written += 1
+
     return written
 
 

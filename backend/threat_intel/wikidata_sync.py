@@ -47,16 +47,76 @@ def _val(binding: dict, key: str) -> str:
     return binding.get(key, {}).get("value", "")
 
 
+def _sparql_escape_literal(value: str) -> str:
+    """Escape user-supplied text for safe interpolation into a SPARQL string
+    literal (``"..."``).
+
+    The corporate-refresh path feeds organization-controlled ``Organization.name``
+    and ``CorporateEntity.legal_name`` through ``find_company``; both can contain
+    arbitrary characters. Without escaping, a ``"`` in the input closes the literal
+    early and the rest of the query is interpreted as SPARQL syntax. The order
+    matters — escape ``\\`` first or the substitution will mangle later escapes.
+    """
+    if not isinstance(value, str):
+        return ""
+    return (
+        value
+        .replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+        .replace("\t", "\\t")
+    )
+
+
+# Bands match those used in onboarding (settings.onboarding.profile.org_size).
+def _band_employee_count(raw: str) -> str | None:
+    """Map a raw Wikidata P1128 employee count to a band string."""
+    if not raw:
+        return None
+    try:
+        n = int(float(raw))
+    except (TypeError, ValueError):
+        return None
+    if n < 1:
+        return None
+    if n <= 10:
+        return "1-10"
+    if n <= 50:
+        return "11-50"
+    if n <= 200:
+        return "51-200"
+    if n <= 1000:
+        return "201-1000"
+    if n <= 10000:
+        return "1k-10k"
+    return "10k+"
+
+
+def _year_from_inception(raw: str) -> int | None:
+    """Wikidata P571 comes through as an ISO-ish timestamp (e.g. '1995-01-01T00:00:00Z')."""
+    if not raw or len(raw) < 4:
+        return None
+    try:
+        return int(raw[:4])
+    except ValueError:
+        return None
+
+
 def find_company(company_name: str) -> dict | None:
     """Find a company on Wikidata by name. Returns the best match."""
+    safe_name = _sparql_escape_literal(company_name)
     query = f"""
-    SELECT ?company ?companyLabel ?country ?countryLabel ?inception ?website ?hq ?hqLabel WHERE {{
+    SELECT ?company ?companyLabel ?country ?countryLabel ?inception ?website
+           ?hq ?hqLabel ?industryLabel ?employees WHERE {{
       ?company wdt:P31/wdt:P279* wd:Q4830453 .
-      ?company rdfs:label "{company_name}"@en .
+      ?company rdfs:label "{safe_name}"@en .
       OPTIONAL {{ ?company wdt:P17 ?country . }}
       OPTIONAL {{ ?company wdt:P571 ?inception . }}
       OPTIONAL {{ ?company wdt:P856 ?website . }}
       OPTIONAL {{ ?company wdt:P159 ?hq . }}
+      OPTIONAL {{ ?company wdt:P452 ?industry . }}
+      OPTIONAL {{ ?company wdt:P1128 ?employees . }}
       SERVICE wikibase:label {{ bd:serviceParam wikibase:language "en" . }}
     }}
     LIMIT 5
@@ -76,6 +136,9 @@ def find_company(company_name: str) -> dict | None:
         "headquarters_city": _val(best, "hqLabel"),
         "inception": _val(best, "inception"),
         "website": _val(best, "website"),
+        "industry": _val(best, "industryLabel") or None,
+        "employee_count_band": _band_employee_count(_val(best, "employees")),
+        "founded_year": _year_from_inception(_val(best, "inception")),
     }
 
 
@@ -114,11 +177,14 @@ def _search_company_api(company_name: str) -> dict | None:
 def _get_entity_details(qid: str) -> dict | None:
     """Fetch basic details for a Wikidata entity by QID."""
     query = f"""
-    SELECT ?companyLabel ?countryLabel ?hqLabel ?inception ?website WHERE {{
+    SELECT ?companyLabel ?countryLabel ?hqLabel ?inception ?website
+           ?industryLabel ?employees WHERE {{
       OPTIONAL {{ wd:{qid} wdt:P17 ?country . }}
       OPTIONAL {{ wd:{qid} wdt:P571 ?inception . }}
       OPTIONAL {{ wd:{qid} wdt:P856 ?website . }}
       OPTIONAL {{ wd:{qid} wdt:P159 ?hq . }}
+      OPTIONAL {{ wd:{qid} wdt:P452 ?industry . }}
+      OPTIONAL {{ wd:{qid} wdt:P1128 ?employees . }}
       SERVICE wikibase:label {{ bd:serviceParam wikibase:language "en" . }}
       BIND(wd:{qid} AS ?company)
     }}
@@ -136,6 +202,9 @@ def _get_entity_details(qid: str) -> dict | None:
         "headquarters_city": _val(r, "hqLabel"),
         "inception": _val(r, "inception"),
         "website": _val(r, "website"),
+        "industry": _val(r, "industryLabel") or None,
+        "employee_count_band": _band_employee_count(_val(r, "employees")),
+        "founded_year": _year_from_inception(_val(r, "inception")),
     }
 
 
@@ -302,6 +371,17 @@ def _upsert_entity(
         existing.headquarters_country = entity_data.get("headquarters_country") or existing.headquarters_country
         existing.headquarters_city = entity_data.get("headquarters_city") or existing.headquarters_city
         existing.entity_status = "ACTIVE"
+        # Profile fields refresh on each sync — Wikidata is our source of
+        # truth for the corporate entity. Operator-entered onboarding
+        # values are protected at the read layer (effective_company_profile).
+        if entity_data.get("industry"):
+            existing.industry = entity_data["industry"]
+        if entity_data.get("employee_count_band"):
+            existing.employee_count_band = entity_data["employee_count_band"]
+        if entity_data.get("founded_year"):
+            existing.founded_year = entity_data["founded_year"]
+        if entity_data.get("website"):
+            existing.homepage_url = entity_data["website"]
         if entity_data.get("direct_parent_qid"):
             existing.direct_parent_lei = entity_data["direct_parent_qid"]
             existing.direct_parent_name = entity_data.get("direct_parent_name")
@@ -325,6 +405,10 @@ def _upsert_entity(
             direct_parent_name=entity_data.get("direct_parent_name"),
             associated_domains=[domain] if domain else [],
             domain_sources={domain: "wikidata_official"} if domain else {},
+            industry=entity_data.get("industry"),
+            employee_count_band=entity_data.get("employee_count_band"),
+            founded_year=entity_data.get("founded_year"),
+            homepage_url=entity_data.get("website"),
             org_id=org_id or parent_org_id,
             raw_data=entity_data,
         )

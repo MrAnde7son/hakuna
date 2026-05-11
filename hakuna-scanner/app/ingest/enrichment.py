@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ingest._jsonb import jsonb_dumps as _jsonb_dumps
 from app.ingest.cpe_infer import infer_cpes
 from app.ingest.http_header_audit import audit_response
 
@@ -138,9 +139,9 @@ async def upsert_asset_port(
             "svc_name": service_name,
             "svc_ver": service_version,
             "banner": banner,
-            "cpe": json.dumps(cpe_list) if cpe_list else None,
-            "tls": json.dumps(tls_cert) if tls_cert else None,
-            "nmap": json.dumps(nmap_scripts) if nmap_scripts else None,
+            "cpe": _jsonb_dumps(cpe_list) if cpe_list else None,
+            "tls": _jsonb_dumps(tls_cert) if tls_cert else None,
+            "nmap": _jsonb_dumps(nmap_scripts) if nmap_scripts else None,
             "svc_type": service_type,
             "svc_product": service_product,
             "svc_conf": service_confidence,
@@ -181,7 +182,7 @@ async def upsert_asset_port_http(
     """
     now = datetime.now(timezone.utc)
     tech_json = (
-        json.dumps(http_tech_stack)
+        _jsonb_dumps(http_tech_stack)
         if http_tech_stack not in (None, "", [], {})
         else None
     )
@@ -283,7 +284,7 @@ async def upsert_asset_port_cpes(
             "asset_id": asset_id,
             "port": port,
             "proto": protocol,
-            "cpe": json.dumps(cpe_list),
+            "cpe": _jsonb_dumps(cpe_list),
             "now": now,
         },
     )
@@ -429,10 +430,10 @@ async def store_httpx_enrichment(
         {
             "id": enrichment_id,
             "asset_id": asset_id,
-            "httpx": json.dumps(httpx_entry),
+            "httpx": _jsonb_dumps(httpx_entry),
             "final_url": final_url,
             "title": httpx_entry.get("title"),
-            "tech": json.dumps(tech) if tech else None,
+            "tech": _jsonb_dumps(tech) if tech else None,
             "is_cdn": is_cdn,
             "ss_path": screenshot_path,
             "now": now,
@@ -458,7 +459,7 @@ async def store_httpx_enrichment(
                     """),
                     {
                         "eid": enrichment_id,
-                        "tech": json.dumps(result.detected_technologies),
+                        "tech": _jsonb_dumps(result.detected_technologies),
                     },
                 )
         except Exception as exc:  # noqa: BLE001 — never block enrichment on inference

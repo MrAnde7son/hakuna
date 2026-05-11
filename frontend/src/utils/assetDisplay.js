@@ -16,20 +16,27 @@
 // Generic discriminator keys in asset_identity — these label the source/kind
 // but aren't human identifiers, so skip them when picking a display name
 // (e.g. github_org identity is {provider: "github", login: "tenable"} — we
-// want "tenable", not "github").
-const IDENTITY_DISCRIMINATOR_KEYS = new Set(['provider', 'registry', 'kind', 'type']);
+// want "tenable", not "github"; identity assets use {source: "linkedin",
+// slug: "..."} — we want the slug, not "linkedin").
+const IDENTITY_DISCRIMINATOR_KEYS = new Set(['provider', 'registry', 'kind', 'type', 'source']);
 
 export function getAssetDisplayName(asset) {
   if (!asset) return 'Unknown';
 
   // Non-host assets: use identity-based display
-  if (asset.asset_type && asset.asset_type !== 'host' && asset.asset_identity) {
-    const id = asset.asset_identity;
-    if (id.display_name) return id.display_name;
-    // Use first meaningful identity value, skipping generic discriminators
-    const firstVal = Object.entries(id)
-      .find(([k, v]) => v && typeof v === 'string' && !IDENTITY_DISCRIMINATOR_KEYS.has(k))?.[1];
-    if (firstVal) return firstVal;
+  if (asset.asset_type && asset.asset_type !== 'host') {
+    // Type-specific display name often lives in asset_attributes (identity,
+    // code_repo); prefer it over slug/login since it's the human-readable
+    // form. Falls through to asset_identity.display_name for older shapes.
+    if (asset.asset_attributes?.display_name) return asset.asset_attributes.display_name;
+    if (asset.asset_identity) {
+      const id = asset.asset_identity;
+      if (id.display_name) return id.display_name;
+      // Use first meaningful identity value, skipping generic discriminators
+      const firstVal = Object.entries(id)
+        .find(([k, v]) => v && typeof v === 'string' && !IDENTITY_DISCRIMINATOR_KEYS.has(k))?.[1];
+      if (firstVal) return firstVal;
+    }
   }
 
   // Host assets or fallback
@@ -45,15 +52,22 @@ export function getAssetSecondaryInfo(asset) {
   const primary = getAssetDisplayName(asset);
   const secondary = [];
 
-  if (asset.asset_type && asset.asset_type !== 'host' && asset.asset_identity) {
-    // For non-host: show remaining identity fields that differ from primary,
-    // skipping the generic discriminator keys (e.g. "github" provider)
-    for (const [key, val] of Object.entries(asset.asset_identity)) {
-      if (
-        val && typeof val === 'string' && val !== primary
-        && !secondary.includes(val) && !IDENTITY_DISCRIMINATOR_KEYS.has(key)
-      ) {
-        secondary.push(val);
+  if (asset.asset_type && asset.asset_type !== 'host') {
+    // Type-aware secondary line: identity assets show title under name,
+    // others show their slug-like identifier.
+    if (asset.asset_type === 'identity' && asset.asset_attributes?.title) {
+      secondary.push(asset.asset_attributes.title);
+    }
+    if (asset.asset_identity) {
+      // Remaining identity fields that differ from primary, skipping
+      // generic discriminators (e.g. "github" provider, "linkedin" source).
+      for (const [key, val] of Object.entries(asset.asset_identity)) {
+        if (
+          val && typeof val === 'string' && val !== primary
+          && !secondary.includes(val) && !IDENTITY_DISCRIMINATOR_KEYS.has(key)
+        ) {
+          secondary.push(val);
+        }
       }
     }
     // Also show IP if available (for correlation)
