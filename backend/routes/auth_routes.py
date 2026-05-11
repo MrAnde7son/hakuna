@@ -100,7 +100,7 @@ class UpdateOrgRequest(BaseModel):
     org_type: Optional[str] = None
 
 class ChangePasswordRequest(BaseModel):
-    current_password: str
+    current_password: Optional[str] = None
     new_password: str
 
 class ForgotPasswordRequest(BaseModel):
@@ -131,6 +131,7 @@ def _user_response(user: User, org: Organization) -> dict:
         "is_active": user.is_active,
         "locale": user.locale or "en",
         "email_verified": bool(user.email_verified),
+        "has_password": bool(user.hashed_password),
         "created_at": iso_utc(user.created_at),
         "last_login_at": iso_utc(user.last_login_at),
         "org": {
@@ -736,14 +737,18 @@ async def refresh_token(user: User = Depends(require_auth), db: Session = Depend
 
 @router.post("/change-password")
 async def change_password(body: ChangePasswordRequest, user: User = Depends(require_auth), db: Session = Depends(get_db)):
-    if not verify_password(body.current_password, user.hashed_password):
-        raise HTTPException(400, "Current password is incorrect")
+    # SSO-only accounts (Google) start with hashed_password = NULL; allow setting one
+    # without a current password. Otherwise require and verify the current password.
+    is_setting_initial = not user.hashed_password
+    if not is_setting_initial:
+        if not body.current_password or not verify_password(body.current_password, user.hashed_password):
+            raise HTTPException(400, "Current password is incorrect")
     pw_error = validate_password_strength(body.new_password)
     if pw_error:
         raise HTTPException(400, pw_error)
     user.hashed_password = hash_password(body.new_password)
     log_audit(db, "update", "user", user.id, entity_name=user.email,
-              changes={"password": "changed"}, actor=user)
+              changes={"password": "set" if is_setting_initial else "changed"}, actor=user)
     db.commit()
     return {"status": "ok"}
 

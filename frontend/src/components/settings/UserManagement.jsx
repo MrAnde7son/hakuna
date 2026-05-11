@@ -319,7 +319,8 @@ function SubscriptionSection() {
 }
 
 export default function UserManagement() {
-  const { user: currentUser, org } = useAuth()
+  const { user: currentUser, org, refreshAuth } = useAuth()
+  const hasPassword = currentUser.has_password !== false
   const [changingPw, setChangingPw] = useState(false)
   const [pwForm, setPwForm] = useState({ current_password: '', new_password: '', confirm: '' })
   const [pwError, setPwError] = useState('')
@@ -334,10 +335,13 @@ export default function UserManagement() {
     if (pwForm.new_password.length < 8) { setPwError('Password must be at least 8 characters'); return }
     setPwLoading(true)
     try {
-      await authChangePassword({ current_password: pwForm.current_password, new_password: pwForm.new_password })
-      setPwSuccess('Password changed successfully')
+      const payload = { new_password: pwForm.new_password }
+      if (hasPassword) payload.current_password = pwForm.current_password
+      await authChangePassword(payload)
+      setPwSuccess(hasPassword ? 'Password changed successfully' : 'Password set successfully')
       setChangingPw(false)
       setPwForm({ current_password: '', new_password: '', confirm: '' })
+      if (!hasPassword) refreshAuth().catch(() => {})
     } catch (err) {
       setPwError(err.message || 'Failed to change password')
     } finally {
@@ -389,7 +393,7 @@ export default function UserManagement() {
                 background: 'var(--bg-card)', fontSize: 12, cursor: 'pointer',
               }}
             >
-              Change Password
+              {hasPassword ? 'Change Password' : 'Set Password'}
             </button>
           )}
         </div>
@@ -407,11 +411,17 @@ export default function UserManagement() {
                 {pwError}
               </div>
             )}
-            <div>
-              <label style={{ fontSize: 12, fontWeight: 500 }}>Current Password</label>
-              <input type="password" value={pwForm.current_password} onChange={e => setPwForm(p => ({ ...p, current_password: e.target.value }))} required
-                style={{ width: '100%', padding: '7px 10px', borderRadius: 8, border: '1px solid var(--border)', fontSize: 13, boxSizing: 'border-box' }} />
-            </div>
+            {hasPassword ? (
+              <div>
+                <label style={{ fontSize: 12, fontWeight: 500 }}>Current Password</label>
+                <input type="password" value={pwForm.current_password} onChange={e => setPwForm(p => ({ ...p, current_password: e.target.value }))} required
+                  style={{ width: '100%', padding: '7px 10px', borderRadius: 8, border: '1px solid var(--border)', fontSize: 13, boxSizing: 'border-box' }} />
+              </div>
+            ) : (
+              <div style={{ fontSize: 12, color: 'var(--text-secondary)', background: 'var(--secondary)', padding: '8px 12px', borderRadius: 6 }}>
+                Your account was created via Google. Set a password to also enable email + password sign-in.
+              </div>
+            )}
             <div>
               <label style={{ fontSize: 12, fontWeight: 500 }}>New Password</label>
               <input type="password" value={pwForm.new_password} onChange={e => setPwForm(p => ({ ...p, new_password: e.target.value }))} required minLength={8}
@@ -429,7 +439,7 @@ export default function UserManagement() {
               </button>
               <button type="submit" disabled={pwLoading}
                 style={{ padding: '6px 14px', borderRadius: 8, border: 'none', background: 'var(--nav-active-bg)', color: 'var(--nav-active-text)', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
-                {pwLoading ? 'Saving...' : 'Update Password'}
+                {pwLoading ? 'Saving...' : (hasPassword ? 'Update Password' : 'Set Password')}
               </button>
             </div>
           </form>
