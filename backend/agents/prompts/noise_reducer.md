@@ -89,7 +89,7 @@ For each recommended tuning action, calculate:
 - **Implementation**: Add to scan policy exclude list
 
 ### Action 2: Create Informational Finding Filter
-- **Criteria**: Severity=Info AND no CVE AND solution="N/A"
+- **Criteria**: Severity=0 AND no CVE AND solution="N/A"
 - **Findings removed**: [N]
 - **Risk**: Low — purely informational
 - **Implementation**: Dashboard filter or report exclusion

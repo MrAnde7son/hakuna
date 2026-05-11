@@ -380,6 +380,8 @@ export default function FindingExplorer() {
     is_kev: { default: null, type: 'boolean' },
     ransomware: { default: null, type: 'boolean' },
     trending: { default: null, type: 'boolean' },
+    is_regression: { default: null, type: 'boolean' },
+    is_zombie: { default: null, type: 'boolean' },
     has_ttps: { default: null, type: 'boolean' },
     tactic: { default: null },
     technique_id: { default: null },
@@ -419,6 +421,8 @@ export default function FindingExplorer() {
   const isKev = urlFilters.is_kev
   const ransomwareLinked = urlFilters.ransomware
   const trendingInNews = urlFilters.trending
+  const isRegression = urlFilters.is_regression
+  const isZombie = urlFilters.is_zombie
   const hasTtps = urlFilters.has_ttps
   const tacticFilter = urlFilters.tactic
   const techniqueFilter = urlFilters.technique_id
@@ -575,6 +579,8 @@ export default function FindingExplorer() {
       is_kev: isKev,
       ransomware_linked: ransomwareLinked,
       trending_in_news: trendingInNews,
+      is_regression: isRegression,
+      is_zombie: isZombie,
       has_ttps: hasTtps,
       tactic: tacticFilter,
       technique_id: techniqueFilter,
@@ -610,7 +616,7 @@ export default function FindingExplorer() {
       })
       .catch(() => setFetchError('Failed to load findings.'))
       .finally(() => setLoading(false))
-  }, [activeScanId, assetId, severity, family, hasExploit, isKev, ransomwareLinked, trendingInNews, hasTtps, tacticFilter, techniqueFilter, threatGroupId, slaStatus, effortLevel, cveFilter, search, sourceFilter, productFilter, cpeFilter2, sortBy, sortOrder, page, pageSize, tagFilter, tagLogic, workflowStatus, hasException, hasTicket, ticketStatus, urlFilters.control_status, createdAfter])
+  }, [activeScanId, assetId, severity, family, hasExploit, isKev, ransomwareLinked, trendingInNews, isRegression, isZombie, hasTtps, tacticFilter, techniqueFilter, threatGroupId, slaStatus, effortLevel, cveFilter, search, sourceFilter, productFilter, cpeFilter2, sortBy, sortOrder, page, pageSize, tagFilter, tagLogic, workflowStatus, hasException, hasTicket, ticketStatus, urlFilters.control_status, createdAfter])
 
   useEffect(() => { if (!advancedMode) load() }, [load, advancedMode])
 

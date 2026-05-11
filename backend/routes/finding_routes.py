@@ -3,7 +3,7 @@ Findings — FastAPI routes
 Extracted from app.py: Findings section + Finding Workflow Status section.
 """
 from typing import Optional, List
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
@@ -55,6 +55,8 @@ def list_findings(
     cve: Optional[str] = None,
     search: Optional[str] = None,
     source: Optional[str] = None,
+    is_regression: Optional[bool] = None,
+    is_zombie: Optional[bool] = None,
     tags: Optional[str] = None,
     tag_logic: str = "AND",
     expand_children: bool = False,
@@ -146,6 +148,17 @@ def list_findings(
         q = q.filter(Finding.effort_level == effort_level)
     if auto_resolved is not None:
         q = q.filter(Finding.auto_resolved == auto_resolved)
+    if is_regression is not None:
+        q = q.filter(Finding.is_regression == is_regression)
+    if is_zombie:
+        # Matches temporal-summary: severity > 0, open (or null), first_seen > 180 days ago.
+        cutoff = datetime.utcnow() - timedelta(days=180)
+        q = q.filter(
+            Finding.severity > 0,
+            Finding.first_seen != None,
+            Finding.first_seen < cutoff,
+            or_(Finding.workflow_status == "open", Finding.workflow_status == None),
+        )
     if cve:
         # Partial match within JSON-serialized cves array (case-insensitive).
         # Finding.cves is a JSON column, so cast to text before ILIKE — Postgres

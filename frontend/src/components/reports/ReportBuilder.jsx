@@ -2453,8 +2453,8 @@ const DRILL_DOWN = {
   coverage_pct:     '/assets',
   credentialed_count: '/assets',
   mttr_overall:     '/findings',
-  zombie_count:     '/findings',
-  regression_count: '/findings',
+  zombie_count:     '/findings?is_zombie=true',
+  regression_count: '/findings?is_regression=true',
   // Inventory cards
   inv_domain_admins:   '/inventory?tab=users&is_domain_admin=true',
   inv_local_admins:    '/inventory?tab=users&is_admin=true',
