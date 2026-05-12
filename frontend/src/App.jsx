@@ -1224,6 +1224,17 @@ function AppShell() {
     if (isMobile) setMobileOpen(false)
   }, [location.pathname, isMobile])
 
+  // Sync activeScanId from URL when present (e.g. notification deeplinks like
+  // /findings?scan_id=2740). Absence of scan_id in the URL is not a signal to
+  // clear — pages without the param should keep whatever scan the user picked.
+  useEffect(() => {
+    const sid = new URLSearchParams(location.search).get('scan_id')
+    if (!sid) return
+    const parsed = parseInt(sid)
+    if (Number.isNaN(parsed)) return
+    setActiveScanId(prev => (prev === parsed ? prev : parsed))
+  }, [location.search])
+
   const refreshScans = () => {
     getScans().then(data => {
       setScans(data)
