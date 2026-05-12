@@ -137,3 +137,56 @@ def test_decision_rejects_invalid_status(db_session, authed_client, test_org):
     e = _mk_entry(db_session, org_id=test_org.id, headline="x")
     resp = authed_client.post(f"/api/feed/{e.id}/decision", json={"status": "garbage"})
     assert resp.status_code == 400
+
+
+def test_list_feed_seeds_welcome_card_on_first_run(
+    db_session, authed_client, test_org,
+):
+    """A fresh org with zero entries should land on a welcome brief instead
+    of an empty feed."""
+    assert (
+        db_session.query(OrgFeedEntry)
+        .filter(OrgFeedEntry.org_id == test_org.id)
+        .count()
+    ) == 0
+
+    rows = authed_client.get("/api/feed").json()
+    assert len(rows) == 1
+    welcome = rows[0]
+    assert welcome["event_type"] == "welcome"
+    assert welcome["kind"] == "brief"
+    assert any(a.get("intent") == "integrate" for a in welcome["proposed_actions"])
+
+
+def test_list_feed_welcome_card_is_idempotent(db_session, authed_client, test_org):
+    """Calling the feed twice on an empty org seeds the welcome card once."""
+    authed_client.get("/api/feed")
+    authed_client.get("/api/feed")
+
+    welcome_count = (
+        db_session.query(OrgFeedEntry)
+        .filter(
+            OrgFeedEntry.org_id == test_org.id,
+            OrgFeedEntry.event_type == "welcome",
+        )
+        .count()
+    )
+    assert welcome_count == 1
+
+
+def test_list_feed_does_not_seed_welcome_when_other_entries_exist(
+    db_session, authed_client, test_org,
+):
+    """If the org has any prior entry, the welcome card should not seed."""
+    _mk_entry(db_session, org_id=test_org.id, headline="prior")
+    authed_client.get("/api/feed")
+
+    welcome_count = (
+        db_session.query(OrgFeedEntry)
+        .filter(
+            OrgFeedEntry.org_id == test_org.id,
+            OrgFeedEntry.event_type == "welcome",
+        )
+        .count()
+    )
+    assert welcome_count == 0

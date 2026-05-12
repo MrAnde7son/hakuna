@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 SCAN_INGESTED_EVENT_TYPE = "scan_ingested"
 INTEGRATION_RUN_EVENT_TYPE = "integration_run"
+WELCOME_EVENT_TYPE = "welcome"
 
 # Skip the deterministic card if an agent-authored entry for the same
 # scan/run already landed in this window — keeps the feed from
@@ -203,6 +204,62 @@ def post_integration_run_card(
             "post_integration_run_card failed for integration=%s run=%s",
             getattr(integration, "id", None), getattr(run, "id", None),
         )
+        return None
+
+
+def post_welcome_card(db: Session, *, org_id: int) -> Optional[int]:
+    """Seed a first-run welcome card so a brand-new org doesn't land on a
+    dead-end empty feed. Idempotent on ``event_type='welcome'`` for the
+    lifetime of the org — never re-posts.
+    """
+    if not org_id:
+        return None
+    try:
+        existing = (
+            db.query(OrgFeedEntry.id)
+            .filter(
+                OrgFeedEntry.org_id == org_id,
+                OrgFeedEntry.event_type == WELCOME_EVENT_TYPE,
+            )
+            .first()
+        )
+        if existing:
+            return None
+
+        headline = "Welcome to Hakuna — here's how your feed works"
+        body_md = (
+            "Your activity feed is where your agents post **observations**, "
+            "ask for **approvals** on risky actions, and propose **one-click fixes**.\n\n"
+            "Three ways to get value fast:\n\n"
+            "- **Connect a scanner** so findings start flowing in.\n"
+            "- **Review your agents** — they triage scans, narrate attack chains, and draft remediations.\n"
+            "- **Use the chat above** — it knows your recent feed and can summarize, prioritize, "
+            "or draft a campaign for you. Reference any entry by its `#id`.\n"
+        )
+        actions = [
+            {
+                "kind": "navigate", "intent": "integrate",
+                "label": "Connect a scanner", "href": "/integrations",
+            },
+            {"kind": "navigate", "label": "See your agents", "href": "/agents"},
+        ]
+        entry = OrgFeedEntry(
+            org_id=org_id,
+            kind="brief",
+            headline=_clip_headline(headline),
+            body_md=body_md,
+            event_type=WELCOME_EVENT_TYPE,
+            event_ref={},
+            proposed_actions=actions,
+            severity="info",
+            status="open",
+        )
+        db.add(entry)
+        db.commit()
+        return entry.id
+    except Exception:
+        db.rollback()
+        logger.exception("post_welcome_card failed for org=%s", org_id)
         return None
 
 

@@ -1342,7 +1342,16 @@
     },
     "empty": {
       "title": "Nothing in the feed yet.",
-      "body": "Your agents will post here as scans complete, assets are discovered, and attack chains are validated. Run a scan to see the first entries."
+      "body": "Your agents will post here as scans complete, assets are discovered, and attack chains are validated.",
+      "whatToExpect": "What to expect in your feed:",
+      "bullet1": "Observations — agents narrate scan completions, new assets, and attack-chain validations.",
+      "bullet2": "Approvals — risky actions (ticket creation, Slack messages) pause here for your sign-off.",
+      "bullet3": "One-click fixes — tag, assign, sync tickets, or run a report inline without leaving the page.",
+      "cta": {
+        "integrate": "Connect a scanner",
+        "agents": "See your agents",
+        "askChat": "Try the chat above"
+      }
     },
     "chat": {
       "title": "Ask about your feed",
@@ -1357,7 +1366,14 @@
       "approve": "Approve",
       "reject": "Reject",
       "expand": "Open chat",
-      "collapse": "Hide chat"
+      "collapse": "Hide chat",
+      "suggestions": {
+        "summarize": "Summarize my top critical findings",
+        "lastScan": "What changed in the last scan?",
+        "draftCampaign": "Draft a campaign for unpatched TLS",
+        "explainEntry": "Why does feed entry #{{id}} matter?",
+        "draftRemediation": "Draft a remediation for my top critical"
+      }
     }
   }
 }

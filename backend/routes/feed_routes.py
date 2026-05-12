@@ -87,6 +87,20 @@ def list_feed(
     if not org_ids:
         return []
 
+    # First-run seeding: if the caller's primary org has never seen a feed
+    # entry, post the welcome brief so a fresh org lands on a teaching
+    # surface instead of an empty one. Cheap LIMIT-1 lookup + idempotent
+    # emitter — runs at most once per org for the org's lifetime.
+    if page == 1 and current_user.org_id and current_user.org_id in org_ids:
+        any_entry = (
+            db.query(OrgFeedEntry.id)
+            .filter(OrgFeedEntry.org_id == current_user.org_id)
+            .first()
+        )
+        if not any_entry:
+            from services.feed_emitters import post_welcome_card
+            post_welcome_card(db, org_id=current_user.org_id)
+
     q = db.query(OrgFeedEntry).filter(OrgFeedEntry.org_id.in_(org_ids))
     if status:
         q = q.filter(OrgFeedEntry.status == status)

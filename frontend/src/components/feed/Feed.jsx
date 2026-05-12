@@ -410,14 +410,30 @@ function FeedEntryCard({ entry, onActed, onMarkedRead }) {
 // so the thread survives page reload.
 const FEED_CONV_KEY = 'hakuna.feed.copilot_conv_id'
 
-// Suggested starter prompts shown when the thread is empty. Kept locally so
-// they can be tuned without touching i18n; the localized chat.placeholder
-// remains the source of truth for tone.
-const FEED_CHAT_SUGGESTIONS = [
-  'Summarize my top critical findings',
-  'What changed in the last scan?',
-  'Draft a campaign for unpatched TLS',
-]
+// Build the suggested starter prompts shown when the thread is empty.
+// When the feed has recent high/critical entries, replace one generic
+// suggestion with a contextual one that references the entry by its
+// feed id — the copilot's chat-context block resolves "#N" to a real
+// entry, so this teaches the user the reference syntax while showing
+// an answer they actually want.
+function buildChatSuggestions(entries, t) {
+  const base = [
+    t('feed.chat.suggestions.summarize'),
+    t('feed.chat.suggestions.lastScan'),
+    t('feed.chat.suggestions.draftCampaign'),
+  ]
+  const topRisk = (entries || []).find(e =>
+    e.status === 'open' && (e.severity === 'critical' || e.severity === 'high')
+  )
+  if (topRisk) {
+    return [
+      t('feed.chat.suggestions.explainEntry', { id: topRisk.id }),
+      base[0],
+      t('feed.chat.suggestions.draftRemediation'),
+    ]
+  }
+  return base
+}
 
 // Three-dot bouncing indicator shown while the assistant is generating.
 function ThinkingDots() {
@@ -444,7 +460,7 @@ function ThinkingDots() {
   )
 }
 
-function FeedChat({ contextEntryCount }) {
+function FeedChat({ contextEntryCount, entries }) {
   const { t } = useTranslation()
   const [messages, setMessages] = useState([])  // {role, content, error?}
   const [streamText, setStreamText] = useState('')
@@ -718,7 +734,7 @@ function FeedChat({ contextEntryCount }) {
           padding: '4px 16px 0',
           display: 'flex', flexWrap: 'wrap', gap: 6,
         }}>
-          {FEED_CHAT_SUGGESTIONS.map((s) => (
+          {buildChatSuggestions(entries, t).map((s) => (
             <button
               key={s}
               type="button"
@@ -914,7 +930,7 @@ export default function Feed() {
         </div>
       </div>
 
-      <FeedChat contextEntryCount={5} />
+      <FeedChat contextEntryCount={5} entries={entries} />
 
       {error && (
         <div style={{
@@ -937,7 +953,52 @@ export default function Feed() {
           icon={Inbox}
           title={t('feed.empty.title')}
           sub={t('feed.empty.body')}
-        />
+        >
+          <div style={{
+            marginTop: 8, maxWidth: 480, width: '100%',
+            background: 'var(--bg-secondary)',
+            border: '1px solid var(--border)',
+            borderRadius: 8, padding: '14px 16px',
+            textAlign: 'left',
+          }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 8 }}>
+              {t('feed.empty.whatToExpect')}
+            </div>
+            <ul style={{ margin: 0, paddingLeft: 18, color: 'var(--text-secondary)', fontSize: 12, lineHeight: 1.6 }}>
+              <li>{t('feed.empty.bullet1')}</li>
+              <li>{t('feed.empty.bullet2')}</li>
+              <li>{t('feed.empty.bullet3')}</li>
+            </ul>
+          </div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'center', marginTop: 4 }}>
+            <Link
+              to="/integrations"
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 6,
+                padding: '7px 14px', borderRadius: 6,
+                border: '1px solid var(--accent)',
+                background: 'var(--accent)',
+                color: '#fff', fontSize: 12, fontWeight: 600, textDecoration: 'none',
+              }}
+            >
+              <Plug size={13} />
+              {t('feed.empty.cta.integrate')}
+            </Link>
+            <Link
+              to="/agents"
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 6,
+                padding: '7px 14px', borderRadius: 6,
+                border: '1px solid var(--border)',
+                background: 'transparent',
+                color: 'var(--text-secondary)', fontSize: 12, fontWeight: 600, textDecoration: 'none',
+              }}
+            >
+              <Bot size={13} />
+              {t('feed.empty.cta.agents')}
+            </Link>
+          </div>
+        </EmptyState>
       )}
 
       {entries.length > 0 && (
