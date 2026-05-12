@@ -239,7 +239,7 @@ def post_welcome_card(db: Session, *, org_id: int) -> Optional[int]:
         actions = [
             {
                 "kind": "navigate", "intent": "integrate",
-                "label": "Connect a scanner", "href": "/integrations",
+                "label": "Connect a scanner", "href": "/settings",
             },
             {"kind": "navigate", "label": "See your agents", "href": "/agents"},
         ]

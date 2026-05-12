@@ -972,7 +972,7 @@ export default function Feed() {
           </div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'center', marginTop: 4 }}>
             <Link
-              to="/integrations"
+              to="/settings"
               style={{
                 display: 'inline-flex', alignItems: 'center', gap: 6,
                 padding: '7px 14px', borderRadius: 6,
