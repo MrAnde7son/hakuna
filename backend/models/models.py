@@ -435,7 +435,7 @@ class Asset(Base):
     asset_attributes = Column(JSON, default=dict)              # type-specific metadata overflow
 
     # OS / device enrichment (from plugins 11936, 45590)
-    device_type = Column(String)                        # server, workstation, router, switch, firewall, printer, hypervisor, wap, voip, storage, unknown
+    device_type = Column(String)                        # server, workstation, router, switch, firewall, printer, hypervisor, wap, voip, ip_camera, ip_phone, access_control, iot_sensor, storage, unknown
     cpe = Column(JSON, default=list)                    # CPE URIs from plugin 45590, e.g. ["cpe:/o:cisco:ios:15.1"]
     os_confidence = Column(Integer)                     # 0-100 confidence from plugin 11936
 
