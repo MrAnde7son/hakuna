@@ -1497,6 +1497,25 @@ export const updateCredential = (id, data) => request(`${IB}/credentials/${id}`,
 })
 export const deleteCredential = (id) => request(`${IB}/credentials/${id}`, { method: 'DELETE' })
 
+// ── Credential→asset binding rules ────────────────────────────────────
+// Rules that auto-select a credential for an audit based on asset shape
+// (device_type, CIDR, asset_type, hostname pattern, tag, protocol).
+// Backend: backend/routes/credential_binding_routes.py
+const CB = '/api/credential-bindings'
+export const listCredentialBindings = () => request(`${CB}/`)
+export const getCredentialBinding = (id) => request(`${CB}/${id}`)
+export const createCredentialBinding = (data) => request(`${CB}/`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
+})
+export const updateCredentialBinding = (id, data) => request(`${CB}/${id}`, {
+  method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
+})
+export const deleteCredentialBinding = (id) => request(`${CB}/${id}`, { method: 'DELETE' })
+export const resolveCredentialBinding = (assetId, protocol) => request(`${CB}/resolve`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ asset_id: assetId, protocol }),
+})
+
 export const integrationConnect = (data) => request(`${IB}/connect`, {
   method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
 })

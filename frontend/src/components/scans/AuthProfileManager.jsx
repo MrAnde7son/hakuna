@@ -2,12 +2,15 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   Plus, Edit2, Trash2, KeyRound, CheckCircle, XCircle,
-  Monitor, Terminal, Radio, Globe, ChevronRight,
+  Monitor, Terminal, Radio, Globe, ChevronRight, Link2,
 } from 'lucide-react'
 import {
   listAuthProfiles, deleteAuthProfile, testAuthProfile,
   getCredentials, createCredential, updateCredential, deleteCredential,
   getCredential,
+  listCredentialBindings, createCredentialBinding,
+  updateCredentialBinding, deleteCredentialBinding,
+  listAuditProtocols,
 } from '../../api.js'
 import { Card, PageHeader, Button, Spinner, EmptyState, useToast, useConfirm } from '../shared/ui.jsx'
 import AuthProfileForm from './AuthProfileForm.jsx'
@@ -29,22 +32,56 @@ export default function AuthProfileManager() {
 
   const [credentials, setCredentials] = useState([])
   const [profiles, setProfiles] = useState([])
+  const [bindings, setBindings] = useState([])
+  const [auditProtocols, setAuditProtocols] = useState([])
   const [loading, setLoading] = useState(true)
-  const [editingCred, setEditingCred] = useState(null)       // { id? } for edit, {} for new
-  const [editingProfile, setEditingProfile] = useState(null) // AuthProfileForm trigger
+  const [editingCred, setEditingCred] = useState(null)        // { id? } for edit, {} for new
+  const [editingProfile, setEditingProfile] = useState(null)  // AuthProfileForm trigger
+  const [editingBinding, setEditingBinding] = useState(null)  // binding row for edit, {} for new
   const [testResult, setTestResult] = useState({})
   const [testing, setTesting] = useState({})
 
   const load = async () => {
     setLoading(true)
     try {
-      const [rows, profs] = await Promise.all([getCredentials(), listAuthProfiles()])
+      const [rows, profs, binds, protos] = await Promise.all([
+        getCredentials(),
+        listAuthProfiles(),
+        listCredentialBindings().catch(() => []),
+        listAuditProtocols().catch(() => []),
+      ])
       setCredentials(Array.isArray(rows) ? rows : (rows?.items || []))
       setProfiles(profs || [])
+      setBindings(Array.isArray(binds) ? binds : [])
+      // Audit protocols endpoint returns {protocols: [...]} or a flat list.
+      const protoList = Array.isArray(protos) ? protos : (protos?.protocols || [])
+      setAuditProtocols(protoList)
     } catch (e) {
       toast.error(t('authProfiles.loadFailed', 'Failed to load credentials'))
     } finally {
       setLoading(false)
+    }
+  }
+
+  const credentialById = useMemo(() => {
+    const m = {}
+    credentials.forEach(c => { m[c.id] = c })
+    return m
+  }, [credentials])
+
+  const onDeleteBinding = async (rule) => {
+    const ok = await confirm(
+      t('credentialBindings.deleteConfirm',
+        'Audits that relied on this rule will fall back to anonymous (where allowed) or fail.'),
+      { title: t('credentialBindings.deleteTitle', 'Delete binding rule?') },
+    )
+    if (!ok) return
+    try {
+      await deleteCredentialBinding(rule.id)
+      toast.success(t('credentialBindings.deleted', 'Binding rule deleted'))
+      load()
+    } catch (e) {
+      toast.error(e.message || t('credentialBindings.deleteFailed', 'Delete failed'))
     }
   }
 
@@ -232,6 +269,105 @@ export default function AuthProfileManager() {
         </div>
       )}
 
+      {/* ── Binding rules section ─────────────────────────────── */}
+      <div style={{ marginTop: 32 }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 8 }}>
+          <div>
+            <h3 style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>
+              <Link2 size={14} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 6, color: 'var(--text-muted)' }} />
+              {t('credentialBindings.heading', 'Auto-apply rules')}
+            </h3>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
+              {t('credentialBindings.sub',
+                'Pick a credential automatically when an audit runs against matching assets. Rules evaluate top-down by priority (lower number wins).')}
+            </div>
+          </div>
+          <div style={{ flex: 1 }} />
+          <Button
+            variant="secondary"
+            onClick={() => setEditingBinding({})}
+            disabled={credentials.length === 0}
+            title={credentials.length === 0
+              ? t('credentialBindings.needCred', 'Add a credential first')
+              : ''}
+          >
+            <Plus size={14} /> {t('credentialBindings.newRule', 'New rule')}
+          </Button>
+        </div>
+
+        {bindings.length === 0 ? (
+          <Card>
+            <div style={{ padding: 16, fontSize: 12, color: 'var(--text-muted)' }}>
+              {t('credentialBindings.emptyHint',
+                'No binding rules yet. Without a rule, every audit run needs its credential picked manually at kickoff.')}
+            </div>
+          </Card>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {bindings.map(rule => {
+              const cred = credentialById[rule.credential_id]
+              const conditions = _formatConditions(rule, t)
+              return (
+                <Card key={rule.id}>
+                  <div style={{ padding: 10, display: 'flex', alignItems: 'center', gap: 12 }}>
+                    <span style={{
+                      minWidth: 28, padding: '2px 6px', borderRadius: 4, fontSize: 10,
+                      background: 'var(--bg-secondary)', color: 'var(--text-muted)',
+                      fontVariantNumeric: 'tabular-nums', textAlign: 'center',
+                    }}>{rule.priority}</span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: 'flex', gap: 8, alignItems: 'baseline' }}>
+                        <strong style={{ fontSize: 13 }}>{rule.name}</strong>
+                        {!rule.enabled && (
+                          <span style={{
+                            fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.05em',
+                            padding: '1px 6px', borderRadius: 3,
+                            background: 'rgba(148,163,184,0.18)', color: 'var(--text-muted)',
+                          }}>{t('common.disabled', 'disabled')}</span>
+                        )}
+                      </div>
+                      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
+                        {conditions.length > 0
+                          ? conditions.join(' · ')
+                          : t('credentialBindings.wildcardWarning',
+                              'no conditions — would match every asset')}
+                      </div>
+                      {rule.description && (
+                        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2, fontStyle: 'italic' }}>
+                          {rule.description}
+                        </div>
+                      )}
+                    </div>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)', textAlign: 'right' }}>
+                      <div>→ {cred ? cred.name : (
+                        <span style={{ color: 'var(--danger)' }}>
+                          {t('credentialBindings.missingCred', 'credential missing')}
+                        </span>
+                      )}</div>
+                      {cred && (
+                        <div style={{ fontSize: 10 }}>
+                          {(META[cred.connector_id] || META.generic).label}
+                        </div>
+                      )}
+                    </div>
+                    <button
+                      onClick={() => setEditingBinding(rule)}
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 6 }}
+                      title={t('common.edit', 'Edit')}
+                    ><Edit2 size={15} /></button>
+                    <button
+                      onClick={() => onDeleteBinding(rule)}
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--danger)', padding: 6 }}
+                      title={t('common.delete', 'Delete')}
+                    ><Trash2 size={15} /></button>
+                  </div>
+                </Card>
+              )
+            })}
+          </div>
+        )}
+      </div>
+
       {editingCred !== null && (
         <CredentialDialog
           credentialId={editingCred.id}
@@ -247,8 +383,31 @@ export default function AuthProfileManager() {
           onSaved={() => { setEditingProfile(null); load() }}
         />
       )}
+
+      {editingBinding !== null && (
+        <BindingDialog
+          rule={editingBinding}
+          credentials={credentials}
+          protocols={auditProtocols}
+          onClose={() => setEditingBinding(null)}
+          onSaved={() => { setEditingBinding(null); load() }}
+        />
+      )}
     </div>
   )
+}
+
+// Human-friendly summary of a rule's conditions, oldest → newest field
+// so the rendering order matches mental model (broad → specific).
+function _formatConditions(rule, t) {
+  const out = []
+  if (rule.audit_protocol) out.push(t('credentialBindings.condProtocol', { p: rule.audit_protocol, defaultValue: 'protocol={{p}}' }))
+  if (rule.asset_type)     out.push(t('credentialBindings.condAssetType', { v: rule.asset_type, defaultValue: 'asset={{v}}' }))
+  if (rule.device_type)    out.push(t('credentialBindings.condDeviceType', { v: rule.device_type, defaultValue: 'device={{v}}' }))
+  if (rule.cidr)           out.push(t('credentialBindings.condCidr', { v: rule.cidr, defaultValue: 'cidr={{v}}' }))
+  if (rule.hostname_pattern) out.push(t('credentialBindings.condHostname', { v: rule.hostname_pattern, defaultValue: 'hostname=/{{v}}/' }))
+  if (rule.tag)            out.push(t('credentialBindings.condTag', { v: rule.tag, defaultValue: 'tag={{v}}' }))
+  return out
 }
 
 // ── Credential create/edit modal ─────────────────────────────
@@ -430,6 +589,229 @@ function CredentialDialog({ credentialId, onClose, onSaved }) {
       </div>
     </div>
   )
+}
+
+// ── Binding rule create/edit modal ──────────────────────────
+
+function BindingDialog({ rule, credentials, protocols, onClose, onSaved }) {
+  const { t } = useTranslation()
+  const toast = useToast()
+  const isEdit = !!rule?.id
+
+  const [saving, setSaving] = useState(false)
+  const [name, setName] = useState(rule?.name || '')
+  const [description, setDescription] = useState(rule?.description || '')
+  const [credentialId, setCredentialId] = useState(rule?.credential_id || credentials[0]?.id || '')
+  const [priority, setPriority] = useState(rule?.priority ?? 100)
+  const [enabled, setEnabled] = useState(rule?.enabled ?? true)
+  const [auditProtocol, setAuditProtocol] = useState(rule?.audit_protocol || '')
+  const [assetType, setAssetType] = useState(rule?.asset_type || '')
+  const [deviceType, setDeviceType] = useState(rule?.device_type || '')
+  const [cidr, setCidr] = useState(rule?.cidr || '')
+  const [hostnamePattern, setHostnamePattern] = useState(rule?.hostname_pattern || '')
+  const [tag, setTag] = useState(rule?.tag || '')
+
+  const conditionCount = [auditProtocol, assetType, deviceType, cidr, hostnamePattern, tag]
+    .filter(v => v && v.trim()).length
+
+  const valid = name.trim() && credentialId && conditionCount > 0
+
+  const onSave = async () => {
+    if (!valid) return
+    setSaving(true)
+    try {
+      const body = {
+        credential_id: credentialId,
+        name: name.trim(),
+        description: description.trim() || null,
+        priority: Number(priority) || 100,
+        enabled,
+        audit_protocol: auditProtocol.trim() || null,
+        asset_type: assetType.trim() || null,
+        device_type: deviceType.trim() || null,
+        cidr: cidr.trim() || null,
+        hostname_pattern: hostnamePattern.trim() || null,
+        tag: tag.trim() || null,
+      }
+      if (isEdit) {
+        await updateCredentialBinding(rule.id, body)
+        toast.success(t('credentialBindings.updated', 'Binding rule updated'))
+      } else {
+        await createCredentialBinding(body)
+        toast.success(t('credentialBindings.created', 'Binding rule created'))
+      }
+      onSaved()
+    } catch (e) {
+      toast.error(e.message || t('credentialBindings.saveFailed', 'Save failed'))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  // Common asset_type / device_type / protocol values for the datalist
+  // hints. Backend treats these as free-form strings so the lists are not
+  // a wire constraint — just keep them aligned with what scanners emit.
+  const _ASSET_TYPES = ['host', 'web_app', 'cloud_instance', 'k8s_workload',
+                        'container_image', 'identity', 'api_endpoint']
+  const _DEVICE_TYPES = ['server', 'workstation', 'router', 'switch', 'firewall',
+                         'printer', 'hypervisor', 'wap', 'voip',
+                         'ip_camera', 'ip_phone', 'access_control',
+                         'iot_sensor', 'storage']
+  const protocolOptions = (protocols || [])
+    .map(p => p?.protocol || p)
+    .filter(Boolean)
+    .sort()
+
+  return (
+    <div style={_overlay} onClick={onClose}>
+      <div style={_dialog} onClick={e => e.stopPropagation()}>
+        <div style={{ padding: '14px 18px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center' }}>
+          <div style={{ fontSize: 14, fontWeight: 600, flex: 1 }}>
+            {isEdit
+              ? t('credentialBindings.editTitle', 'Edit binding rule')
+              : t('credentialBindings.newTitle', 'New binding rule')}
+          </div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 18, cursor: 'pointer', color: 'var(--text-muted)' }}>×</button>
+        </div>
+
+        <div style={{ padding: 18 }}>
+          {/* Identity + credential + priority */}
+          <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 8 }}>
+            <input
+              placeholder={t('credentialBindings.namePlaceholder', 'Rule name (e.g. "All IP cameras → cam-svc")')}
+              value={name} onChange={e => setName(e.target.value)} style={_inp}
+            />
+            <input
+              type="number" min="0" max="10000"
+              placeholder={t('credentialBindings.priorityPlaceholder', 'Priority (lower wins)')}
+              value={priority} onChange={e => setPriority(e.target.value)} style={_inp}
+            />
+          </div>
+
+          <div style={{ marginTop: 8 }}>
+            <label style={_label}>{t('credentialBindings.credentialLabel', 'Apply this credential')}</label>
+            <select
+              value={credentialId} onChange={e => setCredentialId(e.target.value)}
+              style={_inp}
+            >
+              {credentials.map(c => (
+                <option key={c.id} value={c.id}>
+                  {c.name} — {(META[c.connector_id] || META.generic).label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div style={{ marginTop: 8 }}>
+            <textarea
+              rows={2}
+              placeholder={t('credentialBindings.descPlaceholder', 'Description (optional)')}
+              value={description} onChange={e => setDescription(e.target.value)}
+              style={{ ..._inp, width: '100%', resize: 'vertical', fontFamily: 'inherit' }}
+            />
+          </div>
+
+          {/* Conditions */}
+          <div style={{
+            marginTop: 14, padding: 12, borderRadius: 6,
+            background: 'var(--bg-secondary)', border: '1px solid var(--border)',
+          }}>
+            <div style={{
+              fontSize: 11, fontWeight: 600, textTransform: 'uppercase',
+              letterSpacing: '0.04em', color: 'var(--text-muted)', marginBottom: 8,
+            }}>
+              {t('credentialBindings.whenMatches', 'When asset matches')}
+              <span style={{ fontWeight: 400, marginLeft: 6, textTransform: 'none', letterSpacing: 0 }}>
+                {t('credentialBindings.andSemantics', '(all set conditions must match — empty = wildcard)')}
+              </span>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+              <div>
+                <label style={_label}>{t('credentialBindings.fieldProtocol', 'Audit protocol')}</label>
+                <select value={auditProtocol} onChange={e => setAuditProtocol(e.target.value)} style={_inp}>
+                  <option value="">{t('credentialBindings.anyValue', '(any)')}</option>
+                  {protocolOptions.map(p => <option key={p} value={p}>{p}</option>)}
+                </select>
+              </div>
+
+              <div>
+                <label style={_label}>{t('credentialBindings.fieldDeviceType', 'Device type')}</label>
+                <input
+                  list="binding-device-types"
+                  placeholder={t('credentialBindings.anyValue', '(any)')}
+                  value={deviceType} onChange={e => setDeviceType(e.target.value)} style={_inp}
+                />
+                <datalist id="binding-device-types">
+                  {_DEVICE_TYPES.map(v => <option key={v} value={v} />)}
+                </datalist>
+              </div>
+
+              <div>
+                <label style={_label}>{t('credentialBindings.fieldAssetType', 'Asset type')}</label>
+                <input
+                  list="binding-asset-types"
+                  placeholder={t('credentialBindings.anyValue', '(any)')}
+                  value={assetType} onChange={e => setAssetType(e.target.value)} style={_inp}
+                />
+                <datalist id="binding-asset-types">
+                  {_ASSET_TYPES.map(v => <option key={v} value={v} />)}
+                </datalist>
+              </div>
+
+              <div>
+                <label style={_label}>{t('credentialBindings.fieldCidr', 'CIDR')}</label>
+                <input
+                  placeholder="10.0.0.0/24"
+                  value={cidr} onChange={e => setCidr(e.target.value)} style={_inp}
+                />
+              </div>
+
+              <div>
+                <label style={_label}>{t('credentialBindings.fieldHostname', 'Hostname regex')}</label>
+                <input
+                  placeholder="^cam-"
+                  value={hostnamePattern} onChange={e => setHostnamePattern(e.target.value)} style={_inp}
+                />
+              </div>
+
+              <div>
+                <label style={_label}>{t('credentialBindings.fieldTag', 'Tag')}</label>
+                <input
+                  placeholder="floor3-cameras"
+                  value={tag} onChange={e => setTag(e.target.value)} style={_inp}
+                />
+              </div>
+            </div>
+
+            {conditionCount === 0 && (
+              <div style={{ marginTop: 8, fontSize: 11, color: 'var(--danger)' }}>
+                {t('credentialBindings.needCondition',
+                  'Set at least one condition. A rule with no conditions would match every asset.')}
+              </div>
+            )}
+          </div>
+
+          <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 8 }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+              <input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)} />
+              {t('credentialBindings.enabled', 'Rule enabled')}
+            </label>
+            <div style={{ flex: 1 }} />
+            <Button variant="secondary" onClick={onClose}>{t('common.cancel', 'Cancel')}</Button>
+            <Button onClick={onSave} disabled={!valid || saving}>
+              {saving ? t('common.saving', 'Saving…') : t('common.save', 'Save')}
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+const _label = {
+  display: 'block', fontSize: 11, color: 'var(--text-muted)',
+  marginBottom: 3, textTransform: 'uppercase', letterSpacing: '0.04em',
 }
 
 // ── Styles ───────────────────────────────────────────────────

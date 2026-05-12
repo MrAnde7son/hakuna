@@ -27,6 +27,7 @@ const ROUTES = [
   { path: '/agents', name: 'Agents' },
   { path: '/feed', name: 'Activity Feed' },
   { path: '/settings?tab=org-memory', name: 'Settings → Org Memory' },
+  { path: '/settings?tab=auth-profiles', name: 'Settings → Credentials' },
   { path: '/tags', name: 'Tags' },
   { path: '/custom-fields', name: 'Custom Fields' },
   { path: '/threat-intel', name: 'Threat Intel' },
