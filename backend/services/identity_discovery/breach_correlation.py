@@ -32,6 +32,8 @@ from sqlalchemy.orm import Session
 
 from models.models import Asset, Finding, Organization
 from models.threat_intel_models import BreachRecord, DomainBreach
+from services.asset_observations import record_finding_observation
+from services.post_ingest import _recompute_asset_severity_counts
 from .email_permutations import permute_corporate_emails
 
 logger = logging.getLogger(__name__)
@@ -130,6 +132,7 @@ def correlate_breaches_for_identities(
     now = datetime.utcnow()
     created = 0
     updated = 0
+    touched_finding_ids: list[int] = []
 
     for asset in assets:
         display_name = (asset.asset_attributes or {}).get("display_name")
@@ -185,6 +188,22 @@ def correlate_breaches_for_identities(
                 *[f"  - {e}" for e in emails],
             ])
 
+            raw_fields = {
+                "identity": display_name,
+                "identity_source": (asset.asset_identity or {}).get("source"),
+                "profile_url": (asset.asset_attributes or {}).get("profile_url"),
+                "domain": domain,
+                "breach_name": db_breach.breach_name,
+                "breach_title": breach_record.title if breach_record else None,
+                "breach_date": breach_date,
+                "exposed_count": db_breach.exposed_count,
+                "data_classes": data_classes,
+                "candidate_emails": emails,
+                "is_sensitive": bool(breach_record.is_sensitive) if breach_record else None,
+                "is_fabricated": bool(breach_record.is_fabricated) if breach_record else None,
+                "is_spam_list": bool(breach_record.is_spam_list) if breach_record else None,
+            }
+
             existing = existing_findings.get((asset.id, pid))
             if existing:
                 existing.severity = sev
@@ -193,9 +212,10 @@ def correlate_breaches_for_identities(
                 existing.priority_score = priority
                 existing.last_seen = now
                 existing.plugin_output = plugin_output
+                finding_id = existing.id
                 updated += 1
             else:
-                db.add(Finding(
+                finding = Finding(
                     scan_id=scan_id, asset_id=asset.id,
                     source_type="easm", source_vuln_id=pid,
                     plugin_id=pid,
@@ -209,8 +229,26 @@ def correlate_breaches_for_identities(
                     solution=solution,
                     plugin_output=plugin_output,
                     first_seen=now, last_seen=now,
-                ))
+                )
+                db.add(finding)
+                db.flush()
+                finding_id = finding.id
                 created += 1
+
+            touched_finding_ids.append(finding_id)
+            record_finding_observation(
+                db, finding_id=finding_id, source_system="hibp",
+                raw_fields=raw_fields, scan_id=scan_id,
+            )
+
+    # Recompute critical/high/medium/low_count on touched identity assets so
+    # the Assets list "Findings" column and risk scores reflect the new
+    # breach-exposure findings. The main ingest pipeline does this via
+    # finalize_scan, but identity-discovery runs outside that pipeline.
+    if touched_finding_ids:
+        _recompute_asset_severity_counts(
+            db, scan_id, new_finding_ids=touched_finding_ids,
+        )
 
     logger.info(
         "Identity breach correlation org=%s domain=%s identities=%d "

@@ -1230,7 +1230,7 @@ export default function FindingDetail() {
 const FINDING_SOURCE_LABELS = {
   nessus: 'Nessus', tenable_sc: 'Tenable.sc', qualys: 'Qualys', rapid7: 'Rapid7',
   openvas: 'OpenVAS', crowdstrike: 'CrowdStrike', wiz: 'Wiz', easm: 'EASM',
-  vm_scanner: 'VM Audit',
+  vm_scanner: 'VM Audit', hibp: 'HIBP',
 }
 
 const FINDING_FIELD_LABELS = {

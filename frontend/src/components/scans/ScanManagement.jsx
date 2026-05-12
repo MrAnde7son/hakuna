@@ -6,7 +6,7 @@ import {
   RefreshCw, Trash2, Search, Clock, Server, Shield, Loader,
   Play, MonitorSmartphone, History, ChevronDown, ChevronUp, Edit2, Save,
   Square, Terminal, Key, Radio, ShieldAlert, ShieldCheck, Users, HardDrive, Database, Network, Cloud,
-  Cpu, Sparkles, Factory, Eye,
+  Cpu, Sparkles, Factory, Eye, Play as PlayIcon,
 } from 'lucide-react'
 import { useScan } from '../../App.jsx'
 import useURLFilters from '../../hooks/useURLFilters.js'
