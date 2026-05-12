@@ -19,6 +19,7 @@ from . import ipmi_probe  # noqa: F401
 from . import netbios_probe  # noqa: F401
 from . import ot_protocol_probe  # noqa: F401
 from . import ot_passive_probe  # noqa: F401
+from . import http_auth_probe  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
