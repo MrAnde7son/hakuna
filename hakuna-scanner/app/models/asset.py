@@ -200,6 +200,11 @@ class ScanRun(Base):
     # in app.tasks.recovery.
     recovery_attempts: Mapped[int] = mapped_column(Integer, default=0)
 
+    # Celery task id of the top-level chain task. Populated at dispatch so
+    # the cancel endpoint can `AsyncResult(task_id).revoke(terminate=True)`
+    # a hung worker instead of just flipping status.
+    celery_task_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
     org: Mapped["Org"] = relationship(back_populates="scan_runs")  # noqa: F821
 
 

@@ -678,7 +678,24 @@ async def _do_liveness_gate(sf, org_id: str, target_scope: str | None = None) ->
                             )
                             return None
 
-                probe_results = await asyncio.gather(*[_probe(r) for r in dangling_rows])
+                # Hard cap on the dangling-probe phase. Each probe is
+                # already bounded internally (DNS 5s, HTTP 5s), but a
+                # large dangling set under sem(20) plus retries can still
+                # take a long time. ~6s/host with a 60s floor gives slack
+                # without leaving the gate hung if something misbehaves.
+                probe_timeout = max(60.0, len(dangling_rows) * 6.0)
+                try:
+                    probe_results = await asyncio.wait_for(
+                        asyncio.gather(*[_probe(r) for r in dangling_rows]),
+                        timeout=probe_timeout,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "org=%s dangling_dns probe timed out after %.0fs (n=%d); "
+                        "skipping remaining probes",
+                        org_id, probe_timeout, len(dangling_rows),
+                    )
+                    probe_results = []
 
             for result in probe_results:
                 if result is None:

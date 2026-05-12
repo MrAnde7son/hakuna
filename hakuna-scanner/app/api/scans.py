@@ -1,5 +1,6 @@
 """Scan triggering and status endpoints."""
 
+import logging
 import uuid
 from datetime import datetime
 
@@ -8,11 +9,14 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.celery_app import celery
 from app.database import get_db
 from app.models.asset import ScanRun
 from app.models.org import Org
 from app.tasks.discovery import run_discovery_chain
 from app.tasks.enrichment import run_enrichment_chain
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/orgs/{org_id}/scans", tags=["scans"])
 
@@ -92,14 +96,20 @@ async def trigger_scan(
     run_str = str(scan_run.id)
 
     if body.scan_type == "discovery":
-        run_discovery_chain.delay(org_str, run_str)
+        result = run_discovery_chain.delay(org_str, run_str)
     elif body.scan_type == "enrichment":
-        run_enrichment_chain.delay(org_str, run_str)
+        result = run_enrichment_chain.delay(org_str, run_str)
     else:  # full
-        run_discovery_chain.apply_async(
+        result = run_discovery_chain.apply_async(
             args=[org_str, run_str],
             link=run_enrichment_chain.si(org_str, run_str),
         )
+
+    # Persist the chain's task_id so cancel_scan can revoke a hung worker.
+    # Stored separately from `id` because Celery's chain id is opaque to us.
+    scan_run.celery_task_id = result.id
+    await db.commit()
+    await db.refresh(scan_run)
 
     return scan_run
 
@@ -177,13 +187,15 @@ async def cancel_scan(
     scan_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
 ):
-    """Mark a queued/running scan as cancelled.
+    """Mark a queued/running scan as cancelled and revoke its Celery task.
 
-    Celery tasks already dispatched keep running to completion — revoking
-    the chain mid-flight isn't safe here (the workers hold DB transactions
-    per-stage). But flipping the status gates the UI poll loop and prevents
-    downstream stages from updating the row further in practice, since the
-    status checks in the task code skip terminal rows.
+    Before 2026-05-12 this only flipped the DB status — a hung worker
+    (e.g. stalled on `getaddrinfo` in the liveness gate) kept burning a
+    slot until the 4h soft-time-limit fired and the recovery loop
+    couldn't re-dispatch a new attempt. We now also terminate the
+    chain's task_id when one is recorded; for legacy rows without a
+    celery_task_id (dispatched before this column existed) we still flip
+    status as a fallback so the UI updates.
     """
     result = await db.execute(
         select(ScanRun).where(ScanRun.id == scan_id, ScanRun.org_id == org_id)
@@ -193,6 +205,18 @@ async def cancel_scan(
         raise HTTPException(404, "Scan run not found")
     if scan.status not in ("queued", "running"):
         raise HTTPException(409, f"Scan is already {scan.status}")
+
+    if scan.celery_task_id:
+        try:
+            celery.control.revoke(scan.celery_task_id, terminate=True, signal="SIGTERM")
+        except Exception:
+            # Broker hiccup shouldn't block the user from cancelling — the
+            # status flip still gates the recovery loop from redispatching.
+            logger.exception(
+                "Failed to revoke celery task %s for scan %s",
+                scan.celery_task_id, scan_id,
+            )
+
     scan.status = "cancelled"
     scan.finished_at = datetime.utcnow()
     scan.error = "Cancelled by user"

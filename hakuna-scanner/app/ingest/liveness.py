@@ -5,6 +5,7 @@ whether assets are alive, unconfirmed, or likely dead.
 """
 
 import asyncio
+import concurrent.futures
 import json
 import logging
 import os
@@ -216,28 +217,81 @@ def check_dns_resolution(hostname: str) -> list[str]:
 # pool and keeps the resolver from rate-limiting us.
 _DNS_RESOLVE_CONCURRENCY = 64
 
+# Per-lookup hard timeout. `socket.getaddrinfo` ignores Python's socket
+# timeout and will block its executor thread forever on an unresponsive
+# resolver — that's how the liveness gate stalled in prod 2026-05-12.
+# `asyncio.wait_for` returns even though the underlying thread keeps
+# blocking; we contain that leak by running DNS on a dedicated executor
+# we can dispose with wait=False (see `_resolve_in_dedicated_executor`).
+_DNS_RESOLVE_TIMEOUT_SECONDS = 5.0
+
 # Chunk size for the bulk UPDATE … FROM (VALUES …) statement. Keeps the
 # parsed query size bounded for very large scans.
 _LIVENESS_UPDATE_CHUNK = 500
 
 
-async def _resolve_hostnames_async(hostnames: list[str]) -> dict[str, list[str]]:
-    """Resolve many hostnames concurrently.
+async def _resolve_in_dedicated_executor(
+    hostnames: list[str],
+    concurrency: int = _DNS_RESOLVE_CONCURRENCY,
+) -> dict[str, list[str]]:
+    """Resolve hostnames concurrently on a disposable executor.
 
-    `check_dns_resolution` does a blocking `socket.getaddrinfo`, so each
-    lookup runs in the asyncio default executor and we gather them. The
-    LOAD_GLOBAL on `check_dns_resolution` happens at call time, so test
-    patches on `app.ingest.liveness.check_dns_resolution` still take effect.
+    Why a dedicated executor: `check_dns_resolution` is a blocking
+    `socket.getaddrinfo`, which ignores Python timeouts. `asyncio.wait_for`
+    lets us stop waiting, but the thread itself stays pinned on the C call.
+    If we used the default asyncio executor (max ~32 threads), a single
+    scan against an org with a flaky resolver would permanently leak
+    threads and poison every subsequent DNS lookup in the worker process.
+
+    By spinning up our own pool and tearing it down with `wait=False`,
+    leaked threads die with the worker — they don't accumulate across
+    scans.
     """
-    sem = asyncio.Semaphore(_DNS_RESOLVE_CONCURRENCY)
+    loop = asyncio.get_running_loop()
+    executor = concurrent.futures.ThreadPoolExecutor(
+        max_workers=concurrency,
+        thread_name_prefix="easm-dns",
+    )
+    sem = asyncio.Semaphore(concurrency)
 
     async def _one(host: str) -> tuple[str, list[str]]:
         async with sem:
-            ips = await asyncio.to_thread(check_dns_resolution, host)
-            return host, ips
+            try:
+                ips = await asyncio.wait_for(
+                    loop.run_in_executor(executor, check_dns_resolution, host),
+                    timeout=_DNS_RESOLVE_TIMEOUT_SECONDS,
+                )
+                return host, ips
+            except asyncio.TimeoutError:
+                logger.warning("DNS resolution timed out for %s", host)
+                return host, []
+            except Exception:
+                logger.debug("DNS resolution failed for %s", host, exc_info=True)
+                return host, []
 
-    pairs = await asyncio.gather(*[_one(h) for h in hostnames])
-    return dict(pairs)
+    try:
+        pairs = await asyncio.gather(*[_one(h) for h in hostnames])
+        return dict(pairs)
+    finally:
+        # cancel_futures discards queued lookups; threads already running
+        # `getaddrinfo` can't be preempted but exit with the pool.
+        executor.shutdown(wait=False, cancel_futures=True)
+
+
+async def _resolve_hostnames_async(hostnames: list[str]) -> dict[str, list[str]]:
+    """Resolve many hostnames concurrently with bounded timeouts.
+
+    The LOAD_GLOBAL on `check_dns_resolution` happens at call time inside
+    the executor wrapper, so test patches on
+    `app.ingest.liveness.check_dns_resolution` still take effect.
+    """
+    return await _resolve_in_dedicated_executor(hostnames)
+
+
+async def _resolve_one_bounded(hostname: str) -> list[str]:
+    """Single-hostname DNS lookup with the same hard timeout."""
+    result = await _resolve_in_dedicated_executor([hostname], concurrency=1)
+    return result.get(hostname, [])
 
 
 async def validate_and_update_assets(
@@ -414,7 +468,7 @@ async def probe_dangling_asset(
     failure becomes ``takeover_evidence = None`` so the caller still creates
     the legacy dangling-DNS finding.
     """
-    resolved_ips = await asyncio.to_thread(check_dns_resolution, hostname)
+    resolved_ips = await _resolve_one_bounded(hostname)
     cloud_provider: str | None = None
     for ip in resolved_ips:
         cloud_provider = identify_cloud_provider(ip)
