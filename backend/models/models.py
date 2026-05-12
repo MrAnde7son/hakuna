@@ -2639,6 +2639,53 @@ class IntegrationCredential(Base):
     integrations = relationship("Integration", back_populates="credential")
 
 
+class CredentialBindingRule(Base):
+    """Rules that auto-select a credential for an audit based on asset shape.
+
+    Without this table every audit needs an explicit ``credential_id`` —
+    painful as the device fleet grows. A rule says "for assets matching X,
+    use credential Y for protocol Z". Rules evaluate top-down by priority
+    (lower number wins, like firewall rules); the first match returns its
+    credential.
+
+    Match conditions (all non-null conditions must hold; nulls are wildcards):
+      - ``audit_protocol``    — restrict to one audit (snmp, ssh, http_auth, …)
+      - ``asset_type``        — host, ip_camera, k8s_workload, …
+      - ``device_type``       — ip_camera, ip_phone, printer, …
+      - ``cidr``              — asset IP within CIDR
+      - ``hostname_pattern``  — regex against hostname / fqdn / netbios_name
+      - ``tag``               — asset has this tag
+
+    Rules never elevate access: the credential's own org_id must match the
+    asset's org (the service enforces this on resolve).
+    """
+    __tablename__ = "credential_binding_rules"
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"),
+                    nullable=False, index=True)
+    credential_id = Column(String,
+                           ForeignKey("integration_credentials.id", ondelete="CASCADE"),
+                           nullable=False, index=True)
+
+    name = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    priority = Column(Integer, nullable=False, default=100)   # lower = higher priority
+    enabled = Column(Boolean, nullable=False, default=True)
+
+    # Match conditions — null means "any".
+    audit_protocol = Column(String, nullable=True, index=True)
+    asset_type = Column(String, nullable=True)
+    device_type = Column(String, nullable=True)
+    cidr = Column(String, nullable=True)
+    hostname_pattern = Column(String, nullable=True)
+    tag = Column(String, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+
 class AuthProfile(Base):
     """Authentication profile for VM scans — a named, org-scoped way to auth.
 

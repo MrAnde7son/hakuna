@@ -83,6 +83,7 @@ from routes.sbom_routes import router as sbom_router
 from routes.vm_routes import router as vm_router
 from routes.auth_profile_routes import router as auth_profile_router
 from routes.audit_routes import router as audit_router
+from routes.credential_binding_routes import router as credential_binding_router
 from routes.ot_posture_routes import router as ot_posture_router
 from routes.internal_relay_routes import (
     router as internal_relay_router,
@@ -324,6 +325,7 @@ app.include_router(sbom_router)
 app.include_router(vm_router)
 app.include_router(auth_profile_router)
 app.include_router(audit_router)
+app.include_router(credential_binding_router)
 app.include_router(ot_posture_router)
 app.include_router(internal_relay_router)
 app.include_router(cloud_relay_ws_router)

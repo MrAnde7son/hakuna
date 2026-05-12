@@ -271,13 +271,25 @@ def _spawn_scratch_agents_for_scan(
     # single run without touching the others if the UI ever gains per-run
     # cancel.
     task_ids_by_agent: dict[int, str] = {}
+    # Per-asset credential resolution. When the caller did not pin a
+    # credential_id explicitly, consult the credential→asset binding
+    # rules for this org. Each asset can resolve to a different credential
+    # — that's the whole point of bindings, e.g. "use the camera service
+    # account for cameras and the printer one for printers".
+    from services.credential_binding import resolve_credential_for_asset
     for asset_id in asset_ids:
         if asset_id not in asset_by_id:
             continue
+        run_credential_id = credential_id
+        if run_credential_id is None:
+            run_credential_id = resolve_credential_for_asset(
+                db, asset_by_id[asset_id],
+                protocol=audit.protocol, org_id=org_id,
+            )
         agent = _create_scratch_agent(
             db, org_id, audit, mission_template, asset_id,
             relay_agent_id=relay_agent_id,
-            credential_id=credential_id,
+            credential_id=run_credential_id,
             max_steps=max_steps,
             model=model,
             scan_id=scan.id,
