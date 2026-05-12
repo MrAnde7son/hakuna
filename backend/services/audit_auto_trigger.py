@@ -450,6 +450,67 @@ def _stamp_cooldown(asset: Asset, protocol: str, now: datetime) -> None:
     asset.easm_data = easm
 
 
+def _fingerprinted_ports(asset: Asset) -> Optional[set[int]]:
+    """Ports on which the scanner positively identified a service.
+
+    Returns:
+      - ``set[int]`` of int port numbers when ``easm_data["services"]`` is a
+        dict (the live shape produced by naabu ``-sV`` ingest). An empty dict
+        yields an empty set — service detection ran but found nothing.
+      - ``None`` when no service-fingerprint signal is available on the asset
+        (key absent / null / non-dict shape). Callers fall back to port-only
+        matching for back-compat with pre-``-sV`` ingest.
+    """
+    easm = asset.easm_data if isinstance(asset.easm_data, dict) else None
+    if not easm:
+        return None
+    services = easm.get("services")
+    if not isinstance(services, dict):
+        return None
+    ports: set[int] = set()
+    for key in services.keys():
+        try:
+            ports.add(int(key))
+        except (TypeError, ValueError):
+            continue
+    return ports
+
+
+def _filter_rules_by_service(
+    matched: dict[str, AutoTriggerRule],
+    new_ports: set[int],
+    asset: Asset,
+) -> dict[str, AutoTriggerRule]:
+    """Drop rules whose triggering ports have no service fingerprint.
+
+    A port lands in ``new_ports`` because naabu got a TCP SYN-ACK on it. That
+    signal is noisy on assets behind anycast / SYN-proxy edges (Cloudflare,
+    some WAFs) which ACK every probe — naabu reports hundreds of "open" ports
+    while ``-sV`` correctly identifies only the real service. Without this
+    gate the auto-trigger fires anon-protocol audits on phantom ports
+    (21/53/88/5900) and every probe returns ECONNRESET.
+
+    Falls back to ``matched`` unchanged when the asset has no ``services``
+    field — pre-``-sV`` assets shouldn't silently stop triggering.
+    """
+    fingerprinted = _fingerprinted_ports(asset)
+    if fingerprinted is None:
+        return matched
+    survivors: dict[str, AutoTriggerRule] = {}
+    for protocol, rule in matched.items():
+        rule_triggers = set(rule.ports) & new_ports
+        if rule_triggers & fingerprinted:
+            survivors[protocol] = rule
+        else:
+            logger.info(
+                "auto-audit: asset=%d protocol=%s suppressed — none of new ports %s "
+                "have a fingerprinted service (fingerprinted=%s)",
+                asset.id, protocol, sorted(rule_triggers),
+                sorted(fingerprinted)[:8],
+            )
+    return survivors
+
+
 def _match_rules(new_ports: set[int], transport: str = "tcp") -> dict[str, AutoTriggerRule]:
     """Pick the first rule (in registry order) per protocol whose port set
     intersects ``new_ports`` AND whose declared transport matches ``transport``.
@@ -540,6 +601,10 @@ def maybe_auto_trigger_anon_audits(
             "auto-audit: org=%d asset=%d suppressed — scan %d opted out at creation",
             org.id, asset.id, scan.id,
         )
+        return 0
+
+    matched = _filter_rules_by_service(matched, new_ports, asset)
+    if not matched:
         return 0
 
     relay = _pick_relay(db, org.id, asset)

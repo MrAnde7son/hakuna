@@ -153,13 +153,13 @@ class TestTriggerVmScanForEasmAssets:
         assert len(targets) == MAX_AUTO_VM_TARGETS
 
     def test_idempotent_no_duplicate_scan(self, db_session):
-        """Second call for the same EASM scan does not create another VM scan."""
+        """Second call within the idempotency window does not create another VM scan."""
         from models.models import Scan
         session, org = db_session
         easm_scan = _make_easm_scan(session, org)
         _make_easm_asset(session, easm_scan.id, "app.example.com", ports=[443])
 
-        # Simulate an existing VM scan already triggered for this EASM scan
+        # Simulate an existing VM scan triggered minutes ago (within the window)
         existing_vm = Scan(
             org_id=org.id,
             filename="vm-scan-existing",
@@ -178,6 +178,60 @@ class TestTriggerVmScanForEasmAssets:
 
         assert result is None
         mock_start.assert_not_called()
+
+    def test_retriggers_after_idempotency_window(self, db_session):
+        """A prior VM scan older than the idempotency window does not block re-trigger.
+
+        Regression: the scheduled EASM rail reuses the same Scan row across
+        nightly runs, so an unbounded guard on (easm_scan_id) starved every
+        recurring EASM scan after its first VM follow-up.
+        """
+        from datetime import datetime, timedelta
+        from models.models import Scan
+        from services.vm_scanner import AUTO_VM_SCAN_IDEMPOTENCY_HOURS
+
+        session, org = db_session
+        easm_scan = _make_easm_scan(session, org)
+        _make_easm_asset(session, easm_scan.id, "app.example.com", ports=[443])
+
+        stale_vm = Scan(
+            org_id=org.id,
+            filename="vm-scan-stale",
+            scan_name="VM Scan — example.com (auto, from EASM)",
+            scan_date="2026-03-25T00:00:00",
+            scan_type="vm_scan",
+            source_type="vm_scanner",
+            raw_metadata={"easm_scan_id": easm_scan.id, "auto_triggered": True},
+        )
+        session.add(stale_vm)
+        session.flush()
+        # Age the row past the rolling window
+        stale_vm.created_at = datetime.utcnow() - timedelta(
+            hours=AUTO_VM_SCAN_IDEMPOTENCY_HOURS + 1
+        )
+        session.flush()
+
+        with patch("services.vm_scanner.start_vm_scan", new_callable=AsyncMock) as mock_start:
+            mock_start.return_value = {"scan_id": stale_vm.id + 1, "job_ids": ["j1"], "status": "running"}
+            # Create the new Scan row that start_vm_scan would create
+            new_vm = Scan(
+                id=stale_vm.id + 1,
+                org_id=org.id,
+                filename="vm-scan-new",
+                scan_name="placeholder",
+                scan_date="2026-03-26T00:00:00",
+                scan_type="vm_scan",
+                source_type="vm_scanner",
+                raw_metadata={"status": "running"},
+            )
+            session.add(new_vm)
+            session.flush()
+
+            from services.vm_scanner import trigger_vm_scan_for_easm_assets
+            result = _run(trigger_vm_scan_for_easm_assets(session, org, easm_scan.id, "example.com"))
+
+        assert result is not None
+        mock_start.assert_called_once()
 
     def test_scan_record_tagged_as_auto(self, db_session):
         """The created VM scan has correct name and metadata linking back to EASM."""

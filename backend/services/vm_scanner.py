@@ -8,7 +8,7 @@ import asyncio
 import logging
 import re
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Optional
 from urllib.parse import urlparse
 
@@ -1944,6 +1944,13 @@ MAX_AUTO_VM_TARGETS = 20
 # headroom for a real exposed-VPN sweep without unbounded fan-out.
 MAX_AUTO_VM_BYPASS_TARGETS = 50
 
+# Idempotency window for EASM→VM auto-trigger. The scheduled EASM rail reuses
+# the same Scan row across recurring runs, so an unbounded "VM scan ever exists
+# for this easm_scan_id" guard would permanently block nightly re-triggers
+# after day 1. Limit the suppression to a rolling window so each EASM run
+# cycle gets at most one VM follow-up but subsequent runs aren't starved.
+AUTO_VM_SCAN_IDEMPOTENCY_HOURS = 24
+
 
 async def trigger_vm_scan_for_easm_assets(
     db: Session, org: Organization, easm_scan_id: int, domain: str,
@@ -1962,16 +1969,26 @@ async def trigger_vm_scan_for_easm_assets(
     Fortinet/Pulse/Citrix box could lose to N web apps in the score sort.
 
     Creates a proper Scan record so it appears on the scans page.
-    Idempotent — skips if a VM scan was already triggered for this EASM scan.
+    Idempotent within ``AUTO_VM_SCAN_IDEMPOTENCY_HOURS`` — skips if a VM scan
+    was already triggered for this EASM scan within the rolling window.
+    Scheduled EASM scans reuse the same Scan row across runs, so the guard
+    is time-bounded rather than permanent.
     """
-    # Guard: don't trigger twice for the same EASM scan
+    # Guard: don't trigger twice for the same EASM scan within the rolling
+    # idempotency window. An unbounded check would permanently block the
+    # scheduled EASM rail, which reuses scan_id across nightly runs.
+    cutoff = datetime.utcnow() - timedelta(hours=AUTO_VM_SCAN_IDEMPOTENCY_HOURS)
     existing = db.query(Scan.id).filter(
         Scan.org_id == org.id,
         Scan.source_type == "vm_scanner",
+        Scan.created_at >= cutoff,
         cast(Scan.raw_metadata, String).contains(f'"easm_scan_id": {easm_scan_id}'),
     ).first()
     if existing:
-        logger.info("VM scan already triggered for EASM scan %s (vm_scan=%s), skipping", easm_scan_id, existing[0])
+        logger.info(
+            "VM scan already triggered for EASM scan %s (vm_scan=%s) within %dh, skipping",
+            easm_scan_id, existing[0], AUTO_VM_SCAN_IDEMPOTENCY_HOURS,
+        )
         return None
 
     # Fetch EASM assets from this scan
