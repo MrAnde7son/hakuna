@@ -353,23 +353,37 @@ jobs:
         # doesn't trip ExecStartPre's 90s timeout on the unit. `compose up -d`
         # swaps containers in place once the new image is local.
         #
-        # IAP-tunnel SSH occasionally returns 4003 ("failed to connect to
-        # backend, port 22") right after key propagation or during a routine
-        # VM maintenance event. gcloud's own error message tells the operator
-        # to retry, so we do it here instead of failing the deploy.
+        # IAP error 4003 ("failed to connect to backend, port 22") means the
+        # tunnel reached the project but nothing answered on :22 — almost
+        # always a stopped VM, not an SSH key issue. Check state first and
+        # start the instance if needed; only retry SSH once for genuine
+        # transients (maintenance events, sshd restart).
         run: |
           set -e
-          for attempt in 1 2 3; do
-            if gcloud compute ssh hakuna-audit-worker --zone="${{ env.ZONE }}" --tunnel-through-iap \
+          INSTANCE=hakuna-audit-worker
+          ZONE="${{ env.ZONE }}"
+
+          status=$(gcloud compute instances describe "$INSTANCE" \
+            --zone="$ZONE" --format='value(status)')
+          echo "Instance status: $status"
+          if [ "$status" != "RUNNING" ]; then
+            echo "Starting $INSTANCE..."
+            gcloud compute instances start "$INSTANCE" --zone="$ZONE"
+          fi
+
+          for attempt in 1 2; do
+            if gcloud compute ssh "$INSTANCE" --zone="$ZONE" --tunnel-through-iap \
                 --ssh-key-expire-after=10m \
                 --command="cd /opt/hakuna-audit-worker && sudo docker system prune -af --filter 'until=24h' && sudo docker compose pull && sudo docker compose up -d" \
                 --quiet; then
               exit 0
             fi
-            echo "SSH attempt $attempt failed; sleeping 30s before retry..."
-            sleep 30
+            if [ "$attempt" = "1" ]; then
+              echo "SSH attempt 1 failed; sleeping 30s before retry..."
+              sleep 30
+            fi
           done
-          echo "audit-worker SSH failed after 3 attempts"
+          echo "audit-worker SSH failed after 2 attempts"
           exit 1
 
   migrate:
