@@ -6,7 +6,7 @@ import {
   RefreshCw, Trash2, Search, Clock, Server, Shield, Loader,
   Play, MonitorSmartphone, History, ChevronDown, ChevronUp, Edit2, Save,
   Square, Terminal, Key, Radio, ShieldAlert, ShieldCheck, Users, HardDrive, Database, Network, Cloud,
-  Cpu, Sparkles, Factory, Eye, Play as PlayIcon,
+  Cpu, Sparkles, Factory, Eye,
 } from 'lucide-react'
 import { useScan } from '../../App.jsx'
 import useURLFilters from '../../hooks/useURLFilters.js'
@@ -3423,7 +3423,7 @@ function EditAuditScanModal({ scan, onClose, onSaved }) {
 
 // ── Scan card ────────────────────────────────────────────────────────
 
-function ScanCard({ scan, onDelete, deleting, onSelect, onRescan, onRefresh, onCancel, cancelling }) {
+function ScanCard({ scan, onDelete, deleting, onSelect, onRescan, onRefresh, onCancel, cancelling, selected, onToggleSelect }) {
   const navigate = useNavigate()
   const meta = getSourceMeta(scan.source_type)
   const isEasm = scan.source_type === 'easm'
@@ -3466,11 +3466,21 @@ function ScanCard({ scan, onDelete, deleting, onSelect, onRescan, onRefresh, onC
       transition: 'background 0.1s',
     }}
     >
-      <div style={{ padding: '14px 16px' }}
+      <div style={{ padding: '14px 16px', background: selected ? 'var(--bg-secondary)' : 'transparent' }}
         onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-secondary)'}
-        onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+        onMouseLeave={e => e.currentTarget.style.background = selected ? 'var(--bg-secondary)' : 'transparent'}
       >
         <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+          {onToggleSelect && (
+            <input
+              type="checkbox"
+              checked={!!selected}
+              onChange={() => onToggleSelect(scan.id)}
+              onClick={e => e.stopPropagation()}
+              title="Select scan"
+              style={{ flexShrink: 0, cursor: 'pointer' }}
+            />
+          )}
           <div style={{
             width: 36, height: 36, borderRadius: 8, flexShrink: 0,
             background: meta.bg, display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -3849,6 +3859,8 @@ export default function ScanManagement() {
   const [deletingId, setDeletingId] = useState(null)
   const [cancellingId, setCancellingId] = useState(null)
   const [showNewScan, setShowNewScan] = useState(false)
+  const [selectedIds, setSelectedIds] = useState(() => new Set())
+  const [bulkBusy, setBulkBusy] = useState(false)
   const { filters, setFilter, clearFilters: clearURLFilters } = useURLFilters({
     source: { default: '' },
     status: { default: '' },
@@ -4044,6 +4056,74 @@ export default function ScanManagement() {
   const handleSelectScan = (scanId) => {
     setActiveScanId(scanId)
     navigate('/')
+  }
+
+  // ── Bulk selection ───────────────────────────────────────────────
+  // Eligibility mirrors the per-card logic in ScanCard: only EASM/VM/Audit
+  // scans have runtime status, so only those can be started/stopped. Delete
+  // works for any source type.
+  const isScheduleableScan = (s) => {
+    const st = s.source_type || ''
+    const sct = s.scan_type || ''
+    return st === 'easm' || st === 'vm_scanner' || st.endsWith('_audit') || sct.endsWith('_audit')
+  }
+  const scanRuntimeStatus = (s) => {
+    const isAudit = (s.source_type || '').endsWith('_audit') || (s.scan_type || '').endsWith('_audit')
+    return isAudit ? (s.status || s.raw_metadata?.status) : s.raw_metadata?.status
+  }
+  const isRunningScan = (s) => {
+    const status = scanRuntimeStatus(s)
+    return status === 'running' || status === 'queued'
+  }
+  const isFailedEasm = (s) => s.source_type === 'easm' && (s.raw_metadata?.status === 'failed' || s.status === 'failed')
+
+  const startOneScan = async (s) => {
+    if (s.source_type === 'easm') {
+      if (isFailedEasm(s)) return retryEasmScan(s.id)
+      return rescanEasmScan(s.id, 'full')
+    }
+    if (s.source_type === 'vm_scanner') return rescanVmScan(s.id)
+    if (isScheduleableScan(s)) return rescanAuditScan(s.id)
+  }
+
+  const toggleSelect = (scanId) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      if (next.has(scanId)) next.delete(scanId)
+      else next.add(scanId)
+      return next
+    })
+  }
+
+  const clearSelection = () => setSelectedIds(new Set())
+
+  const runBulk = async (scans, action, label) => {
+    setBulkBusy(true)
+    let ok = 0, fail = 0
+    for (const s of scans) {
+      try { await action(s); ok++ } catch { fail++ }
+    }
+    await refreshScans()
+    clearSelection()
+    setBulkBusy(false)
+    if (fail) toast.error(`${label} ${ok}/${scans.length} — ${fail} failed`)
+    else toast.success(`${label} ${ok} scan${ok !== 1 ? 's' : ''}`)
+  }
+
+  const handleBulkStart = async (eligible) => {
+    if (eligible.length === 0) { toast.error('No selected scans can be started'); return }
+    if (!await confirm(`Start ${eligible.length} scan${eligible.length !== 1 ? 's' : ''}?`)) return
+    await runBulk(eligible, startOneScan, 'Started')
+  }
+  const handleBulkStop = async (eligible) => {
+    if (eligible.length === 0) { toast.error('No selected scans are running'); return }
+    if (!await confirm(`Stop ${eligible.length} scan${eligible.length !== 1 ? 's' : ''}? In-flight jobs will be revoked.`)) return
+    await runBulk(eligible, (s) => cancelScan(s.id), 'Stopped')
+  }
+  const handleBulkDelete = async (scans) => {
+    if (scans.length === 0) return
+    if (!await confirm(`Delete ${scans.length} scan${scans.length !== 1 ? 's' : ''} and all their data?`)) return
+    await runBulk(scans, (s) => deleteScan(s.id), 'Deleted')
   }
 
   const handleScanDomain = async (domain, scanType, suppressAutoFollowup = false) => {
@@ -4307,12 +4387,81 @@ export default function ScanManagement() {
           </div>
         ) : (
           <div>
-            <div style={{
-              padding: '10px 16px', fontSize: 12, color: 'var(--text-muted)',
-              borderBottom: '1px solid var(--border)', fontWeight: 600,
-            }}>
-              {filteredScans.length} scan{filteredScans.length !== 1 ? 's' : ''}
-            </div>
+            {(() => {
+              const selectedScans = filteredScans.filter(s => selectedIds.has(s.id))
+              const startEligible = selectedScans.filter(s => isScheduleableScan(s) && !isRunningScan(s))
+              const stopEligible = selectedScans.filter(s => isScheduleableScan(s) && isRunningScan(s))
+              const allSelected = filteredScans.length > 0 && filteredScans.every(s => selectedIds.has(s.id))
+              const someSelected = selectedScans.length > 0 && !allSelected
+              const toggleAll = () => {
+                if (allSelected) clearSelection()
+                else setSelectedIds(new Set(filteredScans.map(s => s.id)))
+              }
+              const bulkBtn = (color, disabled, onClick, icon, label) => (
+                <button
+                  onClick={onClick}
+                  disabled={disabled || bulkBusy}
+                  style={{
+                    background: 'none', border: `1px solid ${disabled ? 'var(--border)' : color}`,
+                    borderRadius: 6, padding: '5px 10px',
+                    cursor: (disabled || bulkBusy) ? 'not-allowed' : 'pointer',
+                    color: disabled ? 'var(--text-muted)' : color,
+                    display: 'inline-flex', alignItems: 'center', gap: 5,
+                    fontSize: 12, fontWeight: 600,
+                    opacity: bulkBusy ? 0.5 : 1,
+                  }}
+                >
+                  {icon}{label}
+                </button>
+              )
+              return (
+                <div style={{
+                  padding: '10px 16px', fontSize: 12, color: 'var(--text-muted)',
+                  borderBottom: '1px solid var(--border)', fontWeight: 600,
+                  display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
+                }}>
+                  <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      checked={allSelected}
+                      ref={el => { if (el) el.indeterminate = someSelected }}
+                      onChange={toggleAll}
+                      style={{ cursor: 'pointer' }}
+                    />
+                    <span>
+                      {selectedScans.length > 0
+                        ? `${selectedScans.length} selected`
+                        : `${filteredScans.length} scan${filteredScans.length !== 1 ? 's' : ''}`}
+                    </span>
+                  </label>
+                  {selectedScans.length > 0 && (
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginLeft: 'auto' }}>
+                      {bulkBtn('#16a34a', startEligible.length === 0, () => handleBulkStart(startEligible),
+                        <Play size={12} fill="currentColor" />,
+                        `Start${startEligible.length ? ` (${startEligible.length})` : ''}`)}
+                      {bulkBtn('#dc2626', stopEligible.length === 0, () => handleBulkStop(stopEligible),
+                        <Square size={11} fill="currentColor" />,
+                        `Stop${stopEligible.length ? ` (${stopEligible.length})` : ''}`)}
+                      {bulkBtn('#dc2626', false, () => handleBulkDelete(selectedScans),
+                        <Trash2 size={12} />,
+                        `Delete (${selectedScans.length})`)}
+                      <button
+                        onClick={clearSelection}
+                        disabled={bulkBusy}
+                        style={{
+                          background: 'none', border: 'none',
+                          cursor: bulkBusy ? 'not-allowed' : 'pointer',
+                          color: 'var(--text-muted)', fontSize: 12, fontWeight: 500,
+                          padding: '5px 6px',
+                        }}
+                      >
+                        Clear
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )
+            })()}
             {/* Inline upload rows at top of list */}
             {uploads.map(u => (
               <UploadRow
@@ -4332,6 +4481,8 @@ export default function ScanManagement() {
                 onSelect={handleSelectScan}
                 onRescan={handleRescanDomain}
                 onRefresh={refreshScans}
+                selected={selectedIds.has(scan.id)}
+                onToggleSelect={toggleSelect}
               />
             ))}
           </div>
