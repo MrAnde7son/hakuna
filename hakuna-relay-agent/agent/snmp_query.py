@@ -85,6 +85,29 @@ _TCP_STATES = {
     9: "lastAck", 10: "closing", 11: "timeWait", 12: "deleteTCB",
 }
 
+# PRINTER-MIB (RFC 3805). Subset that's universal across HP/Canon/Xerox/Brother/
+# Lexmark/Ricoh/Kyocera/Konica/Epson — vendor-specific extensions live in
+# enterprise sub-trees and are not walked here.
+_OID_PRT_GENERAL_PRINTER_NAME = "1.3.6.1.2.1.43.5.1.1.16"   # prtGeneralPrinterName
+_OID_PRT_GENERAL_SERIAL_NUMBER = "1.3.6.1.2.1.43.5.1.1.17"  # prtGeneralSerialNumber
+_OID_PRT_MARKER_LIFE_COUNT = "1.3.6.1.2.1.43.10.2.1.4"      # prtMarkerLifeCount (page count)
+_OID_PRT_MARKER_SUPPLIES_DESC = "1.3.6.1.2.1.43.11.1.1.6"   # prtMarkerSuppliesDescription
+_OID_PRT_MARKER_SUPPLIES_UNIT = "1.3.6.1.2.1.43.11.1.1.7"   # prtMarkerSuppliesSupplyUnit
+_OID_PRT_MARKER_SUPPLIES_MAX = "1.3.6.1.2.1.43.11.1.1.8"    # prtMarkerSuppliesMaxCapacity
+_OID_PRT_MARKER_SUPPLIES_LEVEL = "1.3.6.1.2.1.43.11.1.1.9"  # prtMarkerSuppliesLevel
+_OID_PRT_INPUT_DESC = "1.3.6.1.2.1.43.8.2.1.13"             # prtInputDescription (tray name)
+_OID_PRT_INPUT_CURRENT_LEVEL = "1.3.6.1.2.1.43.8.2.1.10"    # prtInputCurrentLevel (paper)
+_OID_PRT_ALERT_DESC = "1.3.6.1.2.1.43.18.1.1.8"             # prtAlertDescription
+
+# prtMarkerSuppliesSupplyUnit codes (RFC 3805 §6.3.1.2).
+_PRT_SUPPLY_UNITS = {
+    3: "ten-thousandths-of-inches", 4: "micrometers", 7: "impressions",
+    8: "sheets", 11: "hours", 12: "thousandths-of-ounces",
+    13: "tenths-of-grams", 14: "hundreths-of-fluid-ounces",
+    15: "tenths-of-milliliters", 16: "feet", 17: "meters",
+    18: "items", 19: "percent",
+}
+
 _DEFAULT_COMMUNITIES = [
     "public", "private", "community", "manager",
     "cisco", "admin", "monitor", "default",
@@ -198,6 +221,8 @@ def _run_sync(target: str, port: int, creds: dict, op: str, op_params: dict) -> 
         return _op_host_resources(mods, target, port, auth, op_params)
     if op == "listeners":
         return _op_listeners(mods, target, port, auth)
+    if op == "printer_info":
+        return _op_printer_info(mods, target, port, auth)
     if op == "set":
         return _op_set(mods, target, port, auth, op_params)
     return {"_errors": {op: f"unknown op: {op}"}}
@@ -550,6 +575,131 @@ def _op_listeners(mods: dict, target: str, port: int, auth) -> dict:
         out["udp"] = {"total": len(udp_listeners), "listeners": udp_listeners[:_MAX_WALK_ROWS]}
     except Exception as e:
         errors["udp"] = f"{type(e).__name__}: {e}"
+
+    if errors:
+        out["_errors"] = errors
+    return out
+
+
+def _op_printer_info(mods: dict, target: str, port: int, auth) -> dict:
+    """Walk PRINTER-MIB (RFC 3805) for printer fleet inventory.
+
+    Returns model name, serial number, lifetime page count, marker supplies
+    (toner/ink levels), input trays (paper levels), and any active alerts.
+
+    Every section is wrapped in its own try so a printer that exposes only
+    part of PRINTER-MIB still returns useful data — many cheaper MFPs skip
+    the supplies or alert tables entirely.
+    """
+    out: dict[str, Any] = {}
+    errors: dict[str, str] = {}
+
+    # Identification — printer name + serial number. prtGeneralEntry is indexed
+    # by hrDeviceIndex; almost every printer has exactly one entry so we just
+    # return the first non-empty value from each column.
+    try:
+        name_rows = _walk_flat(mods, target, port, auth, _OID_PRT_GENERAL_PRINTER_NAME)
+        for _, value in name_rows:
+            text = str(value).strip() if value is not None else ""
+            if text:
+                out["printer_name"] = text
+                break
+    except Exception as e:
+        errors["printer_name"] = f"{type(e).__name__}: {e}"
+
+    try:
+        serial_rows = _walk_flat(mods, target, port, auth, _OID_PRT_GENERAL_SERIAL_NUMBER)
+        for _, value in serial_rows:
+            text = str(value).strip() if value is not None else ""
+            if text:
+                out["serial_number"] = text
+                break
+    except Exception as e:
+        errors["serial_number"] = f"{type(e).__name__}: {e}"
+
+    # Lifetime page count. prtMarkerLifeCount is reported per marker (most
+    # printers have one), in the units declared by prtMarkerCounterUnit which
+    # is "impressions" on every printer in real life — we don't bother
+    # walking the unit column.
+    try:
+        page_rows = _walk_flat(mods, target, port, auth, _OID_PRT_MARKER_LIFE_COUNT)
+        markers = []
+        for oid, value in page_rows:
+            count = _as_int(value)
+            if count is None:
+                continue
+            markers.append({"marker_index": oid[len(_OID_PRT_MARKER_LIFE_COUNT) + 1:],
+                            "page_count": count})
+        if markers:
+            out["page_counts"] = markers
+            out["total_pages"] = sum(m["page_count"] for m in markers)
+    except Exception as e:
+        errors["page_counts"] = f"{type(e).__name__}: {e}"
+
+    # Marker supplies — toner cartridges, ink reservoirs, fusers, drums.
+    # Level can be -3 (unknown), -2 (out of range), or -1 (no level data);
+    # any non-negative value is real. Max -1 means "level is in percent".
+    try:
+        supplies = _walk_columns(mods, target, port, auth, {
+            "description": _OID_PRT_MARKER_SUPPLIES_DESC,
+            "unit_code":   _OID_PRT_MARKER_SUPPLIES_UNIT,
+            "max_capacity": _OID_PRT_MARKER_SUPPLIES_MAX,
+            "level":       _OID_PRT_MARKER_SUPPLIES_LEVEL,
+        })
+        items = []
+        for r in supplies.values():
+            description = r.get("description")
+            if not description:
+                continue
+            level = _as_int(r.get("level"))
+            max_cap = _as_int(r.get("max_capacity"))
+            unit_code = _as_int(r.get("unit_code"))
+            entry = {
+                "description": str(description).strip(),
+                "level": level,
+                "max_capacity": max_cap,
+                "unit": _PRT_SUPPLY_UNITS.get(unit_code, unit_code),
+            }
+            # Convenience: percent_remaining when both fields are usable.
+            if max_cap and max_cap > 0 and level is not None and level >= 0:
+                entry["percent_remaining"] = round(level * 100 / max_cap, 1)
+            elif max_cap == -1 and level is not None and 0 <= level <= 100:
+                # max_capacity = -1 means level itself is already a percentage.
+                entry["percent_remaining"] = float(level)
+            items.append(entry)
+        if items:
+            out["supplies"] = items
+    except Exception as e:
+        errors["supplies"] = f"{type(e).__name__}: {e}"
+
+    # Input trays — paper levels.
+    try:
+        trays = _walk_columns(mods, target, port, auth, {
+            "description": _OID_PRT_INPUT_DESC,
+            "level": _OID_PRT_INPUT_CURRENT_LEVEL,
+        })
+        items = []
+        for r in trays.values():
+            description = r.get("description")
+            if not description:
+                continue
+            items.append({
+                "description": str(description).strip(),
+                "level": _as_int(r.get("level")),
+            })
+        if items:
+            out["input_trays"] = items
+    except Exception as e:
+        errors["input_trays"] = f"{type(e).__name__}: {e}"
+
+    # Active alerts — paper jam, low toner, cover open, etc.
+    try:
+        alert_rows = _walk_flat(mods, target, port, auth, _OID_PRT_ALERT_DESC)
+        alerts = [str(v).strip() for _, v in alert_rows if v is not None and str(v).strip()]
+        if alerts:
+            out["alerts"] = alerts[:_MAX_WALK_ROWS]
+    except Exception as e:
+        errors["alerts"] = f"{type(e).__name__}: {e}"
 
     if errors:
         out["_errors"] = errors

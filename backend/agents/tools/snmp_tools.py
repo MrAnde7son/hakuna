@@ -225,6 +225,32 @@ def snmp_walk_tool(db, params: dict) -> dict:
     }
 
 
+# ── Printer fleet inventory (PRINTER-MIB / RFC 3805) ─────────────────
+
+
+@agent_tool(
+    "snmp_printer_info",
+    "Walk PRINTER-MIB (RFC 3805) for printer fleet inventory: model name, "
+    "serial number, lifetime page count, marker supplies (toner/ink levels "
+    "with percent remaining), input tray paper levels, and any active alerts "
+    "(paper jam, low toner, cover open). READ-ONLY. Works on essentially "
+    "every networked printer or MFP — HP, Canon, Xerox, Brother, Lexmark, "
+    "Ricoh, Kyocera, Konica Minolta, Sharp, OKI, Epson. Returns partial data "
+    "if the printer skips some PRINTER-MIB sub-trees (common on entry-level "
+    "MFPs).",
+    {"asset_id": {"type": "integer"}},
+)
+def snmp_printer_info_tool(db, params: dict) -> dict:
+    asset_id = params.get("asset_id")
+    relay, cred, community = _ctx(params)
+    org_id = params.get("_org_id")
+    _, result = _run_async(_dispatch_snmp(
+        db, org_id, asset_id, "printer_info", {}, relay, cred,
+        fallback_community=community,
+    ))
+    return result
+
+
 # ── Write op (always behind NeedsApproval) ───────────────────────────
 
 
@@ -287,6 +313,8 @@ _SNMP_TOOL_NAMES = [
     "snmp_probe_default_communities",
     "snmp_get",
     "snmp_walk",
+    # Printer fleet inventory (PRINTER-MIB / RFC 3805)
+    "snmp_printer_info",
     # Write primitive — every call routes through user approval.
     "snmp_set",
     # CVE correlation — deterministic inventory→CVE matching pass
