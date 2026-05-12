@@ -331,6 +331,8 @@ jobs:
       contents: read
       id-token: write
     steps:
+      - uses: actions/checkout@v4
+
       - name: Authenticate to GCP
         uses: google-github-actions/auth@v2
         with:
@@ -339,8 +341,6 @@ jobs:
 
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
-
-      - uses: actions/checkout@v4
 
       - name: Pull and restart audit-worker VM
         # Pull outside systemd so the long pull (Chromium-bundled API image)
