@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router-dom'
+import { useScan } from '../../App.jsx'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import {
@@ -460,7 +461,7 @@ function ThinkingDots() {
   )
 }
 
-function FeedChat({ contextEntryCount, entries }) {
+function FeedChat({ contextEntryCount, entries, scanId }) {
   const { t } = useTranslation()
   const [messages, setMessages] = useState([])  // {role, content, error?}
   const [streamText, setStreamText] = useState('')
@@ -515,7 +516,7 @@ function FeedChat({ contextEntryCount, entries }) {
       const convId = await ensureConversation()
       let context = ''
       try {
-        const ctx = await getFeedChatContext(contextEntryCount)
+        const ctx = await getFeedChatContext(contextEntryCount, scanId)
         context = ctx?.context || ''
       } catch { /* non-fatal — copilot can still answer without the block */ }
 
@@ -539,7 +540,7 @@ function FeedChat({ contextEntryCount, entries }) {
       setBusy(false)
       setStreamText('')
     }
-  }, [input, busy, contextEntryCount, t])
+  }, [input, busy, contextEntryCount, scanId, t])
 
   const onKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -804,6 +805,7 @@ function FeedChat({ contextEntryCount, entries }) {
 // ── Page ──────────────────────────────────────────────────────────
 export default function Feed() {
   const { t } = useTranslation()
+  const { activeScanId } = useScan()
   const [entries, setEntries] = useState([])
   const [loading, setLoading] = useState(true)
   const [hasLoadedOnce, setHasLoadedOnce] = useState(false)
@@ -823,7 +825,10 @@ export default function Feed() {
     setLoading(true)
     setError(null)
     try {
-      const rows = await getFeed({ status: statusFilter || undefined })
+      const rows = await getFeed({
+        status: statusFilter || undefined,
+        scanId: activeScanId || undefined,
+      })
       setEntries(rows || [])
     } catch (e) {
       setError(e.message || t('feed.loadFailed'))
@@ -831,7 +836,7 @@ export default function Feed() {
       setLoading(false)
       setHasLoadedOnce(true)
     }
-  }, [statusFilter, t])
+  }, [statusFilter, activeScanId, t])
 
   useEffect(() => { load() }, [load])
 
@@ -930,7 +935,7 @@ export default function Feed() {
         </div>
       </div>
 
-      <FeedChat contextEntryCount={5} entries={entries} />
+      <FeedChat contextEntryCount={5} entries={entries} scanId={activeScanId || undefined} />
 
       {error && (
         <div style={{

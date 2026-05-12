@@ -1262,11 +1262,12 @@ export const decideAgentApproval = (approvalId, decision, reason, { grantScope }
 export const getRunApprovals = (agentId, runId) => request(`/agents/${agentId}/runs/${runId}/approvals`)
 
 // ── Org activity feed (agent narratives) ──────────────────
-export const getFeed = ({ status, severity, eventType, page = 1, pageSize = 50 } = {}) => {
+export const getFeed = ({ status, severity, eventType, scanId, page = 1, pageSize = 50 } = {}) => {
   const qs = new URLSearchParams()
   if (status) qs.set('status', status)
   if (severity) qs.set('severity', severity)
   if (eventType) qs.set('event_type', eventType)
+  if (scanId) qs.set('scan_id', String(scanId))
   qs.set('page', String(page))
   qs.set('page_size', String(pageSize))
   return request(`/feed?${qs.toString()}`)
@@ -1278,8 +1279,11 @@ export const recordFeedEntryDecision = (entryId, status) => request(`/feed/${ent
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({ status }),
 })
-export const getFeedChatContext = (size = 5) =>
-  request(`/feed/chat-context?size=${size}`)
+export const getFeedChatContext = (size = 5, scanId = null) => {
+  const qs = new URLSearchParams({ size: String(size) })
+  if (scanId) qs.set('scan_id', String(scanId))
+  return request(`/feed/chat-context?${qs.toString()}`)
+}
 
 // ── Security Copilot ───────────────────────────────────────
 export const getCopilotConversations = () => request('/copilot/conversations')

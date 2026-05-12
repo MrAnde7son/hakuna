@@ -1311,7 +1311,9 @@ function AppShell() {
             style={{
               flex: 1,
               padding: isMobile ? 12 : 18,
-              paddingBottom: isMobile ? `calc(${MOBILE_TAB_BAR_HEIGHT}px + env(safe-area-inset-bottom, 0px) + 12px)` : 18,
+              // Desktop: reserve clearance for the fixed FAB cluster (Copilot/Help/Notifications
+              // at bottom:20, ~48px tall) so the last row — usually pagination — isn't hidden behind it.
+              paddingBottom: isMobile ? `calc(${MOBILE_TAB_BAR_HEIGHT}px + env(safe-area-inset-bottom, 0px) + 12px)` : 88,
               background: 'var(--bg-muted)',
               overflowY: 'auto',
               overflowX: 'hidden',

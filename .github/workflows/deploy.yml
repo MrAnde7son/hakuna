@@ -279,11 +279,7 @@ jobs:
           docker push "${{ env.REGISTRY }}/vm-scanner:latest"
 
       - name: Pull and restart on scanner VM
-        run: |
-          gcloud compute ssh hakuna-scanners --zone="${{ env.ZONE }}" --tunnel-through-iap \
-            --ssh-key-expire-after=10m \
-            --command="cd /opt/hakuna-scanners && sudo docker compose pull && sudo docker compose up -d" \
-            --quiet
+        run: .github/scripts/vm-pull-restart.sh hakuna-scanners "${{ env.ZONE }}" /opt/hakuna-scanners
 
   deploy-relay-agent:
     name: Deploy Relay Agent (Cloud Scanner)
@@ -322,11 +318,7 @@ jobs:
           docker push "${{ env.PUBLIC_REGISTRY }}/relay-agent:latest"
 
       - name: Pull and restart on cloud-scanner VM
-        run: |
-          gcloud compute ssh hakuna-cloud-scanner --zone="${{ env.ZONE }}" --tunnel-through-iap \
-            --ssh-key-expire-after=10m \
-            --command="cd /opt/hakuna-cloud-scanner && sudo docker compose pull && sudo docker compose up -d" \
-            --quiet
+        run: .github/scripts/vm-pull-restart.sh hakuna-cloud-scanner "${{ env.ZONE }}" /opt/hakuna-cloud-scanner
 
   deploy-audit-worker:
     name: Restart Audit Worker VM
@@ -348,43 +340,19 @@ jobs:
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
 
+      - uses: actions/checkout@v4
+
       - name: Pull and restart audit-worker VM
         # Pull outside systemd so the long pull (Chromium-bundled API image)
         # doesn't trip ExecStartPre's 90s timeout on the unit. `compose up -d`
-        # swaps containers in place once the new image is local.
-        #
-        # IAP error 4003 ("failed to connect to backend, port 22") means the
-        # tunnel reached the project but nothing answered on :22 — almost
-        # always a stopped VM, not an SSH key issue. Check state first and
-        # start the instance if needed; only retry SSH once for genuine
-        # transients (maintenance events, sshd restart).
-        run: |
-          set -e
-          INSTANCE=hakuna-audit-worker
-          ZONE="${{ env.ZONE }}"
-
-          status=$(gcloud compute instances describe "$INSTANCE" \
-            --zone="$ZONE" --format='value(status)')
-          echo "Instance status: $status"
-          if [ "$status" != "RUNNING" ]; then
-            echo "Starting $INSTANCE..."
-            gcloud compute instances start "$INSTANCE" --zone="$ZONE"
-          fi
-
-          for attempt in 1 2; do
-            if gcloud compute ssh "$INSTANCE" --zone="$ZONE" --tunnel-through-iap \
-                --ssh-key-expire-after=10m \
-                --command="cd /opt/hakuna-audit-worker && sudo docker system prune -af --filter 'until=24h' && sudo docker compose pull && sudo docker compose up -d" \
-                --quiet; then
-              exit 0
-            fi
-            if [ "$attempt" = "1" ]; then
-              echo "SSH attempt 1 failed; sleeping 30s before retry..."
-              sleep 30
-            fi
-          done
-          echo "audit-worker SSH failed after 2 attempts"
-          exit 1
+        # swaps containers in place once the new image is local. Prune first
+        # so the 40GB disk doesn't fill on old image layers between deploys.
+        run: >-
+          .github/scripts/vm-pull-restart.sh
+          hakuna-audit-worker
+          "${{ env.ZONE }}"
+          /opt/hakuna-audit-worker
+          "sudo docker system prune -af --filter 'until=24h'"
 
   migrate:
     name: Run Migrations

@@ -200,8 +200,49 @@ resource "google_compute_instance" "audit_worker" {
     WantedBy=multi-user.target
     SERVICE
 
+    # ── Network watchdog ───────────────────────────────────────────────────
+    # We've seen ens4 lose its DHCPv4 lease on long-running VMs (systemd-networkd
+    # reports `ens4: Failed`). The kernel stays up so GCE keeps reporting
+    # RUNNING, but the guest is unreachable — IAP returns 4003 on port 22, the
+    # google-guest-agent loses its control channel and SSH-key propagation
+    # stops working. Recovering requires `gcloud compute instances reset`,
+    # which is annoying to babysit from CI. This timer self-heals by polling
+    # networkctl every 2 min and restarting systemd-networkd if any link is in
+    # failed state.
+    cat > /usr/local/sbin/hakuna-network-watchdog.sh << 'WATCHDOG'
+    #!/bin/bash
+    set -e
+    if networkctl --no-legend 2>/dev/null | awk '{print $4}' | grep -q "failed"; then
+      logger -t hakuna-network-watchdog "Detected failed link state, restarting systemd-networkd"
+      systemctl restart systemd-networkd
+    fi
+    WATCHDOG
+    chmod +x /usr/local/sbin/hakuna-network-watchdog.sh
+
+    cat > /etc/systemd/system/hakuna-network-watchdog.service << 'WD_SERVICE'
+    [Unit]
+    Description=Restart systemd-networkd if any link is in failed state
+
+    [Service]
+    Type=oneshot
+    ExecStart=/usr/local/sbin/hakuna-network-watchdog.sh
+    WD_SERVICE
+
+    cat > /etc/systemd/system/hakuna-network-watchdog.timer << 'WD_TIMER'
+    [Unit]
+    Description=Run hakuna-network-watchdog every 2 minutes
+
+    [Timer]
+    OnBootSec=2min
+    OnUnitActiveSec=2min
+
+    [Install]
+    WantedBy=timers.target
+    WD_TIMER
+
     systemctl daemon-reload
     systemctl enable --now docker-prune.timer
+    systemctl enable --now hakuna-network-watchdog.timer
     systemctl enable hakuna-audit-worker
     systemctl start hakuna-audit-worker
 

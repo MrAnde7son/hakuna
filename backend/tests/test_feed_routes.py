@@ -87,6 +87,29 @@ def test_filter_by_status_and_severity(db_session, authed_client, test_org):
     assert {e["headline"] for e in crit_only} == {"open-crit"}
 
 
+def test_filter_by_scan_id(db_session, authed_client, test_org):
+    _mk_entry(
+        db_session, org_id=test_org.id, headline="scan-42-ingest",
+        event_type="scan_ingested", event_ref={"scan_id": 42, "source_type": "nessus"},
+    )
+    _mk_entry(
+        db_session, org_id=test_org.id, headline="scan-7-ingest",
+        event_type="scan_ingested", event_ref={"scan_id": 7},
+    )
+    _mk_entry(
+        db_session, org_id=test_org.id, headline="welcome-card",
+        event_type="welcome", event_ref={},
+    )
+
+    scoped = authed_client.get("/api/feed?scan_id=42").json()
+    assert {e["headline"] for e in scoped} == {"scan-42-ingest"}
+
+    all_entries = authed_client.get("/api/feed").json()
+    assert {e["headline"] for e in all_entries} == {
+        "scan-42-ingest", "scan-7-ingest", "welcome-card",
+    }
+
+
 def test_unread_count_excludes_already_read(db_session, authed_client, test_org, test_user):
     _mk_entry(db_session, org_id=test_org.id, headline="unread")
     _mk_entry(db_session, org_id=test_org.id, headline="read", read_by=[test_user.id])

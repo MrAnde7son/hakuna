@@ -18,7 +18,9 @@ class Organization(Base):
     name = Column(String, nullable=False)
     slug = Column(String, nullable=False, unique=True, index=True)
     org_type = Column(String, default="standard")  # standard | mssp
-    parent_org_id = Column(Integer, ForeignKey("organizations.id"), nullable=True)
+    # No cascade on this self-reference — deleting an MSSP parent must
+    # not silently nuke its sub-orgs. Operator detaches/deletes children first.
+    parent_org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True)
     is_active = Column(Boolean, default=True)
     settings = Column(JSON, default=dict)  # org-level config overrides
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -71,7 +73,7 @@ class User(Base):
     hashed_password = Column(String, nullable=True)  # Nullable for Google OAuth users
     google_id = Column(String, nullable=True, unique=True, index=True)  # Google sub claim
     display_name = Column(String)
-    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False)
     role = Column(String, default="analyst")  # superadmin | org_admin | analyst | viewer | custom
     is_active = Column(Boolean, default=True)
     locale = Column(String, default="en")  # User's preferred language: en, ja, fr, de, he, ru, zh
@@ -104,7 +106,7 @@ class ApiToken(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
     name = Column(String, nullable=False)                        # User-facing label
     token_hash = Column(String(64), nullable=False, unique=True, index=True)  # sha256 hex
     token_prefix = Column(String(12), nullable=False)            # First chars for display ("hak_AbCd…")
@@ -122,8 +124,8 @@ class MSSPOrgAccess(Base):
     __tablename__ = "mssp_org_access"
 
     id = Column(Integer, primary_key=True, index=True)
-    mssp_org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False)
-    client_org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False)
+    mssp_org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False)
+    client_org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -141,7 +143,7 @@ class OrgInvite(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     token = Column(String, nullable=False, unique=True, index=True)
-    mssp_org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False)
+    mssp_org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False)
     invited_email = Column(String, nullable=True)       # Pre-fill email; null = open invite
     client_org_name = Column(String, nullable=True)     # Pre-fill org name suggestion
     expires_at = Column(DateTime, nullable=False)
@@ -172,7 +174,7 @@ class OrgJoinRequest(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     expires_at = Column(DateTime, nullable=False)
     decided_at = Column(DateTime, nullable=True)
-    decided_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    decided_by_user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
 
     organization = relationship("Organization")
     decided_by = relationship("User", foreign_keys=[decided_by_user_id])
@@ -197,7 +199,7 @@ class DataProcessingConsent(Base):
     id = Column(Integer, primary_key=True, index=True)
     org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False)
     purpose = Column(String(64), nullable=False)
-    granted_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    granted_by_user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
     granted_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     expires_at = Column(DateTime, nullable=True)
     revoked_at = Column(DateTime, nullable=True)
@@ -227,7 +229,7 @@ class IdentitySuppression(Base):
     source = Column(String(32), nullable=False)         # e.g. "linkedin"
     slug = Column(String(255), nullable=False)
     suppressed_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    suppressed_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    suppressed_by_user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
     reason = Column(Text, nullable=True)
 
     organization = relationship("Organization")
@@ -247,7 +249,7 @@ class CustomRole(Base):
     __tablename__ = "custom_roles"
 
     id = Column(Integer, primary_key=True, index=True)
-    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False)
     name = Column(String, nullable=False)
     description = Column(String)
     # Feature flags: {"read_scans": true, "write_findings": true, "manage_tags": false, ...}
@@ -262,7 +264,7 @@ class CustomRole(Base):
     # resolved owner_role matches. One of core.ownership_teams.OWNERSHIP_ROLES.
     scope_owner_role = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
-    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_by_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
 
     org = relationship("Organization")
     tag_permissions = relationship("TagPermission", back_populates="role", cascade="all, delete-orphan")
@@ -279,9 +281,9 @@ class TagPermission(Base):
     __tablename__ = "tag_permissions"
 
     id = Column(Integer, primary_key=True, index=True)
-    role_id = Column(Integer, ForeignKey("custom_roles.id"), nullable=False)
+    role_id = Column(Integer, ForeignKey("custom_roles.id", ondelete="CASCADE"), nullable=False)
     target_type = Column(String, nullable=False)       # "tag" | "category"
-    target_id = Column(Integer, ForeignKey("tags.id"), nullable=True)      # when target_type="tag"
+    target_id = Column(Integer, ForeignKey("tags.id", ondelete="CASCADE"), nullable=True)      # when target_type="tag"
     target_category = Column(String, nullable=True)    # when target_type="category"
     permission = Column(String, nullable=False)        # "read" | "write"
     effect = Column(String, nullable=False, default="allow")  # "allow" | "deny"
@@ -301,10 +303,10 @@ class UserCustomRole(Base):
     __tablename__ = "user_custom_roles"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    role_id = Column(Integer, ForeignKey("custom_roles.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    role_id = Column(Integer, ForeignKey("custom_roles.id", ondelete="CASCADE"), nullable=False)
     assigned_at = Column(DateTime, default=datetime.utcnow)
-    assigned_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    assigned_by_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
 
     user = relationship("User", foreign_keys=[user_id])
     role = relationship("CustomRole", back_populates="user_assignments")
@@ -324,7 +326,7 @@ class SAMLConfig(Base):
     __tablename__ = "saml_configs"
 
     id = Column(Integer, primary_key=True, index=True)
-    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, unique=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, unique=True)
     is_enabled = Column(Boolean, default=False)
     # IdP metadata
     idp_entity_id = Column(String, nullable=False)          # IdP Entity ID / Issuer
@@ -357,7 +359,7 @@ class Scan(Base):
     __tablename__ = "scans"
 
     id = Column(Integer, primary_key=True, index=True)
-    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True, index=True)
     filename = Column(String, nullable=False)
     scan_name = Column(String)
     scan_date = Column(String)
@@ -381,7 +383,7 @@ class Scan(Base):
 
     # Provenance — who triggered this scan. Nullable because legacy rows and
     # scheduler-driven runs have no human actor.
-    created_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    created_by_user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
 
     organization = relationship("Organization")
     created_by_user = relationship("User", foreign_keys=[created_by_user_id])
@@ -401,7 +403,7 @@ class Asset(Base):
     __tablename__ = "assets"
 
     id = Column(Integer, primary_key=True, index=True)
-    scan_id = Column(Integer, ForeignKey("scans.id"), nullable=False)
+    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=False)
     scan_run_id = Column(String, nullable=True, index=True)
     ip = Column(String)
     hostname = Column(String)
@@ -506,8 +508,8 @@ class AssetObservation(Base):
     id = Column(Integer, primary_key=True, index=True)
     asset_id = Column(Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=False)
     source_system = Column(String, nullable=False)       # "nessus" | "crowdstrike" | "wiz" | "easm" | …
-    scan_id = Column(Integer, ForeignKey("scans.id"), nullable=True)
-    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=True)
+    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True)
 
     # Raw fields as reported by this source
     raw_fields = Column(JSON, default=dict)              # Full snapshot: {ip, hostname, fqdn, os, ...}
@@ -544,7 +546,7 @@ class AssetRelationship(Base):
     )
 
     id = Column(Integer, primary_key=True, index=True)
-    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
     source_asset_id = Column(Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=True)
     target_asset_id = Column(Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=True)
     relationship_type = Column(String, nullable=False)   # see models/asset_edges.EdgeType
@@ -571,7 +573,7 @@ class AssetCluster(Base):
     )
 
     id = Column(Integer, primary_key=True, index=True)
-    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False)
     cluster_type = Column(String, nullable=False)  # shared_certificate, same_jarm, shared_ip_range, shared_tech_stack
     label = Column(String)                         # human-readable label (e.g. "*.example.com cert cluster")
     pivot_value = Column(String)                   # the shared signal value (cert fingerprint, JARM hash, CIDR, etc.)
@@ -597,7 +599,7 @@ class AttackPath(Base):
     __tablename__ = "attack_paths"
 
     id = Column(Integer, primary_key=True, index=True)
-    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
     title = Column(String(512), nullable=False)
     severity = Column(String(32))  # Critical, High, Medium
     steps = Column(JSON, default=list)
@@ -641,7 +643,7 @@ class ScannerEventCursor(Base):
     __tablename__ = "scanner_event_cursors"
 
     id = Column(Integer, primary_key=True, index=True)
-    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, unique=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
     last_event_at = Column(DateTime, nullable=True)   # UTC timestamp of the newest consumed event
     last_event_id = Column(String, nullable=True)     # UUID of newest consumed event (tiebreaker)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -660,9 +662,9 @@ class Finding(Base):
     __tablename__ = "findings"
 
     id = Column(Integer, primary_key=True, index=True)
-    scan_id = Column(Integer, ForeignKey("scans.id"), nullable=False)
+    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=False)
     scan_run_id = Column(String, nullable=True, index=True)
-    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=False)
+    asset_id = Column(Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=False)
 
     # Multi-source provenance
     source_type = Column(String, default="nessus")      # which scanner produced this finding
@@ -751,7 +753,7 @@ class Finding(Base):
     # Delta tracking: auto-set when a prior finding disappears from a rescan
     auto_resolved = Column(Boolean, default=False)      # True if marked fixed by delta logic (vs manual)
     auto_resolved_at = Column(DateTime, nullable=True)  # When delta logic marked it fixed
-    auto_resolved_by_scan_id = Column(Integer, ForeignKey("scans.id"), nullable=True)  # Which new scan caused the auto-resolve
+    auto_resolved_by_scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=True)  # Which new scan caused the auto-resolve
 
     # SLA tracking
     sla_due_date = Column(DateTime, nullable=True)   # Computed: scan.created_at + SLA days
@@ -771,7 +773,7 @@ class Finding(Base):
     status_changed_at = Column(DateTime, nullable=True)
 
     # Exception link (set when a global exception matches this finding)
-    exception_id = Column(Integer, ForeignKey("finding_exceptions.id"), nullable=True)
+    exception_id = Column(Integer, ForeignKey("finding_exceptions.id", ondelete="CASCADE"), nullable=True)
 
     # Aggregated solution link (set when findings are grouped by root cause)
     aggregated_solution_id = Column(Integer, ForeignKey("aggregated_solutions.id"), nullable=True)
@@ -820,8 +822,8 @@ class FindingObservation(Base):
     id = Column(Integer, primary_key=True, index=True)
     finding_id = Column(Integer, ForeignKey("findings.id", ondelete="CASCADE"), nullable=False)
     source_system = Column(String, nullable=False)
-    scan_id = Column(Integer, ForeignKey("scans.id"), nullable=True)
-    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=True)
+    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True)
 
     raw_fields = Column(JSON, default=dict)
 
@@ -899,7 +901,7 @@ class AutomateClick(Base):
     __tablename__ = "automate_clicks"
 
     id = Column(Integer, primary_key=True, index=True)
-    finding_id = Column(Integer, ForeignKey("findings.id"), nullable=False)
+    finding_id = Column(Integer, ForeignKey("findings.id", ondelete="CASCADE"), nullable=False)
     plugin_id = Column(String)
     plugin_name = Column(String)
     asset_ip = Column(String)
@@ -917,9 +919,9 @@ class InventoryUser(Base):
     __tablename__ = "inventory_users"
 
     id = Column(Integer, primary_key=True, index=True)
-    scan_id = Column(Integer, ForeignKey("scans.id"), nullable=True, index=True)
+    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=True, index=True)
     # The asset where this user data was collected (the host scanned)
-    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=True, index=True)
+    asset_id = Column(Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=True, index=True)
 
     username = Column(String, index=True)
     domain = Column(String, index=True)      # DOMAIN or hostname for local users
@@ -984,8 +986,8 @@ class InventoryGroup(Base):
     __tablename__ = "inventory_groups"
 
     id = Column(Integer, primary_key=True, index=True)
-    scan_id = Column(Integer, ForeignKey("scans.id"), nullable=True, index=True)
-    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=True, index=True)
+    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=True, index=True)
+    asset_id = Column(Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=True, index=True)
 
     group_name = Column(String, index=True)
     domain = Column(String)
@@ -1025,8 +1027,8 @@ class InventoryDomainTrust(Base):
     __tablename__ = "inventory_domain_trusts"
 
     id = Column(Integer, primary_key=True, index=True)
-    scan_id = Column(Integer, ForeignKey("scans.id"), nullable=False, index=True)
-    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=False, index=True)
+    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=False, index=True)
+    asset_id = Column(Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=False, index=True)
 
     trusted_domain = Column(String, index=True)     # FQDN of trusted domain (trustPartner)
     flat_name = Column(String)                       # NetBIOS name (e.g. RESEARCH)
@@ -1047,8 +1049,8 @@ class InventoryService(Base):
     __tablename__ = "inventory_services"
 
     id = Column(Integer, primary_key=True, index=True)
-    scan_id = Column(Integer, ForeignKey("scans.id"), nullable=False, index=True)
-    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=False, index=True)
+    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=False, index=True)
+    asset_id = Column(Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=False, index=True)
 
     service_name = Column(String, index=True)   # Short name (e.g. "DNS")
     display_name = Column(String)               # Long name (e.g. "DNS Server")
@@ -1063,8 +1065,8 @@ class InventoryNetConn(Base):
     __tablename__ = "inventory_netconns"
 
     id = Column(Integer, primary_key=True, index=True)
-    scan_id = Column(Integer, ForeignKey("scans.id"), nullable=False, index=True)
-    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=False, index=True)
+    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=False, index=True)
+    asset_id = Column(Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=False, index=True)
 
     proto = Column(String)          # tcp4, tcp6, udp4, udp6, TCP, UDP
     state = Column(String)          # LISTEN, ESTABLISHED, etc.
@@ -1081,8 +1083,8 @@ class InventoryScheduledTask(Base):
     __tablename__ = "inventory_scheduled_tasks"
 
     id = Column(Integer, primary_key=True, index=True)
-    scan_id = Column(Integer, ForeignKey("scans.id"), nullable=False, index=True)
-    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=False, index=True)
+    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=False, index=True)
+    asset_id = Column(Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=False, index=True)
 
     task_uri = Column(String)       # e.g. \CreateExplorerShellUnelevatedTask
     author = Column(String)
@@ -1101,8 +1103,8 @@ class InventoryPatch(Base):
     __tablename__ = "inventory_patches"
 
     id = Column(Integer, primary_key=True, index=True)
-    scan_id = Column(Integer, ForeignKey("scans.id"), nullable=False, index=True)
-    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=False, index=True)
+    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=False, index=True)
+    asset_id = Column(Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=False, index=True)
 
     kb_id = Column(String, index=True)      # e.g. KB5046615
     vuln_count = Column(Integer, default=0) # Number of CVEs addressed
@@ -1116,8 +1118,8 @@ class InventoryLoggedOn(Base):
     __tablename__ = "inventory_logged_on"
 
     id = Column(Integer, primary_key=True, index=True)
-    scan_id = Column(Integer, ForeignKey("scans.id"), nullable=False, index=True)
-    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=False, index=True)
+    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=False, index=True)
+    asset_id = Column(Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=False, index=True)
 
     sid = Column(String)
     domain = Column(String)
@@ -1130,8 +1132,8 @@ class InventoryShare(Base):
     __tablename__ = "inventory_shares"
 
     id = Column(Integer, primary_key=True, index=True)
-    scan_id = Column(Integer, ForeignKey("scans.id"), nullable=False, index=True)
-    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=False, index=True)
+    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=False, index=True)
+    asset_id = Column(Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=False, index=True)
 
     share_name = Column(String, index=True)     # e.g. ADMIN$, C$, SYSVOL
     share_type = Column(String)                  # Disk, IPC, Printer
@@ -1159,8 +1161,8 @@ class InventorySoftware(Base):
     __tablename__ = "inventory_software"
 
     id = Column(Integer, primary_key=True, index=True)
-    scan_id = Column(Integer, ForeignKey("scans.id"), nullable=False, index=True)
-    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=False, index=True)
+    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=False, index=True)
+    asset_id = Column(Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=False, index=True)
 
     name = Column(String, index=True)
     version = Column(String)
@@ -1176,8 +1178,8 @@ class InventorySecurityControl(Base):
     __tablename__ = "inventory_security_controls"
 
     id = Column(Integer, primary_key=True, index=True)
-    scan_id = Column(Integer, ForeignKey("scans.id"), nullable=False, index=True)
-    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=False, index=True)
+    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=False, index=True)
+    asset_id = Column(Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=False, index=True)
 
     control_type = Column(String, index=True)   # av, edr, firewall, backup, encryption
     product_name = Column(String)
@@ -1195,8 +1197,8 @@ class InventoryComputer(Base):
     __tablename__ = "inventory_computers"
 
     id = Column(Integer, primary_key=True, index=True)
-    scan_id = Column(Integer, ForeignKey("scans.id"), nullable=False, index=True)
-    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=False, index=True)
+    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=False, index=True)
+    asset_id = Column(Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=False, index=True)
 
     computer_name = Column(String, index=True)  # CN value
     dns_hostname = Column(String)               # dNSHostName
@@ -1216,8 +1218,8 @@ class InventoryDatabaseInstance(Base):
     __tablename__ = "inventory_database_instances"
 
     id = Column(Integer, primary_key=True, index=True)
-    scan_id = Column(Integer, ForeignKey("scans.id"), nullable=False, index=True)
-    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=False, index=True)
+    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=False, index=True)
+    asset_id = Column(Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=False, index=True)
 
     db_type = Column(String, index=True)        # mssql / mysql / postgresql / oracle / mongodb / redis
     instance_name = Column(String)              # e.g. MSSQLSERVER, SQLEXPRESS
@@ -1234,8 +1236,8 @@ class InventoryEnvVar(Base):
     __tablename__ = "inventory_env_vars"
 
     id = Column(Integer, primary_key=True, index=True)
-    scan_id = Column(Integer, ForeignKey("scans.id"), nullable=False, index=True)
-    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=False, index=True)
+    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=False, index=True)
+    asset_id = Column(Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=False, index=True)
 
     name = Column(String, index=True)       # Variable name (lowercase)
     value = Column(Text)                    # Variable value
@@ -1249,8 +1251,8 @@ class InventoryPasswordPolicy(Base):
     __tablename__ = "inventory_password_policies"
 
     id = Column(Integer, primary_key=True, index=True)
-    scan_id = Column(Integer, ForeignKey("scans.id"), nullable=False, index=True)
-    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=False, index=True)
+    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=False, index=True)
+    asset_id = Column(Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=False, index=True)
 
     domain = Column(String)
     min_length = Column(Integer)
@@ -1272,8 +1274,8 @@ class InventoryProcess(Base):
     __tablename__ = "inventory_processes"
 
     id = Column(Integer, primary_key=True, index=True)
-    scan_id = Column(Integer, ForeignKey("scans.id"), nullable=False, index=True)
-    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=False, index=True)
+    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=False, index=True)
+    asset_id = Column(Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=False, index=True)
 
     process_name = Column(String, index=True)       # e.g. "svchost.exe"
     pid = Column(Integer)
@@ -1289,8 +1291,8 @@ class InventoryAITool(Base):
     __tablename__ = "inventory_ai_tools"
 
     id = Column(Integer, primary_key=True, index=True)
-    scan_id = Column(Integer, ForeignKey("scans.id"), nullable=False, index=True)
-    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=False, index=True)
+    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=False, index=True)
+    asset_id = Column(Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=False, index=True)
 
     tool_name = Column(String, index=True)          # e.g. "ChatGPT for Google", "Ollama"
     # Category derived from section header: browser_extension | application | cloud_service | other
@@ -1303,8 +1305,8 @@ class InventoryCertificate(Base):
     __tablename__ = "inventory_certificates"
 
     id = Column(Integer, primary_key=True, index=True)
-    scan_id = Column(Integer, ForeignKey("scans.id"), nullable=False, index=True)
-    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=False, index=True)
+    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=False, index=True)
+    asset_id = Column(Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=False, index=True)
 
     # Subject
     subject_cn    = Column(String, index=True)
@@ -1343,8 +1345,8 @@ class InventoryCredential(Base):
     __tablename__ = "inventory_credentials"
 
     id = Column(Integer, primary_key=True, index=True)
-    scan_id = Column(Integer, ForeignKey("scans.id"), nullable=False, index=True)
-    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=False, index=True)
+    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=False, index=True)
+    asset_id = Column(Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=False, index=True)
 
     credential_type = Column(String, index=True)     # default_account | cleartext | brute_forceable | weak_config | shared_credential
     protocol = Column(String, index=True)             # ssh, telnet, ftp, snmp, vnc, smb, http, rdp, etc.
@@ -1375,8 +1377,8 @@ class SBOMComponent(Base):
     __tablename__ = "sbom_components"
 
     id = Column(Integer, primary_key=True, index=True)
-    scan_id = Column(Integer, ForeignKey("scans.id"), nullable=False, index=True)
-    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=False, index=True)
+    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=False, index=True)
+    asset_id = Column(Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=False, index=True)
     software_id = Column(Integer, ForeignKey("inventory_software.id"), nullable=True)
 
     name = Column(String, index=True)
@@ -1411,7 +1413,7 @@ class SBOMVulnerability(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     component_id = Column(Integer, ForeignKey("sbom_components.id"), nullable=False, index=True)
-    finding_id = Column(Integer, ForeignKey("findings.id"), nullable=True)
+    finding_id = Column(Integer, ForeignKey("findings.id", ondelete="CASCADE"), nullable=True)
 
     cve_id = Column(String, index=True)
     severity = Column(Integer, default=0)             # 0-4
@@ -1437,7 +1439,7 @@ class AssetOwnership(Base):
     __tablename__ = "asset_ownership"
 
     id = Column(Integer, primary_key=True, index=True)
-    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=False, unique=True, index=True)
+    asset_id = Column(Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
     owner_name = Column(String)
     owner_email = Column(String)
     owner_role = Column(String)   # canonical role, see core.ownership_teams.OWNERSHIP_ROLES
@@ -1453,7 +1455,7 @@ class FindingOwnership(Base):
     __tablename__ = "finding_ownership"
 
     id = Column(Integer, primary_key=True, index=True)
-    finding_id = Column(Integer, ForeignKey("findings.id"), nullable=False, unique=True, index=True)
+    finding_id = Column(Integer, ForeignKey("findings.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
     owner_name = Column(String)
     owner_email = Column(String)
     owner_role = Column(String)   # canonical role, see core.ownership_teams.OWNERSHIP_ROLES
@@ -1473,10 +1475,10 @@ class Tag(Base):
     __tablename__ = "tags"
 
     id = Column(Integer, primary_key=True, index=True)
-    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True, index=True)
     category = Column(String, nullable=False, index=True)
     value = Column(String, nullable=False)
-    parent_id = Column(Integer, ForeignKey("tags.id"), nullable=True)
+    parent_id = Column(Integer, ForeignKey("tags.id", ondelete="CASCADE"), nullable=True)
     color = Column(String, nullable=True, default="#6366f1")  # hex color for UI
     description = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -1526,10 +1528,10 @@ class AutoTagRule(Base):
     __tablename__ = "auto_tag_rules"
 
     id = Column(Integer, primary_key=True, index=True)
-    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True, index=True)
     name = Column(String, nullable=False)
     description = Column(String, nullable=True)
-    tag_id = Column(Integer, ForeignKey("tags.id"), nullable=True)
+    tag_id = Column(Integer, ForeignKey("tags.id", ondelete="CASCADE"), nullable=True)
     target_type = Column(String, nullable=False, default="asset")  # "asset" | "finding" | "both"
     # List of condition dicts: [{"field": "ip_range", "operator": "in_range", "value": "10.0.0.0/8"}]
     conditions = Column(JSON, nullable=False, default=list)
@@ -1547,7 +1549,7 @@ class OwnershipRule(Base):
     __tablename__ = "ownership_rules"
 
     id = Column(Integer, primary_key=True, index=True)
-    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True, index=True)
     name = Column(String, nullable=False)
     description = Column(String, nullable=True)
     target_type = Column(String, nullable=False, default="asset")  # "asset" | "finding" | "both"
@@ -1576,7 +1578,7 @@ class AssetTypeRule(Base):
     __tablename__ = "asset_type_rules"
 
     id = Column(Integer, primary_key=True, index=True)
-    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True, index=True)
     name = Column(String, nullable=False)
     description = Column(String, nullable=True)
     # Conditions: same format as AutoTagRule / Campaign
@@ -1602,10 +1604,10 @@ class Campaign(Base):
     __tablename__ = "campaigns"
 
     id = Column(Integer, primary_key=True, index=True)
-    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=True, index=True)
-    scan_id = Column(Integer, ForeignKey("scans.id"), nullable=True, index=True)  # None = all scans
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True, index=True)
+    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=True, index=True)  # None = all scans
 
-    owner_id = Column(Integer, ForeignKey("users.id"), nullable=True)  # campaign owner
+    owner_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True)  # campaign owner
 
     name = Column(String, nullable=False)
     description = Column(Text)
@@ -1639,11 +1641,11 @@ class CampaignCollaborator(Base):
     id = Column(Integer, primary_key=True, index=True)
     campaign_id = Column(Integer, ForeignKey("campaigns.id", ondelete="CASCADE"),
                          nullable=False, index=True)
-    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
     email = Column(String, nullable=False, index=True)
     role = Column(String, nullable=False, default="contributor")  # contributor only for now
     invite_token_hash = Column(String(64), nullable=False, unique=True, index=True)
-    invited_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    invited_by_user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
     invited_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     accepted_at = Column(DateTime, nullable=True)
     expires_at = Column(DateTime, nullable=False)
@@ -1662,7 +1664,7 @@ class SLAConfig(Base):
     __tablename__ = "sla_configs"
 
     id = Column(Integer, primary_key=True, index=True)
-    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True, index=True)
     severity = Column(Integer, nullable=False)  # 0=Info,1=Low,2=Med,3=High,4=Critical
     severity_label = Column(String)
     days_to_remediate = Column(Integer, nullable=False)  # SLA window in calendar days
@@ -1676,8 +1678,8 @@ class CampaignFinding(Base):
     __tablename__ = "campaign_findings"
 
     id = Column(Integer, primary_key=True, index=True)
-    campaign_id = Column(Integer, ForeignKey("campaigns.id"), nullable=False, index=True)
-    finding_id = Column(Integer, ForeignKey("findings.id"), nullable=False, index=True)
+    campaign_id = Column(Integer, ForeignKey("campaigns.id", ondelete="CASCADE"), nullable=False, index=True)
+    finding_id = Column(Integer, ForeignKey("findings.id", ondelete="CASCADE"), nullable=False, index=True)
     # Owner assigned specifically within this campaign context
     owner_name = Column(String)
     owner_email = Column(String)
@@ -1724,8 +1726,8 @@ class Workflow(Base):
     __tablename__ = "workflows"
 
     id = Column(Integer, primary_key=True, index=True)
-    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=True, index=True)
-    campaign_id = Column(Integer, ForeignKey("campaigns.id"), nullable=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True, index=True)
+    campaign_id = Column(Integer, ForeignKey("campaigns.id", ondelete="CASCADE"), nullable=True, index=True)
     name = Column(String, nullable=False)
     description = Column(Text)
     status = Column(String, default="draft")  # draft / active / paused
@@ -1748,7 +1750,7 @@ class WorkflowNode(Base):
     __tablename__ = "workflow_nodes"
 
     id = Column(Integer, primary_key=True, index=True)
-    workflow_id = Column(Integer, ForeignKey("workflows.id"), nullable=False, index=True)
+    workflow_id = Column(Integer, ForeignKey("workflows.id", ondelete="CASCADE"), nullable=False, index=True)
     node_id = Column(String, nullable=False)  # client-side unique ID (e.g. "node-1")
     node_type = Column(String, nullable=False)  # trigger / action / condition
     node_subtype = Column(String, nullable=False)  # e.g. campaign_run, assign_owner, severity_check
@@ -1769,7 +1771,7 @@ class WorkflowEdge(Base):
     __tablename__ = "workflow_edges"
 
     id = Column(Integer, primary_key=True, index=True)
-    workflow_id = Column(Integer, ForeignKey("workflows.id"), nullable=False, index=True)
+    workflow_id = Column(Integer, ForeignKey("workflows.id", ondelete="CASCADE"), nullable=False, index=True)
     edge_id = Column(String, nullable=False)  # client-side ID
     source_node_id = Column(String, nullable=False)  # references WorkflowNode.node_id
     target_node_id = Column(String, nullable=False)
@@ -1785,7 +1787,7 @@ class WorkflowExecution(Base):
     __tablename__ = "workflow_executions"
 
     id = Column(Integer, primary_key=True, index=True)
-    workflow_id = Column(Integer, ForeignKey("workflows.id"), nullable=False, index=True)
+    workflow_id = Column(Integer, ForeignKey("workflows.id", ondelete="CASCADE"), nullable=False, index=True)
     status = Column(String, default="running")  # running / completed / failed
     trigger_type = Column(String)  # what triggered this run
     started_at = Column(DateTime, default=datetime.utcnow)
@@ -1826,7 +1828,7 @@ class IntegrationConfig(Base):
     __tablename__ = "integration_configs"
 
     id = Column(Integer, primary_key=True, index=True)
-    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True, index=True)
     provider = Column(String, nullable=False, index=True)  # jira, servicenow, email, slack, teams
     display_name = Column(String)
     is_enabled = Column(Boolean, default=False)
@@ -1846,7 +1848,7 @@ class ExternalTagSource(Base):
     __tablename__ = "external_tag_sources"
 
     id = Column(Integer, primary_key=True, index=True)
-    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True, index=True)
     name = Column(String, nullable=False)           # "ServiceNow CMDB", "Infoblox", etc.
     source_type = Column(String, nullable=False)    # "csv" | "servicenow" | "api"
     # How to match the external record to an internal asset
@@ -1896,7 +1898,7 @@ class FindingException(Base):
     __tablename__ = "finding_exceptions"
 
     id = Column(Integer, primary_key=True, index=True)
-    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True, index=True)
     plugin_id = Column(String, nullable=True, index=True)  # nullable when using conditions-only matching
     plugin_name = Column(String)
     # Scope: specific asset IP or null = all assets
@@ -1951,7 +1953,7 @@ class ReportTemplate(Base):
     __tablename__ = "report_templates"
 
     id = Column(Integer, primary_key=True, index=True)
-    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True, index=True)
     name = Column(String, nullable=False)
     description = Column(String, nullable=True)
     config = Column(JSON, nullable=False, default=dict)  # {widgets: [...]}
@@ -1965,7 +1967,7 @@ class ReportSchedule(Base):
     __tablename__ = "report_schedules"
 
     id = Column(Integer, primary_key=True, index=True)
-    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True, index=True)
     report_template_id = Column(Integer, ForeignKey("report_templates.id", ondelete="CASCADE"),
                                 nullable=False, index=True)
     name = Column(String, nullable=True)                # optional display name; defaults to template name
@@ -2000,8 +2002,8 @@ class ScanComparison(Base):
     __tablename__ = "scan_comparisons"
 
     id = Column(Integer, primary_key=True, index=True)
-    base_scan_id = Column(Integer, ForeignKey("scans.id"), nullable=False, index=True)
-    compare_scan_id = Column(Integer, ForeignKey("scans.id"), nullable=False, index=True)
+    base_scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=False, index=True)
+    compare_scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=False, index=True)
     # Counts
     new_count = Column(Integer, default=0)
     fixed_count = Column(Integer, default=0)
@@ -2026,7 +2028,7 @@ class Agent(Base):
     __tablename__ = "agents"
 
     id = Column(Integer, primary_key=True, index=True)
-    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True, index=True)
     name = Column(String, nullable=False)
     description = Column(String)
     system_prompt = Column(Text, nullable=False)          # agent instructions
@@ -2046,7 +2048,7 @@ class AgentDocument(Base):
     __tablename__ = "agent_documents"
 
     id = Column(Integer, primary_key=True, index=True)
-    agent_id = Column(Integer, ForeignKey("agents.id"), nullable=False, index=True)
+    agent_id = Column(Integer, ForeignKey("agents.id", ondelete="CASCADE"), nullable=False, index=True)
     filename = Column(String, nullable=False)
     content_type = Column(String)                         # MIME type
     size_bytes = Column(Integer, default=0)
@@ -2062,7 +2064,7 @@ class AgentRun(Base):
     __tablename__ = "agent_runs"
 
     id = Column(Integer, primary_key=True, index=True)
-    agent_id = Column(Integer, ForeignKey("agents.id"), nullable=False, index=True)
+    agent_id = Column(Integer, ForeignKey("agents.id", ondelete="CASCADE"), nullable=False, index=True)
     input = Column(Text, nullable=False)
     output = Column(Text)
     trace = Column(JSON, default=list)       # step-by-step log [{role, content, tool_calls, ...}]
@@ -2085,7 +2087,7 @@ class AgentSchedule(Base):
     __tablename__ = "agent_schedules"
 
     id = Column(Integer, primary_key=True, index=True)
-    agent_id = Column(Integer, ForeignKey("agents.id"), nullable=False, index=True)
+    agent_id = Column(Integer, ForeignKey("agents.id", ondelete="CASCADE"), nullable=False, index=True)
     cron_expression = Column(String, nullable=False)  # e.g. "0 8 * * 1-5"
     input_template = Column(Text)                      # default input for scheduled runs
     is_enabled = Column(Boolean, default=True)
@@ -2108,9 +2110,9 @@ class AgentApproval(Base):
     __tablename__ = "agent_approvals"
 
     id = Column(Integer, primary_key=True, index=True)
-    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=True, index=True)
-    agent_run_id = Column(Integer, ForeignKey("agent_runs.id"), nullable=True, index=True)
-    agent_id = Column(Integer, ForeignKey("agents.id"), nullable=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True, index=True)
+    agent_run_id = Column(Integer, ForeignKey("agent_runs.id", ondelete="CASCADE"), nullable=True, index=True)
+    agent_id = Column(Integer, ForeignKey("agents.id", ondelete="CASCADE"), nullable=True, index=True)
     source = Column(String, default="internal_agent", nullable=False)
 
     # Tool being gated
@@ -2129,7 +2131,7 @@ class AgentApproval(Base):
     status = Column(String, default="pending")       # pending / approved / rejected / expired
     requested_at = Column(DateTime, default=datetime.utcnow)
     decided_at = Column(DateTime, nullable=True)
-    decided_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    decided_by = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
     rejection_reason = Column(Text, nullable=True)
     # Set when the approval has been pushed to an external channel
     # (Slack/email) so the periodic escalation job doesn't double-send.
@@ -2158,11 +2160,11 @@ class OrgActionGrant(Base):
     __tablename__ = "org_action_grants"
 
     id = Column(Integer, primary_key=True, index=True)
-    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
     action_name = Column(String(128), nullable=False)
     expires_at = Column(DateTime, nullable=False)
-    granted_by = Column(Integer, ForeignKey("users.id"), nullable=True)
-    granted_via_approval_id = Column(Integer, ForeignKey("agent_approvals.id"), nullable=True)
+    granted_by = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
+    granted_via_approval_id = Column(Integer, ForeignKey("agent_approvals.id", ondelete="CASCADE"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
 
@@ -2181,20 +2183,20 @@ class OrgMemoryFact(Base):
     __tablename__ = "org_memory_facts"
 
     id = Column(Integer, primary_key=True, index=True)
-    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
     namespace = Column(String(64), nullable=False)
     key = Column(String(255), nullable=False)
     value = Column(JSON, nullable=False)
     confidence = Column(Float, nullable=False, default=0.8)
 
-    source_agent_id = Column(Integer, ForeignKey("agents.id"), nullable=True)
-    source_run_id = Column(Integer, ForeignKey("agent_runs.id"), nullable=True)
+    source_agent_id = Column(Integer, ForeignKey("agents.id", ondelete="CASCADE"), nullable=True)
+    source_run_id = Column(Integer, ForeignKey("agent_runs.id", ondelete="CASCADE"), nullable=True)
     evidence = Column(JSON, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     expires_at = Column(DateTime, nullable=True)
-    superseded_by = Column(Integer, ForeignKey("org_memory_facts.id"), nullable=True)
+    superseded_by = Column(Integer, ForeignKey("org_memory_facts.id", ondelete="CASCADE"), nullable=True)
 
     __table_args__ = (
         Index("ix_org_memory_org_namespace", "org_id", "namespace"),
@@ -2217,12 +2219,12 @@ class AgentLead(Base):
     __tablename__ = "agent_leads"
 
     id = Column(Integer, primary_key=True, index=True)
-    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
-    agent_run_id = Column(Integer, ForeignKey("agent_runs.id"), nullable=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
+    agent_run_id = Column(Integer, ForeignKey("agent_runs.id", ondelete="CASCADE"), nullable=True)
     # Resolved asset id when the agent passed one. Falls back to
     # `target_asset_hint` (hostname/ip) when only the hint is known —
     # the Coordinator resolves the hint to an asset row at consume time.
-    target_asset_id = Column(Integer, ForeignKey("assets.id"), nullable=True, index=True)
+    target_asset_id = Column(Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=True, index=True)
     target_asset_hint = Column(String(255), nullable=True)
     reason = Column(Text, nullable=False)
     suggested_protocol = Column(String(64), nullable=False)
@@ -2233,7 +2235,7 @@ class AgentLead(Base):
     # consumed → audit completed (informational; not enforced today)
     # ignored → coordinator skipped it (e.g. asset already audited / cooldown)
     status = Column(String(32), nullable=False, default="open")
-    consumed_by_scan_id = Column(Integer, ForeignKey("scans.id"), nullable=True)
+    consumed_by_scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
@@ -2257,8 +2259,8 @@ class CoordinatorPendingApproval(Base):
     __tablename__ = "coordinator_pending_approvals"
 
     id = Column(Integer, primary_key=True, index=True)
-    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
-    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
+    asset_id = Column(Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=True, index=True)
     pattern = Column(String(64), nullable=False)
     protocol = Column(String(64), nullable=False)
     mission = Column(String(64), nullable=False)
@@ -2272,7 +2274,7 @@ class CoordinatorPendingApproval(Base):
     status = Column(String(32), nullable=False, default="pending")
     decided_by = Column(String(255), nullable=True)
     decided_at = Column(DateTime, nullable=True)
-    consumed_by_scan_id = Column(Integer, ForeignKey("scans.id"), nullable=True)
+    consumed_by_scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     last_seen_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
@@ -2313,9 +2315,9 @@ class OrgFeedEntry(Base):
     __tablename__ = "org_feed_entries"
 
     id = Column(Integer, primary_key=True, index=True)
-    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
-    agent_id = Column(Integer, ForeignKey("agents.id"), nullable=True, index=True)
-    agent_run_id = Column(Integer, ForeignKey("agent_runs.id"), nullable=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
+    agent_id = Column(Integer, ForeignKey("agents.id", ondelete="CASCADE"), nullable=True, index=True)
+    agent_run_id = Column(Integer, ForeignKey("agent_runs.id", ondelete="CASCADE"), nullable=True, index=True)
     # observation | decision | action | question | brief
     kind = Column(String(32), nullable=False)
     headline = Column(String(280), nullable=False)
@@ -2349,8 +2351,8 @@ class CopilotConversation(Base):
     __tablename__ = "copilot_conversations"
 
     id = Column(Integer, primary_key=True, index=True)
-    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
     title = Column(String, default="New conversation")
     messages = Column(JSON, default=list)  # [{role, content, timestamp, tool_calls?}]
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -2364,9 +2366,9 @@ class CopilotAttachment(Base):
     __tablename__ = "copilot_attachments"
 
     id = Column(Integer, primary_key=True, index=True)
-    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
-    conversation_id = Column(Integer, ForeignKey("copilot_conversations.id"), nullable=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+    conversation_id = Column(Integer, ForeignKey("copilot_conversations.id", ondelete="CASCADE"), nullable=True, index=True)
     filename = Column(String, nullable=False)
     content_type = Column(String, nullable=True)
     size_bytes = Column(Integer, nullable=False, default=0)
@@ -2390,15 +2392,15 @@ class LLMInteraction(Base):
     __tablename__ = "llm_interactions"
 
     id = Column(Integer, primary_key=True, index=True)
-    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
 
     # Source — 'agent' | 'vuln_validator' | 'alert_triage' | 'scan_planner' | ...
     surface = Column(String, nullable=False, index=True)
     surface_ref_type = Column(String)   # 'finding' | 'alert' | 'scan' | 'conversation' | ...
     surface_ref_id = Column(String)
-    agent_id = Column(Integer, ForeignKey("agents.id"), nullable=True)
-    agent_run_id = Column(Integer, ForeignKey("agent_runs.id"), nullable=True, index=True)
+    agent_id = Column(Integer, ForeignKey("agents.id", ondelete="CASCADE"), nullable=True)
+    agent_run_id = Column(Integer, ForeignKey("agent_runs.id", ondelete="CASCADE"), nullable=True, index=True)
 
     provider = Column(String)
     model = Column(String)
@@ -2434,7 +2436,7 @@ class LLMInteractionOutcome(Base):
     __tablename__ = "llm_interaction_outcomes"
 
     id = Column(Integer, primary_key=True, index=True)
-    interaction_id = Column(Integer, ForeignKey("llm_interactions.id"), nullable=False, unique=True, index=True)
+    interaction_id = Column(Integer, ForeignKey("llm_interactions.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
     org_id = Column(Integer, nullable=False, index=True)
 
     user_rating = Column(Integer)             # -1, 0, +1
@@ -2459,7 +2461,7 @@ class AggregatedSolution(Base):
     __tablename__ = "aggregated_solutions"
 
     id = Column(Integer, primary_key=True, index=True)
-    scan_id = Column(Integer, ForeignKey("scans.id"), nullable=False, index=True)
+    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=False, index=True)
 
     # Component fingerprint
     affected_component = Column(String, index=True)          # "Node.js", "OpenSSL", "VMware Tools"
@@ -2499,7 +2501,7 @@ class AggregatedSolution(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     # Keep backward compat FK (nullable now)
-    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=True)
+    asset_id = Column(Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=True)
 
     scan = relationship("Scan")
 
@@ -2545,9 +2547,9 @@ class AuditLog(Base):
     __tablename__ = "audit_logs"
 
     id = Column(Integer, primary_key=True, index=True)
-    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True, index=True)
     # Actor
-    actor_user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    actor_user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
     actor_email = Column(String, nullable=True)          # snapshot at time of action
     actor_display_name = Column(String, nullable=True)
     # Action
@@ -2572,7 +2574,7 @@ class Notification(Base):
     __tablename__ = "notifications"
 
     id = Column(Integer, primary_key=True, index=True)
-    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False)
     category = Column(String, nullable=False)  # scan_complete | scan_failed | critical_findings | new_assets | kev_update | campaign_findings | sla_breach | approval_required
     title = Column(String, nullable=False)
     body = Column(Text, nullable=True)
@@ -2592,7 +2594,7 @@ class NotificationRead(Base):
     __tablename__ = "notification_reads"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     notification_id = Column(Integer, ForeignKey("notifications.id", ondelete="CASCADE"), nullable=False)
     read_at = Column(DateTime, default=datetime.utcnow)
 
@@ -2607,7 +2609,7 @@ class UserPageVisit(Base):
     __tablename__ = "user_page_visits"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     page_key = Column(String, nullable=False)   # findings | assets | campaigns:{id} | threat_intel
     last_visited_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
@@ -2630,7 +2632,7 @@ class IntegrationCredential(Base):
     __tablename__ = "integration_credentials"
 
     id = Column(String, primary_key=True, default=_gen_uuid)
-    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True, index=True)
     name = Column(String, nullable=False)
     connector_id = Column(String, nullable=False, index=True)
     auth_type = Column(String, nullable=False)  # api_key | oauth2 | basic | bearer | pat
@@ -2662,7 +2664,7 @@ class AuthProfile(Base):
     org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False)
     name = Column(String, nullable=False)
     profile_type = Column(String, nullable=False, default="form_login")  # static | form_login | ...
-    credential_id = Column(String, ForeignKey("integration_credentials.id"), nullable=False)
+    credential_id = Column(String, ForeignKey("integration_credentials.id", ondelete="CASCADE"), nullable=False)
 
     # form_login-only (nullable for static)
     login_url = Column(String, nullable=True)
@@ -2675,7 +2677,7 @@ class AuthProfile(Base):
     session_expires_at = Column(DateTime, nullable=True)
     session_credential_hash = Column(String, nullable=True)  # rotation invalidates
 
-    created_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_by_user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -2705,7 +2707,7 @@ class Integration(Base):
     __tablename__ = "integrations"
 
     id = Column(String, primary_key=True, default=_gen_uuid)
-    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True, index=True)
     # Non-NULL = scoped to one campaign (visible only to its members + collaborators)
     campaign_id = Column(Integer, ForeignKey("campaigns.id", ondelete="CASCADE"),
                          nullable=True, index=True)
@@ -2716,7 +2718,7 @@ class Integration(Base):
     transport_config = Column(JSON, nullable=False, default=dict)
     stream_config = Column(JSON, nullable=True)  # parser, sample_event, vrl_transform (for transport_type=stream)
     cursor_state = Column(JSON, nullable=True)   # incremental sync state: {last_event_time, offset, token, ...}
-    credentials_id = Column(String, ForeignKey("integration_credentials.id"), nullable=True)
+    credentials_id = Column(String, ForeignKey("integration_credentials.id", ondelete="CASCADE"), nullable=True)
     records_path = Column(String, nullable=True)  # dot-path to records array in response
     field_map = Column(JSON, nullable=False, default=list)
     dedup_key = Column(JSON, nullable=False, default=list)  # stored as a JSON array
@@ -2725,7 +2727,7 @@ class Integration(Base):
     enabled = Column(Boolean, nullable=False, default=False)
     template_id = Column(String, nullable=True)  # OOTB template used
     logo_url = Column(String, nullable=True)  # custom logo URL or auto-fetched favicon
-    relay_agent_id = Column(String, ForeignKey("relay_agents.id"), nullable=True)
+    relay_agent_id = Column(String, ForeignKey("relay_agents.id", ondelete="CASCADE"), nullable=True)
     spec_cache_id = Column(String, ForeignKey("discovered_specs.id"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -2777,7 +2779,7 @@ class SIEMEvent(Base):
     __tablename__ = "siem_events"
 
     id = Column(String, primary_key=True, default=_gen_uuid)
-    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
     event_time = Column(DateTime, nullable=False, index=True)
     ingested_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     source_system = Column(String, nullable=False, index=True)       # e.g. palo_alto, crowdstrike, syslog
@@ -2787,7 +2789,7 @@ class SIEMEvent(Base):
     severity = Column(String, nullable=False, default="info")        # low | medium | high | critical | info
     action = Column(String, nullable=True)                           # allowed, denied, dropped, etc.
     outcome = Column(String, nullable=True)                          # success, failure, unknown
-    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=True, index=True)
+    asset_id = Column(Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=True, index=True)
     user_name = Column(String, nullable=True)
     source_ip = Column(String, nullable=True)
     dest_ip = Column(String, nullable=True)
@@ -2796,7 +2798,7 @@ class SIEMEvent(Base):
     raw = Column(JSON, nullable=True)                                # original event payload
     normalized = Column(JSON, nullable=True)                         # ECS-normalized fields
     dedup_hash = Column(String, nullable=False, index=True)          # unique per org for dedup
-    integration_id = Column(String, ForeignKey("integrations.id"), nullable=True)
+    integration_id = Column(String, ForeignKey("integrations.id", ondelete="CASCADE"), nullable=True)
 
     __table_args__ = (
         UniqueConstraint("org_id", "dedup_hash", name="uq_siem_events_org_dedup"),
@@ -2809,8 +2811,8 @@ class IngestEndpoint(Base):
     __tablename__ = "ingest_endpoints"
 
     id = Column(String, primary_key=True, default=_gen_uuid)
-    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
-    integration_id = Column(String, ForeignKey("integrations.id"), nullable=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
+    integration_id = Column(String, ForeignKey("integrations.id", ondelete="CASCADE"), nullable=True)
     name = Column(String, nullable=False)
     token_hash = Column(String, nullable=False)           # bcrypt hash of bearer token
     token_prefix = Column(String, nullable=True)          # first 8 chars for display
@@ -2840,7 +2842,7 @@ class RelayAgent(Base):
     __tablename__ = "relay_agents"
 
     id = Column(String, primary_key=True, default=_gen_uuid)
-    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
     name = Column(String, nullable=False)             # "NYC Office Agent"
     # relay_type='cloud_scanner' rows are auto-provisioned per org and run in
     # GCP — they handle internet-reachable assets without needing a customer
@@ -2877,7 +2879,7 @@ class SecurityControlPolicy(Base):
     __tablename__ = "security_control_policies"
 
     id = Column(Integer, primary_key=True, index=True)
-    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
     product_key = Column(String, nullable=False, index=True)   # crowdstrike_falcon, ms_defender, palo_alto_ngfw
     product_name = Column(String)                              # CrowdStrike Falcon
     vendor = Column(String)
@@ -2886,7 +2888,7 @@ class SecurityControlPolicy(Base):
     policy_type = Column(String, index=True)                   # prevention, firewall, av_realtime, device_control
     settings = Column(JSON, nullable=False)                    # product-specific config blob
     raw_response = Column(JSON)                                # full API response for audit
-    source_integration_id = Column(String, ForeignKey("integrations.id"), nullable=True)
+    source_integration_id = Column(String, ForeignKey("integrations.id", ondelete="CASCADE"), nullable=True)
     synced_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -2905,9 +2907,9 @@ class SecurityControlPolicyAssignment(Base):
     __tablename__ = "security_control_policy_assignments"
 
     id = Column(Integer, primary_key=True, index=True)
-    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
-    policy_id = Column(Integer, ForeignKey("security_control_policies.id"), nullable=False, index=True)
-    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=False, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
+    policy_id = Column(Integer, ForeignKey("security_control_policies.id", ondelete="CASCADE"), nullable=False, index=True)
+    asset_id = Column(Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=False, index=True)
     assignment_source = Column(String)          # host_group, direct, default_policy
     source_group_id = Column(String)
     source_group_name = Column(String)
@@ -2927,10 +2929,10 @@ class ControlAssessment(Base):
     __tablename__ = "control_assessments"
 
     id = Column(Integer, primary_key=True, index=True)
-    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
-    finding_id = Column(Integer, ForeignKey("findings.id"), nullable=False, index=True)
-    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=False, index=True)
-    policy_id = Column(Integer, ForeignKey("security_control_policies.id"), nullable=False, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
+    finding_id = Column(Integer, ForeignKey("findings.id", ondelete="CASCADE"), nullable=False, index=True)
+    asset_id = Column(Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=False, index=True)
+    policy_id = Column(Integer, ForeignKey("security_control_policies.id", ondelete="CASCADE"), nullable=False, index=True)
     verdict = Column(String, nullable=False)     # mitigated, partially_mitigated, not_mitigated, unknown
     confidence = Column(String, nullable=False)  # high, medium, low
     explanation = Column(Text, nullable=False)
@@ -2962,9 +2964,9 @@ class FirewallPolicy(Base):
     __tablename__ = "firewall_policies"
 
     id = Column(Integer, primary_key=True, index=True)
-    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
     vendor = Column(String, nullable=False, index=True)           # palo_alto, fortinet, checkpoint
-    source_integration_id = Column(String, ForeignKey("integrations.id"), nullable=True)
+    source_integration_id = Column(String, ForeignKey("integrations.id", ondelete="CASCADE"), nullable=True)
     rule_id = Column(String, nullable=False, index=True)          # rule name or policy ID from appliance
     rule_name = Column(String)                                    # human-readable rule name
     from_zone = Column(String)                                    # source zone / interface
@@ -2998,7 +3000,7 @@ class DetectionRule(Base):
     __tablename__ = "detection_rules"
 
     id = Column(Integer, primary_key=True, index=True)
-    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
     name = Column(String, nullable=False)
     description = Column(Text, nullable=True)
     severity = Column(String, nullable=False, default="medium")      # low | medium | high | critical
@@ -3025,7 +3027,7 @@ class Alert(Base):
     __tablename__ = "alerts"
 
     id = Column(Integer, primary_key=True, index=True)
-    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
     rule_id = Column(Integer, ForeignKey("detection_rules.id", ondelete="CASCADE"), nullable=False, index=True)
     fired_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     severity = Column(String, nullable=False, default="medium")
@@ -3035,9 +3037,9 @@ class Alert(Base):
     first_event_id = Column(String, nullable=True)
     last_event_id = Column(String, nullable=True)
     context = Column(JSON, default=dict)                            # matching events sample, group values
-    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=True)
-    assigned_to = Column(Integer, ForeignKey("users.id"), nullable=True)
-    campaign_id = Column(Integer, ForeignKey("campaigns.id"), nullable=True)
+    asset_id = Column(Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=True)
+    assigned_to = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
+    campaign_id = Column(Integer, ForeignKey("campaigns.id", ondelete="CASCADE"), nullable=True)
 
     # Entity identification (primary entity this alert is about)
     entity_type = Column(String, nullable=True)                     # ip | hostname | user
@@ -3051,7 +3053,7 @@ class Alert(Base):
 
     # Suppression
     suppressed = Column(Boolean, default=False, index=True)
-    suppression_rule_id = Column(Integer, ForeignKey("suppression_rules.id"), nullable=True)
+    suppression_rule_id = Column(Integer, ForeignKey("suppression_rules.id", ondelete="CASCADE"), nullable=True)
 
     # Investigation
     triage_reason = Column(String, nullable=True)
@@ -3084,16 +3086,16 @@ class SuppressionRule(Base):
     __tablename__ = "suppression_rules"
 
     id = Column(Integer, primary_key=True, index=True)
-    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
     name = Column(String, nullable=False)
     description = Column(Text, nullable=True)
     conditions = Column(JSON, nullable=False, default=list)         # same filter format as DetectionRule.query
     conditions_logic = Column(String, default="AND")                # AND | OR
-    rule_id = Column(Integer, ForeignKey("detection_rules.id"), nullable=True)  # scope to rule, or null=global
+    rule_id = Column(Integer, ForeignKey("detection_rules.id", ondelete="CASCADE"), nullable=True)  # scope to rule, or null=global
     reason = Column(String, nullable=True)                          # "known scanner", "maintenance window", etc.
     enabled = Column(Boolean, default=True)
     expires_at = Column(DateTime, nullable=True)                    # null = never expires
-    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_by = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
     suppressed_count = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -3267,7 +3269,7 @@ class OrgFrameworkSubscription(Base):
     scope_rule = Column(JSON, nullable=True)                        # rule_engine condition list
     scope_tag_expr = Column(String, nullable=True)                  # UI mirror, e.g. "env:prod,cde:yes"
     activated_at = Column(DateTime, default=datetime.utcnow)
-    activated_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    activated_by = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -3300,8 +3302,8 @@ class ComplianceCompensatingControl(Base):
                                   nullable=True)
     linked_ticket_ids = Column(JSON, default=list, nullable=False)  # [{system, external_id}, ...]
     valid_until = Column(DateTime, nullable=True)
-    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
-    approved_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_by = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
+    approved_by = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -3400,7 +3402,7 @@ class ComplianceReportRun(Base):
     sha256 = Column(String, nullable=True)
     status = Column(String, default="queued", nullable=False)       # queued | running | succeeded | failed
     error = Column(Text, nullable=True)
-    generated_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    generated_by = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
     generated_at = Column(DateTime, nullable=True)                  # set when status flips to succeeded/failed
     snapshot = Column(JSON, default=dict, nullable=False)           # frozen control rollup
     created_at = Column(DateTime, default=datetime.utcnow)

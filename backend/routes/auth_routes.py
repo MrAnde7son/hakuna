@@ -1059,100 +1059,15 @@ async def delete_org(
         raise HTTPException(400, "Cannot delete your own organization")
 
     _org_name = org.name
-    p = {"oid": org_id}
 
-    # Cascading deletes across 100+ child tables would require either:
-    #   (a) ON DELETE CASCADE on every FK from organizations/users/scans/etc.
-    #       (a schema migration), or
-    #   (b) a hand-maintained dependency-ordered DELETE chain that drifts
-    #       every time someone adds a new table.
-    #
-    # We do (c): disable referential-integrity triggers for this transaction
-    # via session_replication_role='replica' (Postgres requires superuser),
-    # then enumerate every table that holds a reference to this org via
-    # information_schema and delete matching rows. Order doesn't matter while
-    # FK checks are off, so the function tolerates new child tables without
-    # code changes. We re-enable triggers before commit so any orphans we
-    # might have missed surface as constraint errors elsewhere.
-    try:
-        db.execute(text("SET LOCAL session_replication_role = 'replica'"))
-    except Exception as e:
-        # Fall back to the legacy ordered approach would go here, but right
-        # now we depend on superuser. Loud failure is better than partial.
-        logger.error(f"delete_org: cannot disable FK triggers (need superuser): {e}")
-        raise HTTPException(500, "Database role lacks privilege to delete organizations")
-
-    # Cache the IDs we need to scope child deletes BEFORE deleting the parents.
-    user_ids = [r[0] for r in db.execute(text("SELECT id FROM users WHERE org_id = :oid"), p).fetchall()]
-    scan_ids = [r[0] for r in db.execute(text("SELECT id FROM scans WHERE org_id = :oid"), p).fetchall()]
-    finding_ids = [r[0] for r in db.execute(text(
-        "SELECT id FROM findings WHERE scan_id = ANY(:sids)"
-    ), {"sids": scan_ids or [0]}).fetchall()] if scan_ids else []
-    asset_ids = [r[0] for r in db.execute(text(
-        "SELECT id FROM assets WHERE scan_id = ANY(:sids)"
-    ), {"sids": scan_ids or [0]}).fetchall()] if scan_ids else []
-    campaign_ids = [r[0] for r in db.execute(text("SELECT id FROM campaigns WHERE org_id = :oid"), p).fetchall()]
-    role_ids = [r[0] for r in db.execute(text("SELECT id FROM custom_roles WHERE org_id = :oid"), p).fetchall()]
-    integration_ids = [r[0] for r in db.execute(text("SELECT id FROM integrations WHERE org_id = :oid"), p).fetchall()]
-    workflow_ids = [r[0] for r in db.execute(text("SELECT id FROM workflows WHERE org_id = :oid"), p).fetchall()]
-    agent_ids = [r[0] for r in db.execute(text("SELECT id FROM agents WHERE org_id = :oid"), p).fetchall()]
-
-    # Enumerate every public-schema table that has an `org_id`, `user_id`,
-    # `scan_id`, etc. column. We scope the delete by IDs we cached above.
-    def _tables_with_column(col: str) -> list[str]:
-        rows = db.execute(text("""
-            SELECT table_name FROM information_schema.columns
-            WHERE table_schema = 'public' AND column_name = :c
-        """), {"c": col}).fetchall()
-        return [r[0] for r in rows]
-
-    delete_plan: list[tuple[str, str, dict]] = []  # (sql, label, params)
-
-    # 1. Tables scoped by org_id (every table that has the column).
-    for tbl in _tables_with_column("org_id"):
-        if tbl == "organizations":
-            continue
-        delete_plan.append((f"DELETE FROM {tbl} WHERE org_id = :oid", tbl, p))
-
-    # 2. Per-FK scoped deletes — only run if the parent had any rows.
-    def _scope_by(col: str, ids: list, exclude_tables: set[str] = frozenset()):
-        if not ids:
-            return
-        for tbl in _tables_with_column(col):
-            if tbl in exclude_tables:
-                continue
-            delete_plan.append((
-                f"DELETE FROM {tbl} WHERE {col} = ANY(:ids)",
-                f"{tbl}.{col}",
-                {"ids": ids},
-            ))
-
-    # MSSP link uses non-standard column names — handle explicitly.
-    delete_plan.append((
-        "DELETE FROM mssp_org_access WHERE mssp_org_id = :oid OR client_org_id = :oid",
-        "mssp_org_access", p,
-    ))
-
-    _scope_by("user_id", user_ids, exclude_tables={"users"})
-    _scope_by("scan_id", scan_ids, exclude_tables={"scans"})
-    _scope_by("finding_id", finding_ids, exclude_tables={"findings"})
-    _scope_by("asset_id", asset_ids, exclude_tables={"assets"})
-    _scope_by("campaign_id", campaign_ids, exclude_tables={"campaigns"})
-    _scope_by("role_id", role_ids)
-    _scope_by("integration_id", integration_ids, exclude_tables={"integrations"})
-    _scope_by("workflow_id", workflow_ids, exclude_tables={"workflows"})
-    _scope_by("agent_id", agent_ids, exclude_tables={"agents"})
-
-    for sql, _label, params in delete_plan:
-        db.execute(text(sql), params)  # noqa: S608  (table names from information_schema, not user input)
-
-    db.delete(org)
+    # Every FK from a tenant-scoped row up to its parent is ``ON DELETE
+    # CASCADE`` (see migration 073_cascade_org_delete), so deleting the
+    # organization prunes the full subtree in one transaction. We issue a
+    # raw DELETE instead of ``db.delete(org)`` because the ORM unit-of-work
+    # eagerly nulls out children before the DB-level CASCADE fires, which
+    # fails on NOT NULL columns like ``users.org_id``.
     log_audit(db, "delete", "organization", org_id, entity_name=_org_name, actor=user)
-
-    # Re-enable FK enforcement before commit. SET LOCAL is auto-reverted on
-    # commit/rollback, but flipping it back here makes the safety contract
-    # explicit and lets any orphan-creating bug above raise immediately.
-    db.execute(text("SET LOCAL session_replication_role = 'origin'"))
+    db.execute(text("DELETE FROM organizations WHERE id = :oid"), {"oid": org_id})
     db.commit()
     return {"status": "deleted", "id": org_id}
 

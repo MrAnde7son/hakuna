@@ -79,6 +79,7 @@ def list_feed(
     status: Optional[str] = Query(None, description="open | acted | dismissed | expired"),
     severity: Optional[str] = Query(None),
     event_type: Optional[str] = Query(None),
+    scan_id: Optional[int] = Query(None, description="Filter to entries whose event_ref.scan_id matches"),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_auth),
     org_ids: list[int] = Depends(get_accessible_org_ids),
@@ -109,12 +110,30 @@ def list_feed(
     if event_type:
         q = q.filter(OrgFeedEntry.event_type == event_type)
 
-    entries = (
-        q.order_by(desc(OrgFeedEntry.created_at))
-        .offset((page - 1) * page_size)
-        .limit(page_size)
-        .all()
-    )
+    if scan_id is not None:
+        # event_ref is plain JSON, so JSON-path filtering would be
+        # dialect-specific (SQLite tests have no JSONB ops). Pull a wider
+        # window and filter in Python — same pattern as ``unread_count``.
+        # Capped so a long-tail org with thousands of entries doesn't blow
+        # up the response time when an obscure scan id is selected.
+        window = min(max(page * page_size * 10, 500), 5000)
+        candidates = (
+            q.order_by(desc(OrgFeedEntry.created_at))
+            .limit(window)
+            .all()
+        )
+        filtered = [
+            e for e in candidates
+            if (e.event_ref or {}).get("scan_id") == scan_id
+        ]
+        entries = filtered[(page - 1) * page_size : page * page_size]
+    else:
+        entries = (
+            q.order_by(desc(OrgFeedEntry.created_at))
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+            .all()
+        )
 
     # Resolve agent names in one query.
     agent_ids = {e.agent_id for e in entries if e.agent_id is not None}
@@ -294,6 +313,7 @@ def _format_feed_context(entries: list[OrgFeedEntry], name_by_id: dict[int, str]
 @router.get("/chat-context")
 def feed_chat_context(
     size: int = Query(5, ge=0, le=20),
+    scan_id: Optional[int] = Query(None, description="Filter to entries whose event_ref.scan_id matches"),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_auth),
     org_ids: list[int] = Depends(get_accessible_org_ids),
@@ -306,13 +326,21 @@ def feed_chat_context(
     if not org_ids or size <= 0:
         return {"context": ""}
 
-    recent = (
+    base = (
         db.query(OrgFeedEntry)
         .filter(OrgFeedEntry.org_id.in_(org_ids))
         .order_by(desc(OrgFeedEntry.created_at))
-        .limit(size)
-        .all()
     )
+    if scan_id is not None:
+        # Same JSON-filter-in-Python pattern as ``list_feed``.
+        window = min(max(size * 20, 200), 2000)
+        candidates = base.limit(window).all()
+        recent = [
+            e for e in candidates
+            if (e.event_ref or {}).get("scan_id") == scan_id
+        ][:size]
+    else:
+        recent = base.limit(size).all()
     name_by_id: dict[int, str] = {}
     agent_ids = {e.agent_id for e in recent if e.agent_id is not None}
     if agent_ids:
