@@ -683,3 +683,103 @@ def test_pick_relay_falls_back_when_preferred_type_missing(db_session, test_org)
                          is_internet_facing=True)
     picked = _pick_relay(db_session, test_org.id, asset=public_asset)
     assert picked.id == onprem.id  # fell back to on-prem since no cloud relay
+
+
+# ── Service-fingerprint gate (Cloudflare/SYN-proxy tarpit defense) ──
+#
+# naabu's SYN scan over-reports on anycast / SYN-proxy edges — every TCP port
+# returns SYN-ACK while ``-sV`` correctly identifies only the real service.
+# The auto-trigger must filter on the fingerprinted services map, not the raw
+# port list, or it will fire phantom anon-protocol audits that all RST.
+
+
+def test_no_dispatch_when_port_lacks_service_fingerprint(
+    db_session, test_org, linked_asset, connected_relay,
+):
+    """Tarpit asset: port 21 appears in new_ports but services only knows 443.
+
+    Mirrors the production wildcard.github.eng.tenable.com case — naabu reported
+    902 "open" ports on a Cloudflare anycast IP, ``-sV`` identified only
+    ``{"443": {"name": "https"}}``. The FTP anon-protocol audit should not fire.
+    """
+    from services.audit_auto_trigger import maybe_auto_trigger_anon_audits
+
+    linked_asset.easm_data = {
+        **(linked_asset.easm_data or {}),
+        "services": {"443": {"name": "https", "product": "github.com"}},
+    }
+    db_session.flush()
+
+    with patch("services.audit_auto_trigger.dispatch_audit_run") as mock_dispatch:
+        n = maybe_auto_trigger_anon_audits(
+            db_session, test_org,
+            _port_change_event("scanner-uuid-1", [21, 53, 88, 5900]),
+        )
+
+    assert n == 0
+    mock_dispatch.assert_not_called()
+
+
+def test_dispatch_when_port_has_service_fingerprint(
+    db_session, test_org, linked_asset, connected_relay,
+):
+    """Same asset shape but ``-sV`` actually identified an FTP listener on 21.
+    The rule fires because the triggering port has a real service behind it."""
+    from services.audit_auto_trigger import maybe_auto_trigger_anon_audits
+
+    linked_asset.easm_data = {
+        **(linked_asset.easm_data or {}),
+        "services": {"21": {"name": "ftp", "product": "vsftpd"}},
+    }
+    db_session.flush()
+
+    with patch("services.audit_runner._dispatch_background_run", return_value="task-1"):
+        n = maybe_auto_trigger_anon_audits(
+            db_session, test_org,
+            _port_change_event("scanner-uuid-1", [21]),
+        )
+
+    assert n == 1
+
+
+def test_dispatch_when_services_field_missing_backcompat(
+    db_session, test_org, linked_asset, connected_relay,
+):
+    """Pre-``-sV`` assets (no ``services`` key in easm_data) must still trigger
+    on port-only matching. Don't silently stop the auto-trigger for assets the
+    scanner hasn't re-enriched yet."""
+    from services.audit_auto_trigger import maybe_auto_trigger_anon_audits
+
+    # linked_asset fixture has easm_data={"easm_asset_id": ...} — no services.
+    assert "services" not in (linked_asset.easm_data or {})
+
+    with patch("services.audit_runner._dispatch_background_run", return_value="task-1"):
+        n = maybe_auto_trigger_anon_audits(
+            db_session, test_org,
+            _port_change_event("scanner-uuid-1", [445]),
+        )
+
+    assert n == 1
+
+
+def test_one_rule_port_with_service_is_enough(
+    db_session, test_org, linked_asset, connected_relay,
+):
+    """SMB rule ports = (445, 139). If only 445 is fingerprinted and the event
+    carries both, the rule still fires — any single triggering port with a
+    confirmed service is sufficient."""
+    from services.audit_auto_trigger import maybe_auto_trigger_anon_audits
+
+    linked_asset.easm_data = {
+        **(linked_asset.easm_data or {}),
+        "services": {"445": {"name": "microsoft-ds"}},  # 139 absent
+    }
+    db_session.flush()
+
+    with patch("services.audit_runner._dispatch_background_run", return_value="task-1"):
+        n = maybe_auto_trigger_anon_audits(
+            db_session, test_org,
+            _port_change_event("scanner-uuid-1", [445, 139]),
+        )
+
+    assert n == 1
