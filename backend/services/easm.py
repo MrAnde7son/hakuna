@@ -943,6 +943,7 @@ def _mark_scan_failed(db: Session, scan: Scan, reason: str, *, stage: str = None
 
 async def _setup_easm_scan_for_domain(
     db: Session, org: Organization, domain: str, *, scan: Scan = None,
+    actor_user_id: Optional[int] = None,
 ) -> Scan:
     """Run the external EASM setup for ``domain`` — create scanner org,
     register the domain, trigger the scan — recording outcome on a Scan
@@ -962,7 +963,7 @@ async def _setup_easm_scan_for_domain(
     inspect ``scan.status`` to decide what to emit / log.
     """
     if scan is None:
-        scan = _create_easm_scan(db, org, domain, scan_type="full")
+        scan = _create_easm_scan(db, org, domain, scan_type="full", actor_user_id=actor_user_id)
         scan.status = "pending"
         # Stage tag survives until each external op overwrites it on success
         # or _mark_scan_failed stamps it on failure.
@@ -977,6 +978,8 @@ async def _setup_easm_scan_for_domain(
         meta.pop("failed_stage", None)
         meta["stage"] = "create_org"
         scan.raw_metadata = meta
+        if actor_user_id is not None:
+            scan.created_by_user_id = actor_user_id
         from sqlalchemy.orm.attributes import flag_modified
         flag_modified(scan, "raw_metadata")
         db.commit()
@@ -1009,7 +1012,7 @@ async def _setup_easm_scan_for_domain(
     # via ``_find_existing_easm_scan`` and updates its status (running on
     # success, failed on a trigger-side error). It also self-heals stale
     # easm_org_id by re-creating the scanner org and retrying once.
-    result = await scan_domain(db, org, domain, scan_type="full")
+    result = await scan_domain(db, org, domain, scan_type="full", actor_user_id=actor_user_id)
     db.refresh(scan)
     if result is None and scan.status != "failed":
         # Defensive — scan_domain returns None only when easm_org_id is missing,
@@ -1087,7 +1090,10 @@ async def trigger_easm_for_new_org(db: Session, org: Organization, email: str):
     return scan
 
 
-async def retry_easm_scan(db: Session, org: Organization, scan_id: int) -> Scan:
+async def retry_easm_scan(
+    db: Session, org: Organization, scan_id: int,
+    actor_user_id: Optional[int] = None,
+) -> Scan:
     """Re-run the EASM setup for a previously-failed Scan row. Reuses the
     existing Scan (resets status to 'pending', clears the error fields,
     re-runs the external ops). Idempotent for already-running scans.
@@ -1114,7 +1120,7 @@ async def retry_easm_scan(db: Session, org: Organization, scan_id: int) -> Scan:
     if scan.status in ("running", "completed"):
         return scan
 
-    scan = await _setup_easm_scan_for_domain(db, org, domain, scan=scan)
+    scan = await _setup_easm_scan_for_domain(db, org, domain, scan=scan, actor_user_id=actor_user_id)
 
     # Re-fire scan_started on successful retry so the feed reflects the
     # fresh attempt. Safe vs. debounce — different scan_id won't collide,
@@ -2188,7 +2194,13 @@ def _find_existing_easm_scan(db: Session, org: Organization, domain: str) -> Opt
     return None
 
 
-def _create_easm_scan(db: Session, org: Organization, domain: str, scan_type: str = "full") -> Scan:
+def _create_easm_scan(
+    db: Session,
+    org: Organization,
+    domain: str,
+    scan_type: str = "full",
+    actor_user_id: Optional[int] = None,
+) -> Scan:
     """Create a new EASM scan record for a specific domain."""
     now = datetime.utcnow()
     label = scan_type.replace("_", " ").title()
@@ -2199,6 +2211,7 @@ def _create_easm_scan(db: Session, org: Organization, domain: str, scan_type: st
         scan_date=now.isoformat(),
         scan_type=f"easm_{scan_type}",
         source_type="easm",
+        created_by_user_id=actor_user_id,
         raw_metadata={
             "hakuna_org_id": org.easm_org_id,
             "domain": domain,
@@ -3270,6 +3283,7 @@ async def _trigger_easm_scan_with_error(
 async def scan_domain(
     db: Session, org: Organization, domain: str, scan_type: str = "full",
     suppress_auto_followup: bool = False,
+    actor_user_id: Optional[int] = None,
 ) -> Optional[dict]:
     """
     Full flow: add domain to hakuna (idempotent), trigger scan,
@@ -3344,8 +3358,12 @@ async def scan_domain(
         # Keep old assets/findings visible until the new scan completes
         scan.scan_date = now.isoformat()
         scan.raw_metadata = base_meta
+        # Stamp the actor on the existing row so re-triggers attribute to
+        # the user who clicked "rescan" rather than the original creator.
+        if actor_user_id is not None:
+            scan.created_by_user_id = actor_user_id
     else:
-        scan = _create_easm_scan(db, org, domain, scan_type)
+        scan = _create_easm_scan(db, org, domain, scan_type, actor_user_id=actor_user_id)
         scan.raw_metadata = {**scan.raw_metadata, **base_meta}
     scan.status = "failed" if failed else "running"
     db.commit()

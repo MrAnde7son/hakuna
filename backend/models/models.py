@@ -379,7 +379,12 @@ class Scan(Base):
     next_run_at = Column(DateTime, nullable=True)
     run_count = Column(Integer, default=0)
 
+    # Provenance — who triggered this scan. Nullable because legacy rows and
+    # scheduler-driven runs have no human actor.
+    created_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+
     organization = relationship("Organization")
+    created_by_user = relationship("User", foreign_keys=[created_by_user_id])
     assets = relationship("Asset", back_populates="scan", cascade="all, delete-orphan")
     findings = relationship("Finding", back_populates="scan", cascade="all, delete-orphan", foreign_keys="[Finding.scan_id]")
 

@@ -141,6 +141,7 @@ async def easm_status(org: Organization = Depends(get_active_org)):
 async def setup_easm(
     domain: str = Query(..., min_length=3),
     db: Session = Depends(get_db),
+    user: User = Depends(require_auth),
     org: Organization = Depends(get_active_org),
 ):
     """Set up EASM for the current org: create hakuna org, add domain, trigger scan."""
@@ -158,7 +159,7 @@ async def setup_easm(
     db.commit()
 
     # Scan the domain (adds domain + triggers scan + creates scan record)
-    result = await scan_domain(db, org, domain)
+    result = await scan_domain(db, org, domain, actor_user_id=user.id)
 
     # Apply weekly schedule
     if result and result.get("scan_id"):
@@ -170,6 +171,21 @@ async def setup_easm(
             scan.schedule = schedule
             db.commit()
             register_scan(scan.id, schedule)
+
+    from core.audit import log_audit
+    log_audit(
+        db, "start", "scan", entity_id=result.get("scan_id") if result else None,
+        entity_name=f"EASM setup — {domain}",
+        changes={
+            "source_type": "easm",
+            "scan_type": "full",
+            "domain": domain,
+            "easm_run_id": result.get("run_id") if result else None,
+            "via": "setup",
+        },
+        actor=user,
+    )
+    db.commit()
 
     return {
         "enabled": True,
@@ -183,6 +199,7 @@ async def setup_easm(
 async def retry_failed_easm_scan(
     scan_id: int,
     db: Session = Depends(get_db),
+    user: User = Depends(require_auth),
     org: Organization = Depends(get_active_org),
 ):
     """Re-attempt a previously-failed EASM scan. Reuses the existing Scan
@@ -194,11 +211,25 @@ async def retry_failed_easm_scan(
     page's "Retry" button on a failed row.
     """
     try:
-        scan = await retry_easm_scan(db, org, scan_id)
+        scan = await retry_easm_scan(db, org, scan_id, actor_user_id=user.id)
     except ValueError as e:
         raise HTTPException(404, str(e))
     except KeyError as e:
         raise HTTPException(400, str(e))
+
+    from core.audit import log_audit
+    log_audit(
+        db, "retry", "scan", entity_id=scan.id,
+        entity_name=scan.scan_name,
+        changes={
+            "source_type": "easm",
+            "domain": (scan.raw_metadata or {}).get("domain"),
+            "status": scan.status,
+        },
+        actor=user,
+    )
+    db.commit()
+
     return {
         "scan_id": scan.id,
         "status": scan.status,
@@ -213,14 +244,35 @@ async def scan_domain_endpoint(
     scan_type: str = Query("full", regex="^(full|discovery|enrichment)$"),
     suppress_auto_followup: bool = Query(False),
     db: Session = Depends(get_db),
+    user: User = Depends(require_auth),
     org: Organization = Depends(get_active_org),
 ):
     """Add a domain (if new), trigger scan, and create a per-domain scan record."""
     _require_easm_org_id(db, org)
 
-    result = await scan_domain(db, org, domain, scan_type, suppress_auto_followup=suppress_auto_followup)
+    result = await scan_domain(
+        db, org, domain, scan_type,
+        suppress_auto_followup=suppress_auto_followup,
+        actor_user_id=user.id,
+    )
     if result is None:
         raise HTTPException(502, "Failed to scan domain — hakuna-scanner may be unavailable")
+
+    from core.audit import log_audit
+    log_audit(
+        db, "start", "scan", entity_id=result.get("scan_id"),
+        entity_name=f"EASM {scan_type} — {domain}",
+        changes={
+            "source_type": "easm",
+            "scan_type": scan_type,
+            "domain": domain,
+            "suppress_auto_followup": suppress_auto_followup,
+            "easm_run_id": result.get("run_id"),
+        },
+        actor=user,
+    )
+    db.commit()
+
     return result
 
 
@@ -254,9 +306,28 @@ async def rescan_by_scan_id(
     # follow-up scans" on the first run, a rescan keeps that posture instead
     # of silently re-enabling it.
     suppress = bool((scan.raw_metadata or {}).get("suppress_auto_followup"))
-    result = await scan_domain(db, org, domain, scan_type, suppress_auto_followup=suppress)
+    result = await scan_domain(
+        db, org, domain, scan_type,
+        suppress_auto_followup=suppress,
+        actor_user_id=user.id,
+    )
     if result is None:
         raise HTTPException(502, "Failed to trigger scan — hakuna-scanner may be unavailable")
+
+    from core.audit import log_audit
+    log_audit(
+        db, "rescan", "scan", entity_id=result.get("scan_id"),
+        entity_name=f"EASM {scan_type} — {domain}",
+        changes={
+            "source_type": "easm",
+            "scan_type": scan_type,
+            "domain": domain,
+            "easm_run_id": result.get("run_id"),
+        },
+        actor=user,
+    )
+    db.commit()
+
     return result
 
 

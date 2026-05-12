@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from models.models import (
-    Asset, Finding, AssetRelationship,
+    Asset, Finding, AssetRelationship, SBOMComponent,
     InventoryUser, InventoryGroup, InventoryComputer, InventoryService,
     InventorySoftware, InventoryShare, InventoryNetConn, InventoryPatch,
     InventorySecurityControl, InventoryPasswordPolicy, InventoryLoggedOn,
@@ -138,6 +138,11 @@ ENTITY_MODEL_MAP: dict = {
         [],
         [],
         ["source_detail"],
+    ),
+    "sbom_components": (
+        SBOMComponent,
+        [],
+        ["is_running"],
     ),
 }
 
