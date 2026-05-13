@@ -691,7 +691,8 @@ class TestReapStaleVmScans:
         session.commit()
 
         from services.vm_scanner import reap_stale_vm_scans
-        with patch("services.vm_scanner._revoke_vm_jobs_sync") as mock_revoke:
+        with patch("services.vm_scanner._revoke_vm_jobs_sync") as mock_revoke, \
+             patch("services.vm_scanner._queue_is_alive_sync", return_value=False):
             result = reap_stale_vm_scans(session)
 
         assert result["reaped"] == 1
@@ -699,6 +700,35 @@ class TestReapStaleVmScans:
         assert scan.raw_metadata["status"] == "failed"
         assert "broker" in scan.raw_metadata["error"].lower()
         mock_revoke.assert_called_once_with(["job-a", "job-b"])
+
+    def test_pending_orphan_suppressed_when_queue_alive(self, db_session):
+        """Backed-up queue (workers alive, tasks queued) is not a broker orphan.
+
+        Regression for the false-positive seen in prod on 2026-05-13: a slow
+        Nuclei batch saturated workers, so legitimately-queued tasks stayed
+        PENDING past the 20-min threshold and were misdiagnosed as "broker lost
+        the job queue". With `/vm/queue` reporting workers online or backlog,
+        the reaper must leave the scan running.
+        """
+        from datetime import datetime, timedelta
+        session, org = db_session
+
+        old = datetime.utcnow() - timedelta(minutes=30)
+        scan = _make_vm_scan(
+            session, org, old.isoformat(),
+            {"job-a": {"status": "PENDING"}, "job-b": {"status": "PENDING"}},
+        )
+        session.commit()
+
+        from services.vm_scanner import reap_stale_vm_scans
+        with patch("services.vm_scanner._queue_is_alive_sync", return_value=True), \
+             patch("services.vm_scanner._revoke_vm_jobs_sync") as mock_revoke:
+            result = reap_stale_vm_scans(session)
+
+        assert result["reaped"] == 0
+        session.refresh(scan)
+        assert scan.raw_metadata["status"] == "running"
+        mock_revoke.assert_not_called()
 
     def test_preserves_scan_with_observed_progress(self, db_session):
         """A 30min-old scan with at least one STARTED job is still considered live."""

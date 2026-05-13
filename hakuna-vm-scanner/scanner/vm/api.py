@@ -362,6 +362,53 @@ async def revoke_scan(job_id: str):
     )
 
 
+class QueueStatusResponse(BaseModel):
+    queue_depth: int
+    active_count: int
+    workers_online: int
+
+
+@router.get("/queue", response_model=QueueStatusResponse)
+async def queue_status():
+    """Snapshot of the vm_queue: backlog depth + worker liveness.
+
+    Lets the main API distinguish "broker lost our task ids" (no workers, no
+    queued tasks — true orphan) from "queue is just backed up" (workers alive,
+    tasks pending) before failing a scan with a misleading "broker restarted"
+    error. Best-effort: a control-bus timeout returns zeros for the worker
+    fields rather than 500'ing, so a flaky inspect can never block the caller.
+    """
+    from scanner.vm.celery_app import celery_app
+
+    queue_depth = 0
+    try:
+        # Pull broker URL from Celery rather than re-reading env so this stays
+        # correct if the app is reconfigured (tests, alternate brokers, etc.).
+        broker_url = celery_app.conf.broker_url
+        if broker_url and broker_url.startswith("redis://"):
+            import redis
+            r = redis.Redis.from_url(broker_url, socket_timeout=2)
+            queue_depth = int(r.llen("vm_queue"))
+    except Exception:
+        logger.warning("queue_status: LLEN vm_queue failed", exc_info=True)
+
+    active_count = 0
+    workers_online = 0
+    try:
+        inspect = celery_app.control.inspect(timeout=2.0)
+        active = inspect.active() or {}
+        workers_online = len(active)
+        active_count = sum(len(tasks or []) for tasks in active.values())
+    except Exception:
+        logger.warning("queue_status: celery inspect failed", exc_info=True)
+
+    return QueueStatusResponse(
+        queue_depth=queue_depth,
+        active_count=active_count,
+        workers_online=workers_online,
+    )
+
+
 @router.post("/templates/validate", response_model=ValidationResponse)
 async def validate_template(file: UploadFile = File(...)):
     """Upload and validate a custom Nuclei template YAML."""

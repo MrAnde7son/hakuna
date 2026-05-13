@@ -204,7 +204,13 @@ resource "google_compute_instance" "scanners" {
 
       vm-worker:
         image: $${AR_BASE}/vm-scanner:latest
-        command: celery -A scanner.vm.celery_app:celery_app worker --loglevel=info --concurrency=4 -Q vm_queue
+        # Concurrency raised from 4 -> 16: Nuclei runs are network-bound (each
+        # task spends most of its 600s wall-clock waiting on HTTP), and on prod
+        # ~100% of tasks ride the SCAN_TIMEOUT_SECONDS cap. With 4 workers a
+        # short burst of dispatch is enough to back the queue up past the
+        # 20-min orphan threshold; 16 keeps the e2-standard-4 (4 vCPU / 16GB)
+        # below the CPU ceiling for IO-bound work.
+        command: celery -A scanner.vm.celery_app:celery_app worker --loglevel=info --concurrency=16 -Q vm_queue
         environment:
           DATABASE_URL: "postgresql://hakuna:$${DB_PASS}@cloud-sql-proxy:5432/hakuna"
           CELERY_BROKER_URL: "redis://$${VM_REDIS_HOST}:$${VM_REDIS_PORT}/0"

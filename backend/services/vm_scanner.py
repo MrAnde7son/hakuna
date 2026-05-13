@@ -106,6 +106,50 @@ def _has_observed_progress(job_statuses: dict) -> bool:
     return False
 
 
+def _queue_is_alive_sync() -> bool:
+    """Best-effort: True if the VM scanner has a working broker + workers.
+
+    Calls the vm-api `/vm/queue` endpoint, which reads `LLEN vm_queue` from
+    Redis plus a Celery `inspect active`. If either signal shows the queue is
+    moving (workers online OR backlog > 0 OR something running), we know the
+    broker did NOT lose our task ids — they're just queued behind other work.
+    Returns False on any failure so a flaky vm-api still allows the orphan
+    detector to fire (preserves prior behavior on the failure path).
+    """
+    try:
+        with httpx.Client(timeout=5) as client:
+            resp = client.get(f"{VM_SCANNER_URL}/vm/queue")
+            if resp.status_code != 200:
+                return False
+            data = resp.json() or {}
+            return (
+                int(data.get("workers_online", 0)) > 0
+                or int(data.get("queue_depth", 0)) > 0
+                or int(data.get("active_count", 0)) > 0
+            )
+    except Exception:
+        logger.debug("queue liveness probe failed", exc_info=True)
+        return False
+
+
+async def _queue_is_alive_async() -> bool:
+    """Async sibling of ``_queue_is_alive_sync`` for the refresh path."""
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.get(f"{VM_SCANNER_URL}/vm/queue")
+            if resp.status_code != 200:
+                return False
+            data = resp.json() or {}
+            return (
+                int(data.get("workers_online", 0)) > 0
+                or int(data.get("queue_depth", 0)) > 0
+                or int(data.get("active_count", 0)) > 0
+            )
+    except Exception:
+        logger.debug("queue liveness probe failed", exc_info=True)
+        return False
+
+
 async def _vm_request(method: str, path: str, **kwargs) -> Optional[dict]:
     """Make a request to the VM scanner API."""
     try:
@@ -792,6 +836,12 @@ async def refresh_vm_scan(db: Session, scan_id: int) -> Optional[dict]:
     # VM_SCAN_PENDING_ORPHAN_SECONDS, the Celery broker has lost our task ids
     # — the jobs will sit at PENDING forever. Fail fast so the UI doesn't
     # spin and the user can rescan.
+    #
+    # Before failing, probe `/vm/queue` to rule out the much more common case
+    # of "queue is backed up behind a slow batch": Celery returns PENDING
+    # indistinguishably for both "unknown task id" (true orphan) and "queued,
+    # no worker free yet" (just slow). If the queue is alive, leave the scan
+    # running and let the next refresh re-evaluate.
     if (
         not all_done
         and any_api_response
@@ -803,23 +853,31 @@ async def refresh_vm_scan(db: Session, scan_id: int) -> Optional[dict]:
         except Exception:
             age_seconds = 0
         if age_seconds > VM_SCAN_PENDING_ORPHAN_SECONDS:
-            logger.warning(
-                "VM scan %d orphaned — all %d jobs PENDING after %.0fs; broker likely restarted",
-                scan_id, len(job_ids), age_seconds,
-            )
-            _revoke_vm_jobs_sync(job_ids)
-            scan.raw_metadata = new_meta
-            _rollback_failed_run(db, scan)
-            orphan_meta = dict(scan.raw_metadata or {})
-            orphan_meta["status"] = "failed"
-            orphan_meta["error"] = (
-                "Orphaned — scanner broker lost the job queue (likely restart). "
-                "Rescan to dispatch fresh jobs."
-            )
-            scan.raw_metadata = orphan_meta
-            _emit_vm_scan_failed_notification(db, scan, orphan_meta["error"], "orphan")
-            db.commit()
-            return orphan_meta
+            if await _queue_is_alive_async():
+                logger.info(
+                    "VM scan %d would-be orphan suppressed — vm_queue is alive "
+                    "(backlog or busy workers); keeping scan running",
+                    scan_id,
+                )
+            else:
+                logger.warning(
+                    "VM scan %d orphaned — all %d jobs PENDING after %.0fs; "
+                    "queue probe shows no workers/backlog",
+                    scan_id, len(job_ids), age_seconds,
+                )
+                _revoke_vm_jobs_sync(job_ids)
+                scan.raw_metadata = new_meta
+                _rollback_failed_run(db, scan)
+                orphan_meta = dict(scan.raw_metadata or {})
+                orphan_meta["status"] = "failed"
+                orphan_meta["error"] = (
+                    "Orphaned — scanner broker lost the job queue (likely restart). "
+                    "Rescan to dispatch fresh jobs."
+                )
+                scan.raw_metadata = orphan_meta
+                _emit_vm_scan_failed_notification(db, scan, orphan_meta["error"], "orphan")
+                db.commit()
+                return orphan_meta
 
     if all_done:
         new_meta["status"] = "completed" if not any_failed else "completed_with_errors"
@@ -930,12 +988,22 @@ def reap_stale_vm_scans(db: Session | None = None) -> dict:
             # the broker dropped the queue. job_statuses is only populated by
             # refresh_vm_scan, so a scan that nobody has ever polled won't get
             # caught here — the 3h cap above covers that case.
+            #
+            # Same `/vm/queue` liveness gate as the refresh path: a backed-up
+            # queue is not the same as a lost queue, so don't reap when workers
+            # or backlog are still present.
             job_statuses = meta.get("job_statuses") or {}
             if (
                 job_statuses
                 and age_seconds > VM_SCAN_PENDING_ORPHAN_SECONDS
                 and not _has_observed_progress(job_statuses)
             ):
+                if _queue_is_alive_sync():
+                    logger.info(
+                        "Reaper: VM scan %d would-be orphan suppressed — vm_queue alive",
+                        scan.id,
+                    )
+                    continue
                 logger.warning(
                     "Reaper: VM scan %d (org=%s) all jobs PENDING after %.0fs — marking failed (broker orphan)",
                     scan.id, scan.org_id, age_seconds,
