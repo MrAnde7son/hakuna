@@ -2790,27 +2790,18 @@ function WidgetRenderer({ widget, scanId, preview, globalTags, globalTagLogic })
     if (btn) { btn.disabled = true; btn.textContent = 'Creating…' }
     try {
       const name = row.title || row.affected_component || 'Remediation Campaign'
-      const query = []
-      // Build rules using the campaign rule engine's supported fields & operators
-      const comp = row.affected_component
-      const actionType = row.action_type
-      if (comp) {
-        // Match findings by product/component name
-        query.push({ field: 'finding.plugin_name', op: 'contains', value: comp })
-      }
-      // Scope to the right severity level
-      if (row.severity_max != null && row.severity_max >= 3) {
-        query.push({ field: 'finding.severity', op: 'gte', value: row.severity_max })
-      }
-      // Action-type specific rules
-      if (actionType === 'apply_patch' || actionType === 'bulk_patch') {
-        query.push({ field: 'finding.missing_patches', op: 'is_true', value: true })
-      }
-      if (actionType === 'upgrade_component' || actionType === 'migrate_to_supported') {
-        // For upgrades, also match by product/CPE if available
-        if (comp) {
-          query.push({ field: 'finding.product', op: 'contains', value: comp })
-        }
+      // Pin to the exact findings the solution enumerates. affected_component is a
+      // synthetic aggregation label (e.g. "Cross-Site Scripting" from CWE-79) and
+      // does not reliably appear in plugin_name, so a `contains` heuristic misses.
+      const ids = row.finding_ids || []
+      const cves = (row.cve_ids || []).slice(0, 100)
+      let query
+      if (ids.length > 0) {
+        query = [{ field: 'finding.id', op: 'eq', value: ids.join(',') }]
+      } else if (cves.length > 0) {
+        query = [{ field: 'finding.cve', op: 'eq', value: cves.join(',') }]
+      } else {
+        query = [{ field: 'finding.plugin_name', op: 'contains', value: (row.title || row.affected_component || '').slice(0, 50) }]
       }
       const campaign = await createCampaign({ name, description: `Auto-created from: ${name}`, query, query_logic: 'AND' })
       if (campaign?.id) {

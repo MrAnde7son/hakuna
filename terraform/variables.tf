@@ -72,8 +72,8 @@ variable "cloud_run_min_instances" {
 
 variable "cloud_run_max_instances" {
   type        = number
-  description = "Maximum Cloud Run instances. Bumped from 5 → 12 so concurrent scan uploads (200 MB each × 2 Gi per instance) don't OOM the service under beta load."
-  default     = 12
+  description = "Maximum Cloud Run instances. Pinned to 1 because the relay broker (services/relay_broker.py) keeps WebSocket state in process memory — with >1 replica, audit-worker dispatch can land on an instance that doesn't hold the relay's WS and fails with 'relay agent ... is not connected'. Lift this once the broker is backed by Redis (see /internal/relay/dispatch routing). Tradeoff: concurrent 200 MB scan uploads share one instance's 2 Gi and can OOM under beta load."
+  default     = 1
 }
 
 variable "db_tier" {

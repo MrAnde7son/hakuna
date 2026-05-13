@@ -55,7 +55,7 @@ gcloud logging read \
 **Fix:**
 - If one query dominates: add an index or refactor (see `backend/migrations/039_add_login_lockout.py` for the index pattern).
 - If DB CPU > 80% sustained: bump `db_tier` in `terraform/variables.tf` and `terraform apply`. Allow a brief failover.
-- If Cloud Run instances at max: bump `cloud_run_max_instances` (now defaults to 12).
+- If Cloud Run instances at max: `cloud_run_max_instances` is pinned to 1 (relay broker holds WebSocket state in-process; multi-instance breaks audit dispatch). Don't bump it without moving the broker to Redis — you'll trade slow requests for "relay agent ... is not connected" errors. Vertical scale (cpu/memory in `cloudrun_api.tf`) is the only safe lever until then.
 
 ### 2c. All requests 503 / instance OOM
 

@@ -19,6 +19,8 @@ resource "google_cloud_run_v2_service" "api" {
 
     scaling {
       min_instance_count = var.cloud_run_min_instances # 1 = no cold starts
+      # Capped at 1 until the relay broker stops holding WebSocket state in
+      # process memory — see services/relay_broker.py and the var description.
       max_instance_count = var.cloud_run_max_instances
     }
 
