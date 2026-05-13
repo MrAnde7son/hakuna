@@ -22,6 +22,7 @@ from models.models import (
 )
 import services.tags as tag_engine
 import services.rule_engine as rule_engine
+from services.feed_emitters import post_tag_created_card, post_tag_assigned_card
 
 router = APIRouter()
 
@@ -111,6 +112,7 @@ def create_tag(
               actor=user)
     db.commit()
     db.refresh(tag)
+    post_tag_created_card(db, tag=tag)
     return tag_engine._tag_to_dict(tag, db=db, include_counts=True)
 
 
@@ -415,12 +417,19 @@ def delete_tag(
 def assign_tags(body: TagAssignBody, db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user)):
     from core.auth import has_tag_permission
     assigned = 0
+    assigned_assets = 0
+    assigned_findings = 0
+    feed_tag_labels: list[str] = []
+    feed_org_id: Optional[int] = None
     for tag_id in (body.tag_ids or []):
         tag = db.query(Tag).filter(Tag.id == tag_id).first()
         if not tag:
             continue
         if user and not has_tag_permission(user, tag_id, "write", db):
             raise HTTPException(status_code=403, detail=f"No write permission on tag '{tag.category}:{tag.value}'")
+        tag_label = f"{tag.category}:{tag.value}"
+        if feed_org_id is None:
+            feed_org_id = tag.org_id
         for aid in (body.asset_ids or []):
             exists = db.query(TagAssignment).filter(
                 TagAssignment.tag_id == tag_id,
@@ -429,6 +438,7 @@ def assign_tags(body: TagAssignBody, db: Session = Depends(get_db), user: Option
             if not exists:
                 db.add(TagAssignment(tag_id=tag_id, asset_id=aid, assigned_by="user"))
                 assigned += 1
+                assigned_assets += 1
         for fid in (body.finding_ids or []):
             exists = db.query(TagAssignment).filter(
                 TagAssignment.tag_id == tag_id,
@@ -437,7 +447,17 @@ def assign_tags(body: TagAssignBody, db: Session = Depends(get_db), user: Option
             if not exists:
                 db.add(TagAssignment(tag_id=tag_id, finding_id=fid, assigned_by="user"))
                 assigned += 1
+                assigned_findings += 1
+        if tag_label not in feed_tag_labels:
+            feed_tag_labels.append(tag_label)
     db.commit()
+    if assigned and feed_org_id:
+        post_tag_assigned_card(
+            db, org_id=feed_org_id,
+            tag_labels=feed_tag_labels,
+            asset_count=assigned_assets,
+            finding_count=assigned_findings,
+        )
     return {"assigned": assigned}
 
 

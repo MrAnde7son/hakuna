@@ -36,6 +36,11 @@ import services.integrations as integ_module
 import services.ownership_inference as ownership_inference
 from services.nlp_to_rules import nlp_to_conditions
 from services import brevo
+from services.feed_emitters import (
+    post_campaign_created_card,
+    post_campaign_updated_card,
+    post_campaign_run_card,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -458,6 +463,7 @@ def create_campaign(
 
     db.commit()
     db.refresh(campaign)
+    post_campaign_created_card(db, campaign=campaign)
     return {"id": campaign.id, "name": campaign.name, "status": campaign.status, "workflow_id": workflow_id}
 
 
@@ -576,6 +582,11 @@ def update_campaign(
     log_audit(db, "update", "campaign", campaign.id,
               entity_name=campaign.name, changes=_diff(_old_c, _new_c), actor=user)
     db.commit()
+    if _old_c["status"] != _new_c["status"]:
+        post_campaign_updated_card(
+            db, campaign=campaign,
+            old_status=_old_c["status"], new_status=_new_c["status"],
+        )
     return {"ok": True, "id": campaign.id}
 
 
@@ -645,6 +656,11 @@ def run_campaign(
                     metadata={"count": added, "campaign_name": camp.name})
 
             db2.commit()
+
+            post_campaign_run_card(
+                db2, campaign=camp,
+                finding_count=added, asset_count=len(results),
+            )
 
             # Trigger attached automation workflows. Only active workflows run;
             # draft/paused ones are skipped so a half-built workflow doesn't fire.
