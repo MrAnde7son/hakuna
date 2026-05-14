@@ -849,6 +849,41 @@ async def get_easm_assets(
     return data if isinstance(data, list) else None
 
 
+async def get_all_easm_assets(
+    hakuna_org_id: str,
+    *,
+    page_size: int = 1000,
+    updated_since: Optional[str] = None,
+    max_pages: int = 200,
+) -> Optional[list]:
+    """Fetch every asset for a hakuna org, looping over pages until exhausted.
+
+    Returns None if any page request fails (so callers can distinguish
+    "scanner unreachable" from "scanner returned zero assets") — critical
+    because finalize clears existing assets before re-importing, and a
+    truncated response would silently destroy data.
+    """
+    all_assets: list = []
+    for page in range(max_pages):
+        offset = page * page_size
+        batch = await get_easm_assets(
+            hakuna_org_id,
+            limit=page_size,
+            offset=offset,
+            updated_since=updated_since,
+        )
+        if batch is None:
+            return None
+        all_assets.extend(batch)
+        if len(batch) < page_size:
+            return all_assets
+    logger.warning(
+        "get_all_easm_assets hit max_pages=%d for org %s — possible runaway pagination",
+        max_pages, hakuna_org_id,
+    )
+    return all_assets
+
+
 async def get_easm_asset_stats(hakuna_org_id: str) -> Optional[dict]:
     """Get aggregate stats for EASM assets."""
     return await _hakuna_request("GET", f"/orgs/{hakuna_org_id}/assets/stats")
@@ -3204,11 +3239,37 @@ async def import_easm_assets_for_domain(
     if not org.easm_org_id:
         return None
 
-    easm_assets = await get_easm_assets(org.easm_org_id) or []
+    fetched = await get_all_easm_assets(org.easm_org_id)
+    if fetched is None:
+        # Scanner pagination failed — refuse to clear and re-import with a
+        # partial result. Surface a transient error so the caller can retry.
+        logger.warning(
+            "import_easm_assets_for_domain aborted for org=%s domain='%s' "
+            "— scanner pagination failed.",
+            org.id, domain,
+        )
+        return {"error": "scanner_pagination_failed", "domain": domain}
+    easm_assets = fetched
 
     # Reuse existing scan for this domain, or create one if first time
     scan = _find_existing_easm_scan(db, org, domain)
     if scan:
+        # Data-loss guard: if the existing scan has substantially more
+        # assets than the scanner returned, refuse the clear+re-import.
+        prior_count = db.query(Asset).filter(Asset.scan_id == scan.id).count()
+        fetched_count = len(easm_assets)
+        if prior_count >= 20 and fetched_count < max(10, prior_count // 2):
+            logger.warning(
+                "import_easm_assets_for_domain refused for scan %d domain='%s' "
+                "— scanner returned %d assets but DB has %d.",
+                scan.id, domain, fetched_count, prior_count,
+            )
+            return {
+                "error": "scanner_returned_truncated_asset_set",
+                "domain": domain,
+                "fetched_count": fetched_count,
+                "prior_count": prior_count,
+            }
         # Clear EASM's own findings before reimporting.
         _clear_scan_data(db, scan.id)
     else:
@@ -3483,7 +3544,47 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
             # while we wait; the clear+import below is still atomic among
             # themselves because they share the next autobegun transaction.
             db.commit()
-            easm_assets = await get_easm_assets(easm_org_id) or []
+            fetched = await get_all_easm_assets(easm_org_id)
+            if fetched is None:
+                # Scanner errored mid-pagination. Treat as transient — DO NOT
+                # clear or re-import; a partial fetch followed by a clear is
+                # exactly the path that wiped 3773 assets in prod.
+                logger.warning(
+                    "EASM finalize aborted for scan_id=%d domain='%s' — "
+                    "scanner pagination failed; will retry on next poll.",
+                    scan.id, domain,
+                )
+                return {
+                    "scan_id": scan.id,
+                    "status": current_status or "running",
+                    "domain": domain,
+                    "transient_error": "pagination_failed",
+                }
+            easm_assets = fetched
+
+            # Data-loss guard: if the scanner returns dramatically fewer
+            # assets than the DB already has for this scan, something went
+            # wrong on the scanner side (worker restart, lost queue state,
+            # partial response). Clearing and re-importing would destroy
+            # the existing inventory. Fail loudly instead so a human can
+            # decide whether to re-run the scan.
+            prior_count = len(prior_identities)
+            fetched_count = len(easm_assets)
+            if prior_count >= 20 and fetched_count < max(10, prior_count // 2):
+                _mark_scan_failed(
+                    db, scan,
+                    f"Scanner returned only {fetched_count} assets but scan "
+                    f"already had {prior_count} — refusing to clear and "
+                    f"re-import to prevent data loss. Investigate scanner "
+                    f"state and re-run if appropriate.",
+                    stage="finalize_sanity_check",
+                )
+                return {
+                    "scan_id": scan.id,
+                    "status": "failed",
+                    "domain": domain,
+                    "error": "scanner_returned_truncated_asset_set",
+                }
 
             # If we've been doing incremental imports mid-scan, assets are
             # already present with stable IDs (possibly linked to VM findings
