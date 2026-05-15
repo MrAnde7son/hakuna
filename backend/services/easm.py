@@ -2338,7 +2338,13 @@ def _import_assets_for_domain(
             asset.hostname = hostname or asset.hostname
             asset.fqdn = fqdn or asset.fqdn
             asset.os = os_hint or asset.os
-            asset.easm_data = easm_data
+            # Only rewrite easm_data when the payload actually changed. The
+            # column is JSONB with a GIN index (ix_assets_easm_data_gin); a
+            # no-op rewrite still triggers index maintenance and was timing
+            # out under statement_timeout on assets with large blobs
+            # (e.g. dozens of DNS TXT records).
+            if asset.easm_data != easm_data:
+                asset.easm_data = easm_data
             asset.last_seen = now
             # Accumulate EASM as a source without clobbering other integrations'
             # contributions (e.g. cloudflare_api) to source_systems.
@@ -4070,8 +4076,12 @@ async def enrich_assets_from_easm(db: Session, org: Organization, scan_id: int):
         if asset.environment_tag in (None, "internal"):
             asset.environment_tag = "internet-facing"
 
-        # Store full EASM enrichment data
-        asset.easm_data = _build_easm_data(ea)
+        # Store full EASM enrichment data. Skip the assignment when the
+        # blob is unchanged — ix_assets_easm_data_gin maintenance on a
+        # no-op write was driving 100s+ UPDATEs under statement_timeout.
+        new_easm_data = _build_easm_data(ea)
+        if asset.easm_data != new_easm_data:
+            asset.easm_data = new_easm_data
 
         # Mirror open-port reachability into the unified edge graph.
         try:
