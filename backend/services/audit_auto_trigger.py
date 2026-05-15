@@ -450,13 +450,13 @@ def _stamp_cooldown(asset: Asset, protocol: str, now: datetime) -> None:
     asset.easm_data = easm
 
 
-def _fingerprinted_ports(asset: Asset) -> Optional[set[int]]:
-    """Ports on which the scanner positively identified a service.
+def _fingerprinted_services(asset: Asset) -> Optional[dict[int, str]]:
+    """Per-port service name map from ``easm_data["services"]``.
 
     Returns:
-      - ``set[int]`` of int port numbers when ``easm_data["services"]`` is a
-        dict (the live shape produced by naabu ``-sV`` ingest). An empty dict
-        yields an empty set — service detection ran but found nothing.
+      - ``dict[int, str]`` mapping port → lowercased service name. Ports with
+        no ``name`` field land as empty strings. An empty dict means service
+        detection ran but identified nothing.
       - ``None`` when no service-fingerprint signal is available on the asset
         (key absent / null / non-dict shape). Callers fall back to port-only
         matching for back-compat with pre-``-sV`` ingest.
@@ -467,13 +467,17 @@ def _fingerprinted_ports(asset: Asset) -> Optional[set[int]]:
     services = easm.get("services")
     if not isinstance(services, dict):
         return None
-    ports: set[int] = set()
-    for key in services.keys():
+    out: dict[int, str] = {}
+    for key, entry in services.items():
         try:
-            ports.add(int(key))
+            port = int(key)
         except (TypeError, ValueError):
             continue
-    return ports
+        name = ""
+        if isinstance(entry, dict):
+            name = (entry.get("name") or "").strip().lower()
+        out[port] = name
+    return out
 
 
 def _filter_rules_by_service(
@@ -481,32 +485,56 @@ def _filter_rules_by_service(
     new_ports: set[int],
     asset: Asset,
 ) -> dict[str, AutoTriggerRule]:
-    """Drop rules whose triggering ports have no service fingerprint.
+    """Drop rules whose triggering ports don't have a matching service fingerprint.
 
-    A port lands in ``new_ports`` because naabu got a TCP SYN-ACK on it. That
-    signal is noisy on assets behind anycast / SYN-proxy edges (Cloudflare,
-    some WAFs) which ACK every probe — naabu reports hundreds of "open" ports
-    while ``-sV`` correctly identifies only the real service. Without this
-    gate the auto-trigger fires anon-protocol audits on phantom ports
-    (21/53/88/5900) and every probe returns ECONNRESET.
+    A port lands in ``new_ports`` because naabu got a TCP SYN-ACK on it (or
+    Shodan reported it). That signal is noisy on assets behind anycast /
+    SYN-proxy edges (Cloudflare, some WAFs) which ACK every probe — naabu /
+    Shodan report dozens of "open" ports while ``-sV`` correctly identifies
+    only the real service. Without this gate the auto-trigger fires phantom
+    audits (e.g. anon-protocol on port 53 when there's no DNS server).
+
+    Gate: for at least one triggering port, the fingerprinted service name
+    must map to *this rule's audit protocol* via ``SERVICE_TO_AUDIT``. Just
+    having any entry in ``services[port]`` isn't enough — Shodan's banner
+    ingest writes an entry per observed port regardless of what protocol the
+    banner identified, so a Cloudflare edge that answers HTTP on port 53
+    lands with ``services["53"] = {name: "nginx"}`` and the loose "any entry"
+    check would still let the anon-protocol rule fire.
 
     Falls back to ``matched`` unchanged when the asset has no ``services``
-    field — pre-``-sV`` assets shouldn't silently stop triggering.
+    field at all — pre-``-sV`` assets shouldn't silently stop triggering.
     """
-    fingerprinted = _fingerprinted_ports(asset)
-    if fingerprinted is None:
+    from services.service_router import SERVICE_TO_AUDIT
+
+    services = _fingerprinted_services(asset)
+    if services is None:
         return matched
     survivors: dict[str, AutoTriggerRule] = {}
     for protocol, rule in matched.items():
         rule_triggers = set(rule.ports) & new_ports
-        if rule_triggers & fingerprinted:
+        keep = False
+        for port in rule_triggers:
+            name = services.get(port)
+            if not name:
+                # Port has no entry, or entry has no name — Shodan may have
+                # written a name-less entry from a vuln-only observation,
+                # or naabu didn't fingerprint this port. Either way no
+                # actionable signal; don't count it toward this rule.
+                continue
+            mapped = SERVICE_TO_AUDIT.get(name)
+            if mapped is not None and mapped.protocol == protocol:
+                keep = True
+                break
+        if keep:
             survivors[protocol] = rule
         else:
             logger.info(
-                "auto-audit: asset=%d protocol=%s suppressed — none of new ports %s "
-                "have a fingerprinted service (fingerprinted=%s)",
+                "auto-audit: asset=%d protocol=%s suppressed — no triggering port "
+                "(%s) has a service fingerprint mapped to this audit family "
+                "(services=%s)",
                 asset.id, protocol, sorted(rule_triggers),
-                sorted(fingerprinted)[:8],
+                {p: services[p] for p in sorted(rule_triggers) if p in services},
             )
     return survivors
 

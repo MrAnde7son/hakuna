@@ -783,3 +783,59 @@ def test_one_rule_port_with_service_is_enough(
         )
 
     assert n == 1
+
+
+def test_no_dispatch_when_fingerprint_belongs_to_wrong_family(
+    db_session, test_org, linked_asset, connected_relay,
+):
+    """Production case (Clover merchantsite staging behind a Cloudflare-like
+    edge): Shodan reports port 53 as open and writes ``services["53"] =
+    {name: "nginx"}`` from the HTTP banner it got back. The anon-protocol
+    rule's triggering ports include 53, but ``nginx`` doesn't map to the
+    anon-protocol audit family — so the rule must not fire. Without the
+    family-aware gate, the legacy "any entry" check would let it through and
+    we'd dispatch an exposed_anon_protocol audit that immediately fails
+    preflight (no 21/53/88/69/5900 service actually present).
+    """
+    from services.audit_auto_trigger import maybe_auto_trigger_anon_audits
+
+    linked_asset.easm_data = {
+        **(linked_asset.easm_data or {}),
+        "services": {"53": {"name": "nginx", "product": "nginx"}},
+    }
+    db_session.flush()
+
+    with patch("services.audit_auto_trigger.dispatch_audit_run") as mock_dispatch:
+        n = maybe_auto_trigger_anon_audits(
+            db_session, test_org,
+            _port_change_event("scanner-uuid-1", [53]),
+        )
+
+    assert n == 0
+    mock_dispatch.assert_not_called()
+
+
+def test_no_dispatch_when_fingerprint_entry_has_no_name(
+    db_session, test_org, linked_asset, connected_relay,
+):
+    """Shodan can write a name-less ``services[port]`` entry (e.g. when it
+    only has vuln data, no banner). That's not an actionable fingerprint —
+    treat it like an empty entry and refuse to fire. Mirrors the
+    fingerprint-belongs-to-wrong-family case but for the empty-banner shape.
+    """
+    from services.audit_auto_trigger import maybe_auto_trigger_anon_audits
+
+    linked_asset.easm_data = {
+        **(linked_asset.easm_data or {}),
+        "services": {"53": {"shodan_vulns": ["CVE-2020-0000"]}},  # no name
+    }
+    db_session.flush()
+
+    with patch("services.audit_auto_trigger.dispatch_audit_run") as mock_dispatch:
+        n = maybe_auto_trigger_anon_audits(
+            db_session, test_org,
+            _port_change_event("scanner-uuid-1", [53]),
+        )
+
+    assert n == 0
+    mock_dispatch.assert_not_called()

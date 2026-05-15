@@ -3239,6 +3239,14 @@ async def import_easm_assets_for_domain(
     if not org.easm_org_id:
         return None
 
+    # Release any implicit transaction the caller opened before the
+    # multi-page scanner fetch. Otherwise the connection sits idle-in-txn
+    # for the duration of pagination and Postgres trips
+    # idle_in_transaction_session_timeout (60s), killing the connection
+    # and surfacing as `server closed the connection unexpectedly` when
+    # the finalize loop below tries to flush. The parallel finalize path
+    # at line ~3546 already does this for the same reason.
+    db.commit()
     fetched = await get_all_easm_assets(org.easm_org_id)
     if fetched is None:
         # Scanner pagination failed — refuse to clear and re-import with a
