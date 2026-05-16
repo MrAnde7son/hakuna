@@ -81,6 +81,27 @@ function StatusDot({ active }) {
   )
 }
 
+const LIVENESS_COLORS = {
+  alive: '#22c55e',
+  confirmed_alive: '#22c55e',
+  likely_dead: '#ef4444',
+  unconfirmed: '#6b7280',
+}
+
+function LivenessBadge({ state }) {
+  const color = LIVENESS_COLORS[state] || '#6b7280'
+  const label = String(state).replace(/_/g, ' ')
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center' }}>
+      <span style={{
+        display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
+        background: color, marginRight: 6, flexShrink: 0,
+      }} />
+      {label}
+    </span>
+  )
+}
+
 function prettifyKey(key) {
   if (!key) return ''
   return String(key).replace(/[_.-]+/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
@@ -462,6 +483,11 @@ function OverviewTab({ asset, blastRadius, onReload, riskComponents, assetRiskWe
             {asset.asset_status || 'active'}
           </span>
         </KeyVal>
+        {asset.easm_data?.liveness_state && (
+          <KeyVal label={t('assetDetail.liveness', 'Liveness')}>
+            <LivenessBadge state={asset.easm_data.liveness_state} />
+          </KeyVal>
+        )}
         {asset.source_systems?.length > 0 && (
           <KeyVal label={t('assetDetail.sources')}>
             <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>

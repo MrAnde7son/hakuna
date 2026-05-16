@@ -11,6 +11,7 @@ import os
 import uuid
 from datetime import datetime, timezone
 
+from billiard.exceptions import SoftTimeLimitExceeded
 from sqlalchemy import text
 
 ENRICHMENT_STEP_COUNT = 18  # tlsx, httpx, cdncheck, js_fingerprint, favicon, endpoint_probe, katana, protocol_probe, banner_grab, kiterunner, trufflehog, llm_js_extraction, openapi_discovery, graphql_introspection, classify_assets, attribution, ai_exposure, nmap_dispatch
@@ -2138,10 +2139,52 @@ def run_enrichment_chain(self, org_id: str, scan_run_id: str | None = None) -> d
 
     try:
         return _run_async(_run())
+    except SoftTimeLimitExceeded:
+        # Enrichment steps commit per-asset as they go. If the soft limit
+        # fires the assets discovered upstream are still in scope — mark
+        # the run as 'done' (with a warning note) so the API ingests them
+        # instead of treating the whole scan as a hard failure.
+        if scan_run_id:
+            _run_async(_mark_timed_out(scan_run_id))
+        raise
     except Exception as e:
         if scan_run_id:
             _run_async(_mark_failed(scan_run_id, str(e)))
         raise
+
+
+async def _mark_timed_out(scan_run_id: str):
+    """Mirror of discovery._mark_timed_out for the enrichment chain."""
+    sf = get_task_session()
+    err = "SoftTimeLimitExceeded — partial results"
+    async with sf() as db:
+        partial = None
+        try:
+            partial = await count_assets_in_scan_scope(db, scan_run_id)
+        except Exception:
+            logger.exception("scan_run=%s partial asset count failed", scan_run_id)
+
+        if partial and partial > 0:
+            await db.execute(
+                text("""
+                    UPDATE scan_runs
+                    SET status = 'done', finished_at = :now, error = :err,
+                        assets_found = :found, current_stage = NULL
+                    WHERE id = :id
+                """),
+                {
+                    "id": scan_run_id,
+                    "now": datetime.now(timezone.utc),
+                    "err": err,
+                    "found": partial,
+                },
+            )
+        else:
+            await db.execute(
+                text("UPDATE scan_runs SET status = 'failed', finished_at = :now, error = :err WHERE id = :id"),
+                {"id": scan_run_id, "now": datetime.now(timezone.utc), "err": err},
+            )
+        await db.commit()
 
 
 async def _mark_failed(scan_run_id: str, error: str):
