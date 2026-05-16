@@ -212,6 +212,31 @@ AUTO_TRIGGER_RULES: list[AutoTriggerRule] = [
         enabled_setting_key="auto_audit_netbios",
         predicate=lambda asset, relay: _lan_local_predicate(asset, relay),
     ),
+    # SIP / RTSP unicast endpoint discovery. Same broadcast-domain gate as
+    # NetBIOS — the SIP probe only works against the asset's own IP, not a
+    # multicast group, but the realistic deployments are LAN-only (an IP
+    # phone or RTSP camera is virtually never directly internet-exposed).
+    # Two rules, one per transport: SIP commonly runs on UDP 5060 *and*
+    # TCP 5060/5061, and RTSP is TCP 554. Phase 4.0's transport-aware
+    # delta would skip half the ports without separate rules.
+    AutoTriggerRule(
+        protocol="endpoint_discovery",
+        mission="endpoint_fingerprint",
+        ports=(554, 5060, 5061),
+        transport="tcp",
+        cooldown=timedelta(hours=24),
+        enabled_setting_key="auto_audit_endpoint_discovery",
+        predicate=lambda asset, relay: _lan_local_predicate(asset, relay),
+    ),
+    AutoTriggerRule(
+        protocol="endpoint_discovery",
+        mission="endpoint_fingerprint",
+        ports=(5060,),
+        transport="udp",
+        cooldown=timedelta(hours=24),
+        enabled_setting_key="auto_audit_endpoint_discovery",
+        predicate=lambda asset, relay: _lan_local_predicate(asset, relay),
+    ),
     # ── Family E: ot_safe (Phase 5) ──
     # Active OT/ICS audit. Same gating shape as the other families (org-level
     # ``auto_audit_ot`` master switch) PLUS a per-asset consent record on

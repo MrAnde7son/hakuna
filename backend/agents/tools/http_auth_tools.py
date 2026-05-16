@@ -268,7 +268,7 @@ register_audit(ProtocolAudit(
                 "Server header + page title + WWW-Authenticate, and emit "
                 "findings for any open (no-auth) admin path."
             ),
-            prompt_key="http_auth_admin_panel_audit",
+            prompt_key="http_auth_audit_admin_panel_audit",
             suggested_budget=15,
             cost_hint="low",
         ),

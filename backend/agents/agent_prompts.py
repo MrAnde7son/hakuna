@@ -21,6 +21,7 @@ AUDIT_PROTOCOLS = (
     "exposed_datastore", "exposed_ai_service", "exposed_anon_protocol",
     "ipmi_bmc", "netbios_local",
     "ot_protocol", "ot_passive",
+    "http_auth", "endpoint_discovery",
 )
 
 

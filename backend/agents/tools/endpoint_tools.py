@@ -253,7 +253,7 @@ register_audit(ProtocolAudit(
                 "for any endpoint that returns a Server / User-Agent header "
                 "matching a known-vulnerable firmware string."
             ),
-            prompt_key="endpoint_discovery_endpoint_fingerprint",
+            prompt_key="endpoint_discovery_audit_endpoint_fingerprint",
             suggested_budget=15,
             cost_hint="low",
         ),

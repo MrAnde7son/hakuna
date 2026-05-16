@@ -35,7 +35,13 @@ from typing import Iterable, Optional
 
 from sqlalchemy.orm import Session
 
-from models.models import Asset, CredentialBindingRule, IntegrationCredential
+from models.models import (
+    Asset,
+    CredentialBindingRule,
+    IntegrationCredential,
+    Tag,
+    TagAssignment,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +73,9 @@ def resolve_credential_for_asset(
         .all()
     )
 
-    asset_tags = _asset_tag_names(asset)
+    # Skip the join entirely when no enabled rule constrains by tag — the
+    # vast majority of rules don't, so this saves a query per asset.
+    asset_tags = _asset_tag_names(db, asset) if any(r.tag for r in rules) else set()
     for rule in rules:
         if not _rule_matches(rule, asset, protocol=protocol, asset_tags=asset_tags):
             continue
@@ -100,6 +108,7 @@ def explain_rule_match(
     *,
     protocol: str,
     asset_tags: Optional[Iterable[str]] = None,
+    db: Optional[Session] = None,
 ) -> dict:
     """Return a per-condition breakdown of why a rule matched / didn't.
 
@@ -107,7 +116,13 @@ def explain_rule_match(
     debug "why did this audit pick credential X?" without grepping logs.
     """
     if asset_tags is None:
-        asset_tags = _asset_tag_names(asset)
+        # Caller didn't pre-resolve tags. Fetch them only if this rule's
+        # tag condition is set and a db session is available; otherwise
+        # treat as empty (the wildcard branch in _check_tag short-circuits).
+        if rule.tag and db is not None:
+            asset_tags = _asset_tag_names(db, asset)
+        else:
+            asset_tags = set()
     checks = {
         "audit_protocol": _check_protocol(rule, protocol),
         "asset_type":     _check_eq(rule.asset_type, asset.asset_type),
@@ -205,22 +220,20 @@ def _check_tag(tag: Optional[str], asset_tags: Iterable[str]) -> dict:
     return {"matched": False, "reason": f"asset tags {sorted(tag_set)!r} miss {tag!r}"}
 
 
-def _asset_tag_names(asset: Asset) -> set[str]:
-    """Pull tag names from the asset's tag_assignments relationship.
+def _asset_tag_names(db: Session, asset: Asset) -> set[str]:
+    """Return the asset's tag names in ``category:value`` form.
 
-    Asset has a tags relationship via tag_assignments → tags. We accept any
-    shape — duck-typed so unit tests can pass a stub asset with .tags as a
-    list of strings or as a list of Tag objects.
+    Joined explicitly through ``tag_assignments`` because Asset doesn't
+    declare a tags relationship — the join is the only path to a tag from
+    an asset_id. We return ``"category:value"`` strings to match the
+    canonical tag form used elsewhere in the UI / NLP search.
     """
-    tags = getattr(asset, "tags", None)
-    if not tags:
+    if asset is None or asset.id is None:
         return set()
-    out: set[str] = set()
-    for t in tags:
-        if isinstance(t, str):
-            out.add(t)
-            continue
-        name = getattr(t, "name", None)
-        if name:
-            out.add(name)
-    return out
+    rows = (
+        db.query(Tag.category, Tag.value)
+        .join(TagAssignment, TagAssignment.tag_id == Tag.id)
+        .filter(TagAssignment.asset_id == asset.id)
+        .all()
+    )
+    return {f"{cat}:{val}" for cat, val in rows if cat and val}

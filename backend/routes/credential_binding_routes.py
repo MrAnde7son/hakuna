@@ -311,7 +311,10 @@ def resolve_for_asset(
                   CredentialBindingRule.id.asc())
         .all()
     )
-    explanations = [explain_rule_match(r, asset, protocol=body.protocol) for r in rules]
+    explanations = [
+        explain_rule_match(r, asset, protocol=body.protocol, db=db)
+        for r in rules
+    ]
 
     matched_id = next((e["rule_id"] for e in explanations if e["matched"]), None)
     credential_id = resolve_credential_for_asset(

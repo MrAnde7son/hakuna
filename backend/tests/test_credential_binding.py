@@ -19,11 +19,29 @@ from models.models import (
     CredentialBindingRule,
     IntegrationCredential,
     Organization,
+    Tag,
+    TagAssignment,
 )
 from services.credential_binding import (
     explain_rule_match,
     resolve_credential_for_asset,
 )
+
+
+def _assign_tag(db_session, asset, category, value):
+    """Create the Tag (if needed) and link it to the asset via TagAssignment."""
+    tag = (
+        db_session.query(Tag)
+        .filter(Tag.category == category, Tag.value == value)
+        .first()
+    )
+    if not tag:
+        tag = Tag(org_id=asset.org_id, category=category, value=value)
+        db_session.add(tag)
+        db_session.commit()
+        db_session.refresh(tag)
+    db_session.add(TagAssignment(tag_id=tag.id, asset_id=asset.id))
+    db_session.commit()
 
 
 # ── Fixtures ─────────────────────────────────────────────────────────
@@ -188,6 +206,45 @@ class TestSingleConditionMatchers:
         assert resolve_credential_for_asset(
             db_session, asset, protocol="http_auth", org_id=org.id,
         ) is None
+
+    def test_tag_match_via_tag_assignments(self, db_session, org):
+        """tag condition matches the canonical 'category:value' form joined
+        through the tag_assignments junction table."""
+        cred = _make_credential(db_session, org.id)
+        _make_rule(db_session, org.id, cred.id, tag="network:dmz")
+        asset = _make_asset(db_session, org.id)
+        _assign_tag(db_session, asset, category="network", value="dmz")
+
+        assert resolve_credential_for_asset(
+            db_session, asset, protocol="http_auth", org_id=org.id,
+        ) == cred.id
+
+    def test_tag_mismatch_returns_none(self, db_session, org):
+        cred = _make_credential(db_session, org.id)
+        _make_rule(db_session, org.id, cred.id, tag="network:dmz")
+        asset = _make_asset(db_session, org.id)
+        # Asset has a tag, just not the one the rule asks for.
+        _assign_tag(db_session, asset, category="team", value="platform-eng")
+
+        assert resolve_credential_for_asset(
+            db_session, asset, protocol="http_auth", org_id=org.id,
+        ) is None
+
+    def test_tag_condition_skips_tag_join_when_unset(self, db_session, org):
+        """Rules without a tag condition should not pay the join cost.
+
+        We can't easily assert query count here, but we can at least
+        confirm the resolver works against an asset with zero tags when
+        the rule doesn't constrain by tag.
+        """
+        cred = _make_credential(db_session, org.id)
+        _make_rule(db_session, org.id, cred.id, device_type="ip_camera")
+        asset = _make_asset(db_session, org.id, device_type="ip_camera")
+        # No tags assigned — that's the point.
+
+        assert resolve_credential_for_asset(
+            db_session, asset, protocol="http_auth", org_id=org.id,
+        ) == cred.id
 
 
 # ── AND semantics ────────────────────────────────────────────────────
@@ -363,3 +420,18 @@ class TestExplain:
         assert explanation["checks"]["device_type"]["matched"] is True
         assert explanation["checks"]["cidr"]["matched"] is False
         assert "not in" in explanation["checks"]["cidr"]["reason"]
+
+    def test_explain_resolves_tags_when_db_passed(self, db_session, org):
+        cred = _make_credential(db_session, org.id)
+        rule = _make_rule(db_session, org.id, cred.id, tag="network:dmz")
+        asset = _make_asset(db_session, org.id)
+        _assign_tag(db_session, asset, category="network", value="dmz")
+
+        # Without db, the helper can't fetch tags → tag check fails.
+        without_db = explain_rule_match(rule, asset, protocol="http_auth")
+        assert without_db["checks"]["tag"]["matched"] is False
+
+        # With db, the helper joins tag_assignments → match succeeds.
+        with_db = explain_rule_match(rule, asset, protocol="http_auth", db=db_session)
+        assert with_db["checks"]["tag"]["matched"] is True
+        assert "network:dmz" in with_db["checks"]["tag"]["reason"]
