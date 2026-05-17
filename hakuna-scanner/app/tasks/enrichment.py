@@ -1998,19 +1998,27 @@ def run_enrichment_chain(self, org_id: str, scan_run_id: str | None = None) -> d
                 if existing:
                     target_scope = existing.target_domain
 
-                # For standalone enrichment scans, set total; for full scans it's already set by discovery
+                # For standalone enrichment scans, set total; for full scans it's already set by discovery.
+                # Status predicate mirrors discovery's bootstrap — without it, a row marked
+                # 'failed'/'cancelled' between dispatch and pickup would be silently revived.
                 total = existing.total_stages if (existing and existing.total_stages > len(steps)) else len(steps)
-                await db.execute(
+                result = await db.execute(
                     text("""
                         UPDATE scan_runs SET
                             status = 'running',
                             started_at = COALESCE(started_at, :now),
                             total_stages = :total
-                        WHERE id = :id
+                        WHERE id = :id AND status IN ('queued', 'running')
                     """),
                     {"id": scan_run_id, "now": datetime.now(timezone.utc), "total": total},
                 )
                 await db.commit()
+                if result.rowcount == 0:
+                    logger.warning(
+                        "scan_run=%s already in terminal state — aborting enrichment dispatch",
+                        scan_run_id,
+                    )
+                    return {"aborted": "terminal_state", "scan_run_id": scan_run_id}
 
         # Snapshot before enrichment for delta. Scope the snapshot to the same
         # target as the scan so post-run change detection only compares within
