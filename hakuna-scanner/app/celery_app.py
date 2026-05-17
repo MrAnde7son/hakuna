@@ -16,6 +16,22 @@ celery.conf.update(
     enable_utc=True,
     task_track_started=True,
     task_acks_late=True,
+    # Requeue tasks if a worker child dies without acking (SIGKILL from the
+    # hard time limit, OOM, manual `kill -9`). Without this we've seen
+    # half-killed children wedge after a SoftTimeLimitExceeded: the child
+    # survives the soft kill but its asyncio/subprocess state is poisoned,
+    # so the next prefetched task sits in its slot forever (observed: gov.il
+    # rerun stuck for 1h+ with no progress, while peer children processed
+    # other scans normally).
+    task_reject_on_worker_lost=True,
+    # Recycle every child after N tasks so a child that survived a soft
+    # time limit but accumulated leaked state (zombie httpx/naabu/dnsx
+    # subprocesses, async resources held by the dead event loop) gets
+    # retired before it accepts a new long-running scan. Recovery beat
+    # tasks fire every 5 min, so this caps a child's lifetime at roughly
+    # 100 minutes of idle time — fast enough to recover from a poisoned
+    # state without churning workers during steady-state scanning.
+    worker_max_tasks_per_child=20,
     worker_prefetch_multiplier=1,
     worker_concurrency=settings.celery_concurrency,
     task_soft_time_limit=settings.task_soft_time_limit,

@@ -1171,10 +1171,16 @@ export default function AssetInventory() {
                   onClick={handleBulkScan}
                   disabled={bulkScanState === 'scanning'}
                   style={bulkScanState === 'done' ? { color: 'var(--success)' } : bulkScanState === 'error' ? { color: 'var(--critical)' } : {}}
+                  title={bulkScanState === 'error' && bulkScanError ? bulkScanError : undefined}
                 >
                   <Radar size={14} />
                   {bulkScanState === 'scanning' ? 'Scanning…' : bulkScanState === 'done' ? 'Queued!' : bulkScanState === 'error' ? 'Failed' : 'Scan'}
                 </Button>
+                {bulkScanState === 'error' && bulkScanError && (
+                  <span style={{ fontSize: 11, color: 'var(--critical)', alignSelf: 'center', maxWidth: 320 }}>
+                    {bulkScanError}
+                  </span>
+                )}
               </>
             )}
             <Button variant="ghost" size="sm" onClick={() => {

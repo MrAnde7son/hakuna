@@ -165,6 +165,11 @@ async function _doRequest(path, opts = {}) {
       if (!isNetworkError(err) || attempt === MAX_RETRIES) throw err
       // If the caller passed their own signal and it was aborted, don't retry
       if (opts.signal?.aborted) throw err
+      // Non-idempotent methods (POST/PUT/PATCH/DELETE) must not be retried on
+      // abort/timeout — the backend may have already processed the request,
+      // and a retry would create duplicates (e.g. a second vm scan).
+      const method = (opts.method || 'GET').toUpperCase()
+      if (method !== 'GET' && method !== 'HEAD') throw err
     }
   }
   throw lastError
@@ -1361,6 +1366,11 @@ export const startVmScan = (data) => request('/vm/scan', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify(data),
+  // start_vm_scan does synchronous scan-plan compute + a sync dispatch to the
+  // VM scanner container; routinely takes ~30s. The 30s default timeout was
+  // aborting the fetch right as the response arrived. Follow-up: move dispatch
+  // to a background task and return immediately.
+  timeout: 90_000,
 })
 
 export const refreshVmScan = (scanId) => request(`/vm/refresh/${scanId}`, { method: 'POST' })
