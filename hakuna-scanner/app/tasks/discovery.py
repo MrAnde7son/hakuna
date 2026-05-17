@@ -834,16 +834,32 @@ def run_discovery_chain(self, org_id: str, scan_run_id: str | None = None) -> di
                         total += ENRICHMENT_STEP_COUNT
                     target_scope = scan_type_row.target_domain
 
-                await db.execute(
+                # Guard against trampling a terminal row. Without the status
+                # predicate this UPDATE will silently revert status='failed'
+                # (set by recovery exhaustion), status='cancelled' (set by
+                # user cancel), or status='done' (set by a prior successful
+                # run) back to 'running' — producing zombie scans the main
+                # app has already finalized. Clear finished_at on the way
+                # in so a re-dispatched row doesn't carry the previous run's
+                # timestamps forward (which produced started_at > finished_at
+                # in production 2026-05-17).
+                result = await db.execute(
                     text("""
                         UPDATE scan_runs SET
                             status = 'running', started_at = :now,
+                            finished_at = NULL,
                             total_stages = :total, stage_index = 0
-                        WHERE id = :id
+                        WHERE id = :id AND status IN ('queued', 'running')
                     """),
                     {"id": scan_run_id, "now": datetime.now(timezone.utc), "total": total},
                 )
                 await db.commit()
+                if result.rowcount == 0:
+                    logger.warning(
+                        "scan_run=%s already in terminal state — aborting dispatch",
+                        scan_run_id,
+                    )
+                    return {"aborted": "terminal_state", "scan_run_id": scan_run_id}
 
         # Seed target domains themselves as assets so the base domain is
         # always present even when subdomain enumeration finds nothing.
@@ -953,12 +969,21 @@ def run_discovery_chain(self, org_id: str, scan_run_id: str | None = None) -> di
                 is_full = scan_type_row and scan_type_row.scan_type == "full"
 
                 if is_full:
-                    # Discovery phase done, enrichment will continue
+                    # Discovery phase done, enrichment will continue. Reset
+                    # stage_started_at so the recovery loop's 15-min orphan
+                    # threshold restarts from the handoff — previously the
+                    # row inherited liveness_gate's start time, and any queue
+                    # wait > 15 min before enrichment picked up triggered a
+                    # spurious recovery re-dispatch. current_stage is set to
+                    # a sentinel so logs/UI distinguish "waiting for
+                    # enrichment" from "stuck in liveness_gate."
                     await db.execute(
                         text("""
                             UPDATE scan_runs SET
                                 assets_found = :found, assets_changed = :changed,
-                                stage_log = :log
+                                stage_log = :log,
+                                current_stage = 'awaiting_enrichment',
+                                stage_started_at = :now
                             WHERE id = :id
                         """),
                         {
@@ -966,6 +991,7 @@ def run_discovery_chain(self, org_id: str, scan_run_id: str | None = None) -> di
                             "found": total_found,
                             "changed": total_new,
                             "log": json.dumps(stage_log),
+                            "now": datetime.now(timezone.utc),
                         },
                     )
                 else:

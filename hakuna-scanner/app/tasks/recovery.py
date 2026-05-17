@@ -122,10 +122,40 @@ async def _find_and_recover_orphans() -> dict:
     if not orphans:
         return {"orphans_found": 0}
 
+    # Split: rows whose bumped counter equals MAX are exhausted — mark them
+    # failed and DO NOT dispatch. Previously we dispatched everything and
+    # then marked the exhausted ones failed in a separate UPDATE, which
+    # raced with discovery's bootstrap clobbering status back to 'running'.
+    to_dispatch = [r for r in orphans if r.recovery_attempts < MAX_RECOVERY_ATTEMPTS]
+    to_fail = [r for r in orphans if r.recovery_attempts >= MAX_RECOVERY_ATTEMPTS]
+
     recovered = 0
     exhausted = 0
 
-    for row in orphans:
+    if to_fail:
+        async with sf() as db:
+            await db.execute(
+                text("""
+                    UPDATE scan_runs SET
+                        status = 'failed',
+                        finished_at = :now,
+                        error = :err
+                    WHERE id = ANY(:ids)
+                """),
+                {
+                    "ids": [str(r.id) for r in to_fail],
+                    "now": now,
+                    "err": f"Scan orphaned and recovery exhausted after {MAX_RECOVERY_ATTEMPTS} attempts",
+                },
+            )
+            await db.commit()
+        exhausted = len(to_fail)
+        logger.error(
+            "Marked %d orphaned scan(s) as failed after exhausting %d recovery attempts",
+            exhausted, MAX_RECOVERY_ATTEMPTS,
+        )
+
+    for row in to_dispatch:
         scan_run_id = str(row.id)
         org_id = str(row.org_id)
         scan_type = row.scan_type
@@ -162,48 +192,7 @@ async def _find_and_recover_orphans() -> dict:
 
         recovered += 1
 
-    # Mark scans that have exhausted recovery attempts as failed.
-    async with sf() as db:
-        result = await db.execute(
-            text("""
-                SELECT id FROM scan_runs
-                WHERE (
-                    (status = 'running' AND stage_started_at < :cutoff)
-                    OR (status = 'queued' AND created_at < :queued_cutoff)
-                )
-                AND recovery_attempts >= :max_attempts
-            """),
-            {"cutoff": cutoff, "queued_cutoff": queued_cutoff, "max_attempts": MAX_RECOVERY_ATTEMPTS},
-        )
-        exhausted_rows = result.fetchall()
-
-        for row in exhausted_rows:
-            await db.execute(
-                text("""
-                    UPDATE scan_runs SET
-                        status = 'failed',
-                        finished_at = :now,
-                        error = :err
-                    WHERE id = :id
-                """),
-                {
-                    "id": str(row.id),
-                    "now": now,
-                    "err": f"Scan orphaned and recovery exhausted after {MAX_RECOVERY_ATTEMPTS} attempts",
-                },
-            )
-            exhausted += 1
-
-        if exhausted_rows:
-            await db.commit()
-
-    if exhausted:
-        logger.error(
-            "Marked %d orphaned scan(s) as failed after exhausting %d recovery attempts",
-            exhausted, MAX_RECOVERY_ATTEMPTS,
-        )
-
-    return {"orphans_found": len(orphans) + exhausted, "recovered": recovered, "exhausted": exhausted}
+    return {"orphans_found": len(orphans), "recovered": recovered, "exhausted": exhausted}
 
 
 @celery.task(name="recovery.recover_orphaned_scans")
