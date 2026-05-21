@@ -1917,3 +1917,40 @@ export const promoteOrgMemory = (namespace, key, body) => request(
     body: JSON.stringify(body),
   },
 )
+
+// ── Endpoint Agents (Vulnerability Detection & Response) ──
+// Host-resident agents that check in with inventory; the cloud detects,
+// contextualizes (runtime/reachability/AI threat intel) and prioritizes
+// vulnerabilities, then can respond with EDR detections or host actions.
+
+export const getEndpointAgents = () => request('/endpoint-agents')
+
+export const getEndpointAgent = (id) => request(`/endpoint-agents/${id}`)
+
+// Returns the agent object PLUS one-time `token` and `install_command`.
+export const createEndpointAgent = (data) => request('/endpoint-agents', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(data),
+})
+
+export const updateEndpointAgent = (id, data) => request(`/endpoint-agents/${id}`, {
+  method: 'PATCH',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(data),
+})
+
+export const deleteEndpointAgent = (id) => request(`/endpoint-agents/${id}`, { method: 'DELETE' })
+
+// Queue a host action (kill_process, quarantine_file, apply_patch, isolate_host).
+export const createEndpointAgentAction = (id, data) => request(`/endpoint-agents/${id}/actions`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(data),
+})
+
+// Promote a contextualized finding into an EDR detection rule.
+export const createEndpointAgentEdrDetection = (id, findingId) => request(
+  `/endpoint-agents/${id}/findings/${findingId}/edr-detection`,
+  { method: 'POST' },
+)

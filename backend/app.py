@@ -126,6 +126,7 @@ from routes.graph_routes import router as graph_router
 from routes.scan_planner_routes import router as scan_planner_router
 from routes.correlation_routes import router as correlation_router
 from routes.validation_routes import router as validation_router
+from routes.endpoint_agent_routes import router as endpoint_agent_router
 from services.blast_radius import resolve_dc_asset_ids as _resolve_dc_asset_ids
 
 from core.logging_setup import configure_logging
@@ -365,6 +366,7 @@ app.include_router(graph_router)
 app.include_router(scan_planner_router)
 app.include_router(correlation_router)
 app.include_router(validation_router)
+app.include_router(endpoint_agent_router)
 
 
 # ─────────────────────────────────────────────────────────

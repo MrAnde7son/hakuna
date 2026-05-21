@@ -2863,6 +2863,78 @@ class RelayAgent(Base):
 
 
 # ─────────────────────────────────────────────────────────
+# Endpoint Agent — host-resident live vulnerability detection & response
+# ─────────────────────────────────────────────────────────
+
+class EndpointAgent(Base):
+    """A lightweight agent installed on a host for continuous, live
+    vulnerability detection. Unlike RelayAgent (a network connector for
+    on-prem integrations), an endpoint agent runs ON the host it protects:
+    it collects local inventory (installed software, processes, listening
+    ports, security controls), checks in on an interval, and executes
+    response actions queued back to it."""
+    __tablename__ = "endpoint_agents"
+
+    id = Column(String, primary_key=True, default=_gen_uuid)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String, nullable=False)
+    token_hash = Column(String, nullable=False)        # bcrypt hash of agent token
+    token_prefix = Column(String, nullable=True)       # "hke_abc1…" for display
+    status = Column(String, default="pending")         # pending | active | stale | disabled
+
+    # Host facts — reported at enroll and refreshed on every check-in
+    hostname = Column(String, nullable=True)
+    platform = Column(String, nullable=True)           # linux | windows | darwin
+    os_version = Column(String, nullable=True)
+    ip_address = Column(String, nullable=True)
+    agent_version = Column(String, nullable=True)
+
+    # The host this agent maps to. Created/updated on first check-in.
+    asset_id = Column(Integer, ForeignKey("assets.id", ondelete="SET NULL"), nullable=True, index=True)
+    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="SET NULL"), nullable=True)
+
+    # When true, the platform auto-queues response actions for critical,
+    # KEV-listed findings instead of waiting for an analyst.
+    auto_respond = Column(Boolean, default=False)
+
+    last_checkin_at = Column(DateTime, nullable=True)
+    checkin_interval = Column(Integer, default=300)    # seconds between check-ins
+    labels = Column(JSON, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    created_by = Column(String, nullable=True)
+
+    actions = relationship("EndpointAgentAction", back_populates="agent", cascade="all, delete-orphan")
+
+
+class EndpointAgentAction(Base):
+    """A response action queued for an endpoint agent to execute on its host —
+    the 'close the loop' half of detection & response. The agent polls for
+    pending actions on each check-in, executes them locally, and reports the
+    outcome back."""
+    __tablename__ = "endpoint_agent_actions"
+
+    id = Column(String, primary_key=True, default=_gen_uuid)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
+    agent_id = Column(String, ForeignKey("endpoint_agents.id", ondelete="CASCADE"), nullable=False, index=True)
+    finding_id = Column(Integer, ForeignKey("findings.id", ondelete="SET NULL"), nullable=True, index=True)
+
+    # kill_process | quarantine_file | apply_patch | isolate_host | create_edr_detection
+    action_type = Column(String, nullable=False)
+    params = Column(JSON, default=dict)
+    status = Column(String, default="pending")         # pending | dispatched | completed | failed
+    result = Column(JSON, default=dict)                # outcome reported by the agent
+    reason = Column(Text, nullable=True)               # why this action was queued
+    origin = Column(String, default="manual")          # manual | auto_respond
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    dispatched_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    created_by = Column(String, nullable=True)
+
+    agent = relationship("EndpointAgent", back_populates="actions")
+
+
+# ─────────────────────────────────────────────────────────
 # Security Control Validation
 # ─────────────────────────────────────────────────────────
 

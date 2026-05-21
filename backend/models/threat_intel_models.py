@@ -576,3 +576,37 @@ class CorporateEntity(Base):
     raw_data = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class AIThreatSignal(Base):
+    """Model-derived ('mythos') threat intelligence.
+
+    The classic feeds (NVD, CISA KEV, EPSS, MITRE ATT&CK) describe what is
+    already known and observed. AI threat signals augment them with
+    model-synthesized forecasts — weaponization timelines, exploitation
+    likelihood, campaign attribution — for CVEs that the classic feeds have
+    not yet caught up on. One row per (cve_id, source, signal_type)."""
+    __tablename__ = "ai_threat_signals"
+
+    id = Column(Integer, primary_key=True, index=True)
+    cve_id = Column(String, nullable=False)              # e.g. "CVE-2024-1234"
+    source = Column(String, default="mythos")            # mythos | model name
+    # weaponization_forecast | exploitation_likelihood | campaign_attribution | patch_priority
+    signal_type = Column(String, nullable=False)
+
+    title = Column(String)
+    summary = Column(Text)
+    reasoning = Column(Text)                              # model rationale, shown to analysts
+    confidence = Column(Float, default=0.0)               # 0..1 model confidence
+    predicted_score = Column(Float)                       # model risk score 0..10
+    predicted_exploitation = Column(Boolean, default=False)
+    horizon_days = Column(Integer)                        # forecast horizon
+    generated_by_model = Column(String)                   # model identifier
+    indicators = Column(JSON, default=list)               # supporting signals / IOCs
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("cve_id", "source", "signal_type", name="uq_ai_threat_signal"),
+        Index("ix_ai_threat_signals_cve", "cve_id"),
+    )

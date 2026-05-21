@@ -1,0 +1,80 @@
+{
+  "id": "crowdstrike_create_detection",
+  "name": "CrowdStrike Falcon — Create Detection",
+  "description": "Push a custom IOA detection rule to CrowdStrike Falcon based on a vulnerability finding — closes the detection-and-response loop by arming the EDR against exploitation of a known CVE.",
+  "category": "Endpoint Security",
+  "logo": "/logos/vendors/crowdstrike.svg",
+  "direction": "push",
+  "entity": "detection",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://api.crowdstrike.com",
+    "method": "POST",
+    "path": "/ioarules/entities/rules/v1",
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "rulegroup_id": "{{params.rulegroup_id}}",
+      "name": "{{params.name}}",
+      "description": "{{params.description}}",
+      "pattern_severity": "{{params.severity}}",
+      "ruletype_id": "5",
+      "disposition_id": 30,
+      "comment": "Created by Hakuna from CVE {{params.cve}}",
+      "field_values": [
+        {
+          "name": "CommandLine",
+          "type": "excludable",
+          "values": [
+            { "label": "include", "value": "{{params.command_pattern}}" }
+          ]
+        }
+      ]
+    }
+  },
+  "records_path": null,
+  "credential_acquisition": {
+    "pattern": "client_credentials",
+    "token_url": "https://api.crowdstrike.com/oauth2/token",
+    "scopes": ["custom-ioa:write"],
+    "fields": [
+      { "field": "client_id", "label": "Client ID", "type": "text", "help": "From the CrowdStrike API clients page" },
+      { "field": "client_secret", "label": "Client Secret", "type": "password", "help": "Generated when you created the API client" }
+    ]
+  },
+  "default_field_map": [],
+  "dedup_key": [],
+  "params_schema": {
+    "rulegroup_id": {
+      "type": "string",
+      "required": true,
+      "description": "Target custom IOA rule group ID in Falcon"
+    },
+    "name": {
+      "type": "string",
+      "required": true,
+      "description": "Detection rule name"
+    },
+    "description": {
+      "type": "string",
+      "required": false,
+      "description": "Detection rule description"
+    },
+    "severity": {
+      "type": "string",
+      "default": "high",
+      "description": "Pattern severity: critical | high | medium | low | informational"
+    },
+    "cve": {
+      "type": "string",
+      "required": true,
+      "description": "CVE the detection is derived from"
+    },
+    "command_pattern": {
+      "type": "string",
+      "required": false,
+      "description": "Regex pattern matching exploitation behavior on the endpoint"
+    }
+  }
+}

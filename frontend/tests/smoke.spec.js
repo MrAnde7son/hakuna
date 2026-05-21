@@ -25,6 +25,7 @@ const ROUTES = [
   { path: '/workflows/1', name: 'Workflow Builder' },
   { path: '/inventory', name: 'Inventory' },
   { path: '/agents', name: 'Agents' },
+  { path: '/endpoint-agents', name: 'Endpoint VDR' },
   { path: '/feed', name: 'Activity Feed' },
   { path: '/settings?tab=org-memory', name: 'Settings → Org Memory' },
   { path: '/tags', name: 'Tags' },

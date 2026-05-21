@@ -52,6 +52,7 @@ import {
   Network,
   ShieldCheck,
   Sparkles,
+  MonitorCheck,
 } from 'lucide-react'
 import { SUPPORTED_LANGUAGES } from './i18n/index.js'
 // Auth pages loaded eagerly (small, needed immediately)
@@ -89,6 +90,7 @@ const CustomFieldManager = React.lazy(() => import('./components/settings/Custom
 const ThreatIntelCenter = React.lazy(() => import('./components/threats/ThreatIntelCenter.jsx'))
 const WorkflowBuilder = React.lazy(() => import('./components/workflows/WorkflowBuilder.jsx'))
 const AgentBuilder = React.lazy(() => import('./components/agents/AgentBuilder.jsx'))
+const EndpointAgents = React.lazy(() => import('./components/agents/EndpointAgents.jsx'))
 const AggregatedSolutions = React.lazy(() => import('./components/remediation/AggregatedSolutions.jsx'))
 const UserManagement = React.lazy(() => import('./components/settings/UserManagement.jsx'))
 const UserDocs = React.lazy(() => import('./components/docs/UserDocs.jsx'))
@@ -153,6 +155,7 @@ const NAV_GROUPS = [
       { path: '/aggregated-solutions', labelKey: 'nav.remediation', icon: Layers, permission: 'page_remediation' },
       { path: '/compliance', labelKey: 'nav.compliance', icon: ShieldCheck, permission: 'page_compliance' },
       { path: '/agents', labelKey: 'nav.agents', icon: Bot, permission: 'page_agents' },
+      { path: '/endpoint-agents', labelKey: 'nav.endpointAgents', icon: MonitorCheck, permission: 'page_agents' },
     ],
   },
 ]
@@ -1353,6 +1356,7 @@ function AppShell() {
                 <Route path="/workflows/:id" element={<WorkflowBuilder />} />
                 <Route path="/inventory" element={<InventoryExplorer />} />
                 <Route path="/agents" element={<AgentBuilder />} />
+                <Route path="/endpoint-agents" element={<EndpointAgents />} />
                 <Route path="/org-memory" element={<Navigate to="/settings?tab=org-memory" replace />} />
                 <Route path="/tags" element={<TagManager />} />
                 <Route path="/custom-fields" element={<CustomFieldManager />} />
