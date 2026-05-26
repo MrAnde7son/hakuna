@@ -4040,7 +4040,7 @@ export default function ScanManagement() {
   }
 
   const handleCancel = async (scanId) => {
-    if (!await confirm('Stop this scan? In-flight jobs will be revoked.')) return
+    if (!await confirm('Stop this scan? In-flight jobs will be revoked.', { confirmLabel: 'Stop' })) return
     setCancellingId(scanId)
     try {
       await cancelScan(scanId)
@@ -4112,12 +4112,12 @@ export default function ScanManagement() {
 
   const handleBulkStart = async (eligible) => {
     if (eligible.length === 0) { toast.error('No selected scans can be started'); return }
-    if (!await confirm(`Start ${eligible.length} scan${eligible.length !== 1 ? 's' : ''}?`)) return
+    if (!await confirm(`Start ${eligible.length} scan${eligible.length !== 1 ? 's' : ''}?`, { confirmLabel: 'Start', destructive: false })) return
     await runBulk(eligible, startOneScan, 'Started')
   }
   const handleBulkStop = async (eligible) => {
     if (eligible.length === 0) { toast.error('No selected scans are running'); return }
-    if (!await confirm(`Stop ${eligible.length} scan${eligible.length !== 1 ? 's' : ''}? In-flight jobs will be revoked.`)) return
+    if (!await confirm(`Stop ${eligible.length} scan${eligible.length !== 1 ? 's' : ''}? In-flight jobs will be revoked.`, { confirmLabel: 'Stop' })) return
     await runBulk(eligible, (s) => cancelScan(s.id), 'Stopped')
   }
   const handleBulkDelete = async (scans) => {

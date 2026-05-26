@@ -6215,6 +6215,852 @@
             "cvss4": {
                 "base_score": 7.8
             }
+        },
+        {
+            "id": "CVE-2025-4202",
+            "exploit_maturity": "unproven",
+            "zero_day": false,
+            "timeline": {
+                "discovery_date": "2026-05-16T13:16:16.073"
+            },
+            "description": "The Multicollab: Content Team Collaboration and Editorial Workflow plugin for WordPress is vulnerable to unauthorized modification of data due to a missing capability check on the 'cf_add_comment' function in all versions up to, and including, 5.2. This makes it possible for authenticated attackers, with Subscriber-level access and above, to add comments to arbitrary collaborations.",
+            "cvss3": {
+                "base_score": 4.3
+            }
+        },
+        {
+            "id": "CVE-2026-46719",
+            "exploit_maturity": "unproven",
+            "zero_day": false,
+            "timeline": {
+                "discovery_date": "2026-05-16T14:16:37.507"
+            },
+            "description": "Net::Statsd::Lite versions before 0.9.0 for Perl allowed metric injections.\n\nThe metric names were not checked for newlines, colons or pipes. Metrics generated from untrusted sources could inject additional statsd metrics."
+        },
+        {
+            "id": "CVE-2020-37227",
+            "exploit_maturity": "unproven",
+            "zero_day": false,
+            "timeline": {
+                "discovery_date": "2026-05-16T16:16:17.713"
+            },
+            "description": "HS Brand Logo Slider 2.1 contains an unrestricted file upload vulnerability that allows authenticated users to bypass client-side file extension validation by uploading arbitrary files. Attackers can intercept upload requests to the logoupload parameter in the admin interface and rename files to executable extensions .php to achieve remote code execution.",
+            "cvss3": {
+                "base_score": 8.8
+            },
+            "cvss4": {
+                "base_score": 8.7
+            }
+        },
+        {
+            "id": "CVE-2020-37228",
+            "exploit_maturity": "unproven",
+            "zero_day": false,
+            "timeline": {
+                "discovery_date": "2026-05-16T16:16:18.667"
+            },
+            "description": "iDS6 DSSPro Digital Signage System 6.2 contains a CAPTCHA security bypass vulnerability that allows attackers to bypass authentication by requesting the autoLoginVerifyCode object. Attackers can retrieve valid CAPTCHA codes via the login endpoint and use them to perform brute-force attacks against user accounts.",
+            "cvss3": {
+                "base_score": 9.8
+            },
+            "cvss4": {
+                "base_score": 9.3
+            }
+        },
+        {
+            "id": "CVE-2020-37229",
+            "exploit_maturity": "unproven",
+            "zero_day": false,
+            "timeline": {
+                "discovery_date": "2026-05-16T16:16:18.803"
+            },
+            "description": "OKI sPSV Port Manager 1.0.41 contains an unquoted service path vulnerability in the sPSVOpLclSrv service that allows local attackers to escalate privileges by inserting executable files into the unquoted path. Attackers can place a malicious executable in a directory within the service path that will execute with LocalSystem privileges when the service restarts or the system reboots.",
+            "cvss3": {
+                "base_score": 7.8
+            },
+            "cvss4": {
+                "base_score": 8.5
+            }
+        },
+        {
+            "id": "CVE-2020-37230",
+            "exploit_maturity": "unproven",
+            "zero_day": false,
+            "timeline": {
+                "discovery_date": "2026-05-16T16:16:18.920"
+            },
+            "description": "Syncplify.me Server! 5.0.37 contains an unquoted service path vulnerability in the SMWebRestServicev5 service that allows local attackers to escalate privileges by exploiting the unquoted binary path. Attackers can insert a malicious executable into the service path and execute it with LocalSystem privileges when the service restarts or the system reboots.",
+            "cvss3": {
+                "base_score": 7.8
+            },
+            "cvss4": {
+                "base_score": 8.5
+            }
+        },
+        {
+            "id": "CVE-2020-37231",
+            "exploit_maturity": "unproven",
+            "zero_day": false,
+            "timeline": {
+                "discovery_date": "2026-05-16T16:16:19.050"
+            },
+            "description": "Privacy Drive 3.17.0 contains an unquoted service path vulnerability in the pdsvc.exe service binary that allows local attackers to escalate privileges by exploiting the service startup process. Attackers can place malicious executables in the unquoted path directories to execute arbitrary code with LocalSystem privileges during service startup or system reboot.",
+            "cvss3": {
+                "base_score": 7.8
+            },
+            "cvss4": {
+                "base_score": 8.5
+            }
+        },
+        {
+            "id": "CVE-2020-37232",
+            "exploit_maturity": "unproven",
+            "zero_day": false,
+            "timeline": {
+                "discovery_date": "2026-05-16T16:16:19.180"
+            },
+            "description": "Advanced System Care Service 13.0.0.157 contains an unquoted service path vulnerability in the AdvancedSystemCareService13 service binary path that allows local attackers to escalate privileges. Attackers can place malicious executables in the system root path that will be executed with LocalSystem privileges during service startup or system reboot.",
+            "cvss3": {
+                "base_score": 7.8
+            },
+            "cvss4": {
+                "base_score": 8.5
+            }
+        },
+        {
+            "id": "CVE-2020-37233",
+            "exploit_maturity": "unproven",
+            "zero_day": false,
+            "timeline": {
+                "discovery_date": "2026-05-16T16:16:19.310"
+            },
+            "description": "WordPress Plugin Buddypress 6.2.0 contains a persistent cross-site scripting vulnerability that allows authenticated attackers with moderator privileges to inject malicious script code through the figure parameter in wp:html blocks. Attackers can inject iframe elements with event handlers like onload that execute when administrators or privileged users preview or view the affected page content, enabling session hijacking and persistent phishing attacks.",
+            "cvss3": {
+                "base_score": 6.4
+            },
+            "cvss4": {
+                "base_score": 5.1
+            }
+        },
+        {
+            "id": "CVE-2020-37234",
+            "exploit_maturity": "unproven",
+            "zero_day": false,
+            "timeline": {
+                "discovery_date": "2026-05-16T16:16:19.440"
+            },
+            "description": "Internet Download Manager 6.38.12 contains a buffer overflow vulnerability in the Scheduler component that allows local attackers to crash the application by supplying oversized input. Attackers can paste malicious data exceeding 5000 bytes into the 'Open the following file when done' field to trigger a denial of service condition.",
+            "cvss3": {
+                "base_score": 6.2
+            },
+            "cvss4": {
+                "base_score": 6.9
+            }
+        },
+        {
+            "id": "CVE-2020-37235",
+            "exploit_maturity": "unproven",
+            "zero_day": false,
+            "timeline": {
+                "discovery_date": "2026-05-16T16:16:19.570"
+            },
+            "description": "WordPress Theme Wibar 1.1.8 contains a stored cross-site scripting vulnerability in the Brand component that allows authenticated users to inject malicious scripts by manipulating the Logo URL parameter. Attackers with editor, administrator, contributor, or author privileges can inject base64-encoded script payloads through the ftc_brand_url input field to execute arbitrary JavaScript when users visit the brand page.",
+            "cvss3": {
+                "base_score": 6.4
+            },
+            "cvss4": {
+                "base_score": 5.1
+            }
+        },
+        {
+            "id": "CVE-2020-37236",
+            "exploit_maturity": "unproven",
+            "zero_day": false,
+            "timeline": {
+                "discovery_date": "2026-05-16T16:16:19.700"
+            },
+            "description": "NewsLister contains an authenticated persistent cross-site scripting vulnerability that allows authenticated administrators to inject malicious scripts through the title parameter in the news addition interface. Attackers can inject JavaScript payloads via the title field in the admin panel that execute when news items are viewed by other users.",
+            "cvss3": {
+                "base_score": 6.4
+            },
+            "cvss4": {
+                "base_score": 5.1
+            }
+        },
+        {
+            "id": "CVE-2020-37237",
+            "exploit_maturity": "unproven",
+            "zero_day": false,
+            "timeline": {
+                "discovery_date": "2026-05-16T16:16:19.827"
+            },
+            "description": "Composr CMS 10.0.34 contains a persistent cross-site scripting vulnerability that allows authenticated administrators to inject malicious scripts through the banner management interface. Attackers with admin credentials can inject XSS payloads in the Description field of the Add banner functionality, which execute for all website visitors when they access the home page.",
+            "cvss3": {
+                "base_score": 6.4
+            },
+            "cvss4": {
+                "base_score": 5.1
+            }
+        },
+        {
+            "id": "CVE-2020-37238",
+            "exploit_maturity": "unproven",
+            "zero_day": false,
+            "timeline": {
+                "discovery_date": "2026-05-16T16:16:19.967"
+            },
+            "description": "CMS Made Simple 2.2.15 contains a stored cross-site scripting vulnerability that allows authenticated users with Content Manager access to inject malicious scripts through SVG file uploads. Attackers can upload SVG files containing embedded JavaScript to the file manager, which executes when other authenticated users access the uploaded file, enabling cookie theft and session hijacking.",
+            "cvss3": {
+                "base_score": 6.4
+            },
+            "cvss4": {
+                "base_score": 5.1
+            }
+        },
+        {
+            "id": "CVE-2020-37239",
+            "exploit_maturity": "unproven",
+            "zero_day": false,
+            "timeline": {
+                "discovery_date": "2026-05-16T16:16:20.097"
+            },
+            "description": "libbabl 0.1.62 contains a broken double free detection vulnerability that allows attackers to bypass memory safety checks by exploiting signature overwriting in freed chunks. Attackers can call babl_free() twice on the same pointer without triggering detection, as libc's malloc metadata overwrites babl's signature field upon freeing, enabling potential memory corruption and code execution.",
+            "cvss3": {
+                "base_score": 9.8
+            },
+            "cvss4": {
+                "base_score": 9.3
+            }
+        },
+        {
+            "id": "CVE-2020-37240",
+            "exploit_maturity": "unproven",
+            "zero_day": false,
+            "timeline": {
+                "discovery_date": "2026-05-16T16:16:20.223"
+            },
+            "description": "Queue Management System 4.0.0 contains a stored cross-site scripting vulnerability that allows authenticated administrators to inject malicious scripts through user creation fields. Attackers can insert JavaScript payloads in the First Name, Last Name, and Email fields during user creation, which execute when viewing the User List page.",
+            "cvss3": {
+                "base_score": 6.4
+            },
+            "cvss4": {
+                "base_score": 5.1
+            }
+        },
+        {
+            "id": "CVE-2020-37241",
+            "exploit_maturity": "unproven",
+            "zero_day": false,
+            "timeline": {
+                "discovery_date": "2026-05-16T16:16:20.350"
+            },
+            "description": "bloofoxCMS 0.5.2.1 contains a cross-site request forgery vulnerability that allows attackers to perform administrative actions by tricking logged-in users into visiting malicious pages. Attackers can craft hidden forms targeting the admin user creation endpoint to add new administrative accounts with arbitrary credentials without requiring explicit user consent.",
+            "cvss3": {
+                "base_score": 5.3
+            },
+            "cvss4": {
+                "base_score": 6.9
+            }
+        },
+        {
+            "id": "CVE-2020-37242",
+            "exploit_maturity": "unproven",
+            "zero_day": false,
+            "timeline": {
+                "discovery_date": "2026-05-16T16:16:20.487"
+            },
+            "description": "Supsystic Ultimate Maps 1.1.12 contains an SQL injection vulnerability that allows unauthenticated attackers to execute arbitrary SQL queries by injecting malicious code through the 'sidx' GET parameter. Attackers can send crafted requests to the getListForTbl action with boolean-based blind or time-based blind SQL injection payloads to extract sensitive database information.",
+            "cvss3": {
+                "base_score": 8.2
+            },
+            "cvss4": {
+                "base_score": 8.8
+            }
+        },
+        {
+            "id": "CVE-2020-37243",
+            "exploit_maturity": "unproven",
+            "zero_day": false,
+            "timeline": {
+                "discovery_date": "2026-05-16T16:16:20.620"
+            },
+            "description": "Supsystic Pricing Table 1.8.7 contains an SQL injection vulnerability in the 'sidx' GET parameter that allows unauthenticated attackers to execute arbitrary SQL queries through the getListForTbl action. The plugin also contains stored cross-site scripting vulnerabilities in the 'Edit name' and 'Edit HTML' fields that execute malicious scripts when viewing pricing tables.",
+            "cvss3": {
+                "base_score": 8.2
+            },
+            "cvss4": {
+                "base_score": 8.8
+            }
+        },
+        {
+            "id": "CVE-2020-37244",
+            "exploit_maturity": "unproven",
+            "zero_day": false,
+            "timeline": {
+                "discovery_date": "2026-05-16T16:16:20.750"
+            },
+            "description": "Supsystic Membership 1.4.7 contains an SQL injection vulnerability that allows unauthenticated attackers to execute arbitrary SQL queries by injecting malicious code through the 'search' and 'sidx' parameters. Attackers can send GET requests to the badges module with crafted payloads to extract sensitive database information using time-based blind or UNION-based SQL injection techniques.",
+            "cvss3": {
+                "base_score": 8.2
+            },
+            "cvss4": {
+                "base_score": 8.8
+            }
+        },
+        {
+            "id": "CVE-2020-37245",
+            "exploit_maturity": "unproven",
+            "zero_day": false,
+            "timeline": {
+                "discovery_date": "2026-05-16T16:16:20.867"
+            },
+            "description": "Supsystic Digital Publications 1.6.9 contains a path traversal vulnerability in the Folder input field that allows attackers to access files outside the web root by injecting directory traversal sequences. Additionally, the plugin fails to sanitize input fields in publication settings, allowing stored cross-site scripting attacks through script injection in parameters like Area Width and Publication Width that execute when publications are viewed or edited.",
+            "cvss3": {
+                "base_score": 7.5
+            },
+            "cvss4": {
+                "base_score": 8.7
+            }
+        },
+        {
+            "id": "CVE-2020-37246",
+            "exploit_maturity": "unproven",
+            "zero_day": false,
+            "timeline": {
+                "discovery_date": "2026-05-16T16:16:20.993"
+            },
+            "description": "Supsystic Backup 2.3.9 contains a local file inclusion vulnerability that allows unauthenticated attackers to read and delete arbitrary files by manipulating the download path parameter. Attackers can modify the download parameter in admin.php requests with directory traversal sequences to access sensitive files like /etc/passwd or delete files via the removeAction parameter.",
+            "cvss3": {
+                "base_score": 6.2
+            },
+            "cvss4": {
+                "base_score": 6.9
+            }
+        },
+        {
+            "id": "CVE-2020-37247",
+            "exploit_maturity": "unproven",
+            "zero_day": false,
+            "timeline": {
+                "discovery_date": "2026-05-16T16:16:21.123"
+            },
+            "description": "Kite 4.2.0.1 U1 contains an unquoted service path vulnerability in the KiteService Windows service that allows local attackers to escalate privileges by exploiting the service binary path. Attackers can place a malicious executable in the Program Files directory to be executed with LocalSystem privileges when the service starts.",
+            "cvss3": {
+                "base_score": 7.8
+            },
+            "cvss4": {
+                "base_score": 8.5
+            }
+        },
+        {
+            "id": "CVE-2021-47934",
+            "exploit_maturity": "unproven",
+            "zero_day": false,
+            "timeline": {
+                "discovery_date": "2026-05-16T16:16:21.267"
+            },
+            "description": "MyBB Timeline Plugin 1.0 contains cross-site scripting vulnerabilities that allow attackers to inject malicious scripts through thread titles, post content, and user profile fields like Location and Bio. Attackers can also exploit a cross-site request forgery vulnerability in the timeline.php profile action to change a user's cover picture by crafting malicious forms that execute when victims visit affected profiles.",
+            "cvss3": {
+                "base_score": 5.3
+            },
+            "cvss4": {
+                "base_score": 6.9
+            }
+        },
+        {
+            "id": "CVE-2021-47942",
+            "exploit_maturity": "unproven",
+            "zero_day": false,
+            "timeline": {
+                "discovery_date": "2026-05-16T16:16:21.390"
+            },
+            "description": "Home Assistant Community Store (HACS) 1.10.0 contains a path traversal vulnerability that allows unauthenticated attackers to read sensitive files by traversing directories via the /hacsfiles/ endpoint. Attackers can retrieve the .storage/auth file containing user credentials and refresh tokens, then craft valid JWT tokens to gain administrative access to Home Assistant instances.",
+            "cvss3": {
+                "base_score": 7.5
+            },
+            "cvss4": {
+                "base_score": 8.7
+            }
+        },
+        {
+            "id": "CVE-2021-47952",
+            "exploit_maturity": "unproven",
+            "zero_day": false,
+            "timeline": {
+                "discovery_date": "2026-05-16T16:16:21.520"
+            },
+            "description": "python jsonpickle 2.0.0 contains a remote code execution vulnerability that allows attackers to execute arbitrary Python commands by deserializing malicious JSON payloads containing py/repr objects. Attackers can craft JSON strings with py/repr directives that invoke the eval function during deserialization to execute system commands and arbitrary code.",
+            "cvss3": {
+                "base_score": 9.8
+            },
+            "cvss4": {
+                "base_score": 9.3
+            }
+        },
+        {
+            "id": "CVE-2021-47954",
+            "exploit_maturity": "unproven",
+            "zero_day": false,
+            "timeline": {
+                "discovery_date": "2026-05-16T16:16:21.650"
+            },
+            "description": "LayerBB 1.1.4 contains an SQL injection vulnerability that allows unauthenticated attackers to manipulate database queries by injecting SQL code through the search_query parameter. Attackers can send POST requests to /search.php with malicious search_query values using CASE WHEN statements to extract sensitive database information.",
+            "cvss3": {
+                "base_score": 8.2
+            },
+            "cvss4": {
+                "base_score": 8.8
+            }
+        },
+        {
+            "id": "CVE-2021-47955",
+            "exploit_maturity": "unproven",
+            "zero_day": false,
+            "timeline": {
+                "discovery_date": "2026-05-16T16:16:21.780"
+            },
+            "description": "CouchCMS 2.2.1 contains a cross-site scripting vulnerability that allows authenticated attackers to execute arbitrary JavaScript by uploading malicious SVG files through the file upload functionality. Attackers can upload SVG files containing embedded script tags to the browse.php endpoint, which are then executed in users' browsers when the files are accessed or previewed.",
+            "cvss3": {
+                "base_score": 5.4
+            },
+            "cvss4": {
+                "base_score": 5.1
+            }
+        },
+        {
+            "id": "CVE-2021-47956",
+            "exploit_maturity": "unproven",
+            "zero_day": false,
+            "timeline": {
+                "discovery_date": "2026-05-16T16:16:21.907"
+            },
+            "description": "EgavilanMedia PHPCRUD 1.0 contains an SQL injection vulnerability that allows unauthenticated attackers to manipulate database queries by injecting SQL code through the firstname parameter. Attackers can send POST requests to insert.php with malicious firstname values to extract sensitive database information.",
+            "cvss3": {
+                "base_score": 8.2
+            },
+            "cvss4": {
+                "base_score": 8.8
+            }
+        },
+        {
+            "id": "CVE-2021-47957",
+            "exploit_maturity": "unproven",
+            "zero_day": false,
+            "timeline": {
+                "discovery_date": "2026-05-16T16:16:22.037"
+            },
+            "description": "Cookie Law Bar 1.2.1 contains a stored cross-site scripting vulnerability that allows authenticated attackers to inject malicious scripts by submitting unsanitized input to the Bar Message field. Attackers can inject script payloads through the plugin settings page that execute in the browsers of all WordPress users viewing the site, enabling cookie theft and sensitive data exfiltration.",
+            "cvss3": {
+                "base_score": 6.4
+            },
+            "cvss4": {
+                "base_score": 5.1
+            }
+        },
+        {
+            "id": "CVE-2021-47969",
+            "exploit_maturity": "unproven",
+            "zero_day": false,
+            "timeline": {
+                "discovery_date": "2026-05-16T16:16:22.170"
+            },
+            "description": "Color Notes 1.4 contains a denial of service vulnerability that allows attackers to crash the application by pasting excessively long character strings into note fields. Attackers can generate a payload containing 350,000 repeated characters and paste it twice into a new note to cause the application to stop responding.",
+            "cvss3": {
+                "base_score": 7.5
+            },
+            "cvss4": {
+                "base_score": 8.7
+            }
+        },
+        {
+            "id": "CVE-2021-47970",
+            "exploit_maturity": "unproven",
+            "zero_day": false,
+            "timeline": {
+                "discovery_date": "2026-05-16T16:16:22.330"
+            },
+            "description": "Macaron Notes 5.5 contains a denial of service vulnerability that allows attackers to crash the application by creating notes with excessively long character strings. Attackers can generate a payload containing 350000 repeated characters and paste it into a note field to trigger application crash and stop functionality.",
+            "cvss3": {
+                "base_score": 7.5
+            },
+            "cvss4": {
+                "base_score": 8.7
+            }
+        },
+        {
+            "id": "CVE-2021-47971",
+            "exploit_maturity": "unproven",
+            "zero_day": false,
+            "timeline": {
+                "discovery_date": "2026-05-16T16:16:22.463"
+            },
+            "description": "My Notes Safe 5.3 contains a denial of service vulnerability that allows attackers to crash the application by pasting excessively long character strings into note fields. Attackers can generate a payload containing 350000 repeated characters and paste it twice into a new note to trigger an application crash.",
+            "cvss3": {
+                "base_score": 7.5
+            },
+            "cvss4": {
+                "base_score": 8.7
+            }
+        },
+        {
+            "id": "CVE-2021-47972",
+            "exploit_maturity": "unproven",
+            "zero_day": false,
+            "timeline": {
+                "discovery_date": "2026-05-16T16:16:22.587"
+            },
+            "description": "Sticky Notes & Color Widgets 1.4.2 contains a denial of service vulnerability that allows attackers to crash the application by creating notes with excessively long character strings. Attackers can paste large payloads of repeated characters into note fields to trigger application crashes and make the application stop responding.",
+            "cvss3": {
+                "base_score": 7.5
+            },
+            "cvss4": {
+                "base_score": 8.7
+            }
+        },
+        {
+            "id": "CVE-2021-47973",
+            "exploit_maturity": "unproven",
+            "zero_day": false,
+            "timeline": {
+                "discovery_date": "2026-05-16T16:16:22.713"
+            },
+            "description": "Sticky Notes Widget 3.0.6 contains a denial of service vulnerability that allows attackers to crash the application by pasting excessively long character strings into note fields. Attackers can generate a payload containing 350000 repeated characters and paste it twice into a new note to trigger an application crash on iOS devices.",
+            "cvss3": {
+                "base_score": 7.5
+            },
+            "cvss4": {
+                "base_score": 8.7
+            }
+        },
+        {
+            "id": "CVE-2021-47974",
+            "exploit_maturity": "unproven",
+            "zero_day": false,
+            "timeline": {
+                "discovery_date": "2026-05-16T16:16:22.843"
+            },
+            "description": "VX Search 13.5.28 contains an unquoted service path vulnerability in both VX Search Server and VX Search Enterprise services that allows local attackers to escalate privileges. Attackers can place malicious executables in unquoted path directories like C:\\Program Files\\VX Search to execute arbitrary code with LocalSystem privileges when services restart.",
+            "cvss3": {
+                "base_score": 7.8
+            },
+            "cvss4": {
+                "base_score": 8.5
+            }
+        },
+        {
+            "id": "CVE-2021-47975",
+            "exploit_maturity": "unproven",
+            "zero_day": false,
+            "timeline": {
+                "discovery_date": "2026-05-16T16:16:22.973"
+            },
+            "description": "WP Learn Manager 1.1.2 contains a stored cross-site scripting vulnerability that allows unauthenticated attackers to inject malicious scripts through the fieldtitle parameter. Attackers can submit POST requests to the jslm_fieldordering page with XSS payloads in the fieldtitle field to execute arbitrary JavaScript when administrators view the field ordering interface.",
+            "cvss3": {
+                "base_score": 7.2
+            },
+            "cvss4": {
+                "base_score": 5.1
+            }
+        },
+        {
+            "id": "CVE-2021-47976",
+            "exploit_maturity": "unproven",
+            "zero_day": false,
+            "timeline": {
+                "discovery_date": "2026-05-16T16:16:23.107"
+            },
+            "description": "TextPattern CMS 4.9.0-dev contains a remote code execution vulnerability that allows authenticated attackers to upload arbitrary PHP files by exploiting the plugin upload functionality. Attackers can authenticate, retrieve a CSRF token from the plugin event page, and upload malicious PHP files to the textpattern/tmp/ directory for code execution.",
+            "cvss3": {
+                "base_score": 8.8
+            },
+            "cvss4": {
+                "base_score": 8.7
+            }
+        },
+        {
+            "id": "CVE-2021-47977",
+            "exploit_maturity": "unproven",
+            "zero_day": false,
+            "timeline": {
+                "discovery_date": "2026-05-16T16:16:23.233"
+            },
+            "description": "WordPress Plugin Anti-Malware Security and Bruteforce Firewall 4.20.59 contains a directory traversal vulnerability that allows unauthenticated attackers to read arbitrary files by manipulating the file parameter. Attackers can send requests to the duplicator_download action via admin-ajax.php with path traversal sequences to access sensitive system files outside the intended directory.",
+            "cvss3": {
+                "base_score": 7.5
+            },
+            "cvss4": {
+                "base_score": 8.7
+            }
+        },
+        {
+            "id": "CVE-2021-47978",
+            "exploit_maturity": "unproven",
+            "zero_day": false,
+            "timeline": {
+                "discovery_date": "2026-05-16T16:16:23.360"
+            },
+            "description": "ProcessMaker 3.5.4 contains a local file inclusion vulnerability that allows unauthenticated attackers to read arbitrary files by exploiting improper path traversal validation. Attackers can send requests with directory traversal sequences to access sensitive system files like /etc/passwd without authentication.",
+            "cvss3": {
+                "base_score": 6.2
+            },
+            "cvss4": {
+                "base_score": 6.9
+            }
+        },
+        {
+            "id": "CVE-2021-47979",
+            "exploit_maturity": "unproven",
+            "zero_day": false,
+            "timeline": {
+                "discovery_date": "2026-05-16T16:16:23.490"
+            },
+            "description": "WordPress Plugin Backup and Restore 1.0.3 contains an arbitrary file deletion vulnerability that allows authenticated attackers to delete files by manipulating parameters in AJAX requests. Attackers can send POST requests to admin-ajax.php with crafted file_name and folder_name parameters to delete arbitrary files from the WordPress installation directory.",
+            "cvss3": {
+                "base_score": 8.8
+            },
+            "cvss4": {
+                "base_score": 8.7
+            }
+        },
+        {
+            "id": "CVE-2021-47980",
+            "exploit_maturity": "unproven",
+            "zero_day": false,
+            "timeline": {
+                "discovery_date": "2026-05-16T16:16:23.623"
+            },
+            "description": "Fuel CMS 1.4.13 contains a blind SQL injection vulnerability that allows authenticated attackers to manipulate database queries by injecting SQL code through the 'col' parameter in the Activity Log interface. Attackers can send requests to the logs endpoint with malicious SQL payloads in the 'col' parameter to extract database information based on response time delays.",
+            "cvss3": {
+                "base_score": 7.1
+            },
+            "cvss4": {
+                "base_score": 7.1
+            }
+        },
+        {
+            "id": "CVE-2021-47981",
+            "exploit_maturity": "unproven",
+            "zero_day": false,
+            "timeline": {
+                "discovery_date": "2026-05-16T16:16:23.753"
+            },
+            "description": "Quick.CMS 6.7 contains a cross-site scripting vulnerability in the sliders form that allows authenticated attackers to inject malicious scripts by submitting XSS payloads through the sDescription parameter. Attackers can craft CSRF forms targeting the admin.php?p=sliders-form endpoint to execute arbitrary JavaScript in victim browsers when the form is submitted.",
+            "cvss3": {
+                "base_score": 5.4
+            },
+            "cvss4": {
+                "base_score": 5.1
+            }
+        },
+        {
+            "id": "CVE-2026-46728",
+            "exploit_maturity": "unproven",
+            "zero_day": false,
+            "timeline": {
+                "discovery_date": "2026-05-16T22:16:13.317"
+            },
+            "description": "Das U-Boot before 2026.04 allows FIT (Flat Image Tree) signature verification bypass because hashed-nodes is omitted from a hash.",
+            "cvss3": {
+                "base_score": 8.2
+            }
+        },
+        {
+            "id": "CVE-2026-6050",
+            "exploit_maturity": "unproven",
+            "zero_day": false,
+            "timeline": {
+                "discovery_date": "2026-05-16T23:16:50.577"
+            },
+            "description": "Rejected reason: This CVE ID has been rejected or withdrawn by its CVE Numbering Authority."
+        },
+        {
+            "id": "CVE-2026-8723",
+            "exploit_maturity": "unproven",
+            "zero_day": false,
+            "timeline": {
+                "discovery_date": "2026-05-17T00:16:21.233"
+            },
+            "description": "### Summary\n\n\n\n`qs.stringify` throws `TypeError` when called with `arrayFormat: 'comma'` and `encodeValuesOnly: true` on an array containing `null` or `undefined`. The throw is synchronous and not handled by any of qs's null-related options (`skipNulls`, `strictNullHandling`).\n\n\n\n### Details\n\n\n\nIn the comma + `encodeValuesOnly` branch, `lib/stringify.js:145` mapped the array through the raw encoder before joining:\n\n\n\n```js\n\n\n\nobj = utils.maybeMap(obj, encoder);\n\n\n\n```\n\n\n\n`utils.encode` (`lib/utils.js:195`) reads `str.length` with no null guard, so a `null` or `undefined` element throws `TypeError`. `skipNulls` and `strictNullHandling` are both checked in the per-element loop below this line and never get a chance to run.\n\n\n\nSame class of bug as the filter-array path fixed in 0c180a4. The vulnerable shape of the comma + `encodeValuesOnly` branch was introduced in 4c4b23d (\"encode comma values more consistently\", PR #463, 2023-01-19), first released in v6.11.1.\n\n\n\n#### PoC\n\n\n\n```js\n\n\n\nconst qs = require('qs');\n\n\n\nqs.stringify({ a: [null, 'b'] },      { arrayFormat: 'comma', encodeValuesOnly: true });\n\n\n\nqs.stringify({ a: [undefined, 'b'] }, { arrayFormat: 'comma', encodeValuesOnly: true });\n\n\n\nqs.stringify({ a: [null] },           { arrayFormat: 'comma', encodeValuesOnly: true });\n\n\n\n// TypeError: Cannot read properties of null (reading 'length')\n\n\n\n//     at encode (lib/utils.js:195:13)\n\n\n\n//     at Object.maybeMap (lib/utils.js:322:37)\n\n\n\n//     at stringify (lib/stringify.js:145:25)\n\n\n\n```\n\n\n\n#### Fix\n\n\n\n`lib/stringify.js:145`, applied in 21f80b3 on `main` and released as v6.15.2:\n\n\n\n```diff\n\n\n\n- obj = utils.maybeMap(obj, encoder);\n\n\n\n+ obj = utils.maybeMap(obj, function (v) {\n\n\n\n+     return v == null ? v : encoder(v);\n\n\n\n+ });\n\n\n\n```\n\n\n\n`null` and `undefined` now pass through `maybeMap` unchanged and reach the `join(',')` step as-is. For `{ a: [null, 'b'] }` this produces `a=,b`, matching the non-`encodeValuesOnly` comma path (which already joins before encoding and produces `a=%2Cb` for the same input). Single-element `[null]` arrays still collapse via the existing `obj.join(',') || null` and remain subject to `skipNulls` / `strictNullHandling` in the main loop.\n\n\n\n### Affected versions\n\n\n\n`>=6.11.1 <6.15.2` \u2014 fixed in v6.15.2.\n\n\n\nThe vulnerable code shape was introduced in 4c4b23d and first shipped in v6.11.1. Earlier versions \u2014 including all of 6.7.x, 6.8.x, 6.9.x, 6.10.x, and 6.11.0 \u2014 implemented the comma + `encodeValuesOnly` path differently (joining before encoding) and are not affected. Empirically verified across released versions.\n\n\n\n### Impact\n\n\n\nApplication code that calls `qs.stringify` with both `arrayFormat: 'comma'` and `encodeValuesOnly: true` (both non-default) on input that may contain a `null` or `undefined` array element will throw synchronously instead of producing a query string. In a typical Node.js HTTP framework (Express, Fastify, Koa, hapi) the sync throw is caught by the framework's error boundary and the affected request returns a 500; the worker process does not exit and subsequent requests are unaffected. The \"kills the worker process\" framing applies only to call sites outside a request-handler error boundary (background jobs, startup paths, stream pipelines) or to deployments with framework error handling explicitly disabled.\n\n\n\nThe vulnerable input is a `null` or `undefined` entry inside an array; this is reachable from JSON request bodies or from application code constructing arrays from user input, but not from standard HTML form submissions (which produce strings or omitted fields, not literal `null`).",
+            "cvss3": {
+                "base_score": 5.3
+            },
+            "cvss4": {
+                "base_score": 6.3
+            }
+        },
+        {
+            "id": "CVE-2026-8724",
+            "exploit_maturity": "unproven",
+            "zero_day": false,
+            "timeline": {
+                "discovery_date": "2026-05-17T02:16:45.127"
+            },
+            "description": "A security flaw has been discovered in Dataease 2.10.20. Impacted is the function SqlparserUtils.transFilter of the file SqlparserUtils.java of the component Data Dashboard. The manipulation results in sql injection. The attack may be launched remotely. The exploit has been released to the public and may be used for attacks. The vendor was contacted early about this disclosure.",
+            "cvss2": {
+                "base_score": 5.8
+            },
+            "cvss3": {
+                "base_score": 4.7
+            },
+            "cvss4": {
+                "base_score": 2.0
+            }
+        },
+        {
+            "id": "CVE-2026-8725",
+            "exploit_maturity": "unproven",
+            "zero_day": false,
+            "timeline": {
+                "discovery_date": "2026-05-17T02:16:45.487"
+            },
+            "description": "A weakness has been identified in CoreWorxLab CAAL up to 1.6.0. The affected element is an unknown function of the file src/caal/webhooks.py of the component test-hass Endpoint. This manipulation causes server-side request forgery. Remote exploitation of the attack is possible. The exploit has been made available to the public and could be used for attacks. The vendor was contacted early about this disclosure but did not respond in any way.",
+            "cvss2": {
+                "base_score": 7.5
+            },
+            "cvss3": {
+                "base_score": 7.3
+            },
+            "cvss4": {
+                "base_score": 5.5
+            }
+        },
+        {
+            "id": "CVE-2026-8719",
+            "exploit_maturity": "unproven",
+            "zero_day": false,
+            "timeline": {
+                "discovery_date": "2026-05-17T04:16:42.580"
+            },
+            "description": "The AI Engine \u2013 The Chatbot, AI Framework & MCP for WordPress plugin for WordPress is vulnerable to Privilege Escalation in version 3.4.9. This is due to missing WordPress capability enforcement in the MCP OAuth bearer-token authorization path, where any valid OAuth token causes MCP access to be granted without verifying administrator privileges. This makes it possible for authenticated (Subscriber+) attackers to invoke admin-level MCP tools and escalate privileges to Administrator.",
+            "cvss3": {
+                "base_score": 8.8
+            }
+        },
+        {
+            "id": "CVE-2026-8728",
+            "exploit_maturity": "unproven",
+            "zero_day": false,
+            "timeline": {
+                "discovery_date": "2026-05-17T04:16:58.710"
+            },
+            "description": "A security vulnerability has been detected in Open5GS up to 2.7.7. The impacted element is the function ogs_sbi_discovery_option_parse_plmn_list in the library /lib/sbi/conv.c of the component NRF. Such manipulation of the argument target-plmn-list leads to denial of service. The attack can be executed remotely. The exploit has been disclosed publicly and may be used. The project was informed of the problem early through an issue report but has not responded yet.",
+            "cvss2": {
+                "base_score": 4.0
+            },
+            "cvss3": {
+                "base_score": 4.3
+            },
+            "cvss4": {
+                "base_score": 2.1
+            }
+        },
+        {
+            "id": "CVE-2026-8729",
+            "exploit_maturity": "unproven",
+            "zero_day": false,
+            "timeline": {
+                "discovery_date": "2026-05-17T05:16:16.370"
+            },
+            "description": "A vulnerability was detected in Open5GS up to 2.7.7. This affects an unknown function in the library /lib/sbi/message.c of the component NRF. Performing a manipulation of the argument service-names/snssais results in denial of service. The attack is possible to be carried out remotely. The exploit is now public and may be used. The project was informed of the problem early through an issue report but has not responded yet.",
+            "cvss2": {
+                "base_score": 4.0
+            },
+            "cvss3": {
+                "base_score": 4.3
+            },
+            "cvss4": {
+                "base_score": 2.1
+            }
+        },
+        {
+            "id": "CVE-2026-8730",
+            "exploit_maturity": "unproven",
+            "zero_day": false,
+            "timeline": {
+                "discovery_date": "2026-05-17T05:16:16.570"
+            },
+            "description": "A flaw has been found in Open5GS up to 2.7.6. This impacts the function ogs_sbi_nf_instance_set_id in the library /lib/sbi/context.c of the component NRF. Executing a manipulation of the argument nfInstanceId can lead to denial of service. The attack may be performed from remote. The exploit has been published and may be used. The project was informed of the problem early through an issue report but has not responded yet.",
+            "cvss2": {
+                "base_score": 4.0
+            },
+            "cvss3": {
+                "base_score": 4.3
+            },
+            "cvss4": {
+                "base_score": 2.1
+            }
+        },
+        {
+            "id": "CVE-2026-8731",
+            "exploit_maturity": "unproven",
+            "zero_day": false,
+            "timeline": {
+                "discovery_date": "2026-05-17T05:16:16.747"
+            },
+            "description": "A vulnerability has been found in Open5GS up to 2.7.7. Affected is the function ogs_sbi_client_add in the library /lib/sbi/client.c of the component NRF. The manipulation of the argument client_pool leads to denial of service. It is possible to initiate the attack remotely. The exploit has been disclosed to the public and may be used. The project was informed of the problem early through an issue report but has not responded yet.",
+            "cvss2": {
+                "base_score": 4.0
+            },
+            "cvss3": {
+                "base_score": 4.3
+            },
+            "cvss4": {
+                "base_score": 2.1
+            }
+        },
+        {
+            "id": "CVE-2026-8733",
+            "exploit_maturity": "unproven",
+            "zero_day": false,
+            "timeline": {
+                "discovery_date": "2026-05-17T05:16:16.920"
+            },
+            "description": "A vulnerability was found in Investintech SlimPDFReader up to 2.0.13. Affected by this vulnerability is the function sub_3B4610 of the file SlimPDFReader.exe. The manipulation results in stack-based buffer overflow. It is possible to launch the attack remotely. The exploit has been made public and could be used. The vendor responded to the initial vulnerability report by the researcher with a note that the product is discontinued. This vulnerability only affects products that are no longer supported by the maintainer.",
+            "cvss2": {
+                "base_score": 7.5
+            },
+            "cvss3": {
+                "base_score": 6.3
+            },
+            "cvss4": {
+                "base_score": 2.1
+            }
+        },
+        {
+            "id": "CVE-2026-8734",
+            "exploit_maturity": "unproven",
+            "zero_day": false,
+            "timeline": {
+                "discovery_date": "2026-05-17T06:16:19.490"
+            },
+            "description": "A vulnerability was determined in Oinone Pamirs up to 7.2.0. Affected by this issue is the function RSQLToSQLNodeConnector.makeVariable of the component queryListByWrapper Interface. This manipulation causes sql injection. The attack can be initiated remotely. The exploit has been publicly disclosed and may be utilized. The vendor was contacted early about this disclosure but did not respond in any way.",
+            "cvss2": {
+                "base_score": 7.5
+            },
+            "cvss3": {
+                "base_score": 7.3
+            },
+            "cvss4": {
+                "base_score": 5.5
+            }
+        },
+        {
+            "id": "CVE-2026-8735",
+            "exploit_maturity": "unproven",
+            "zero_day": false,
+            "timeline": {
+                "discovery_date": "2026-05-17T06:16:20.680"
+            },
+            "description": "A vulnerability was identified in Oinone Pamirs up to 7.2.0. This affects the function JsonUtils.parseMap of the file PamirsParserConfig.java of the component appConfigQuery Interface. Such manipulation leads to deserialization. The attack can be launched remotely. The exploit is publicly available and might be used. The vendor was contacted early about this disclosure but did not respond in any way.",
+            "cvss2": {
+                "base_score": 6.5
+            },
+            "cvss3": {
+                "base_score": 6.3
+            },
+            "cvss4": {
+                "base_score": 2.1
+            }
         }
     ]
 }

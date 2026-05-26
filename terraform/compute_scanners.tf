@@ -4,7 +4,7 @@
 #   hakuna-scanner: nmap, libpcap, subfinder, dnsx, naabu, httpx, tlsx, etc.
 #   vm-scanner:     Nuclei binary, Go compiler, template cache
 #
-# One e2-standard-4 VM (4 vCPU, 16GB) hosts all scanner containers via Docker Compose.
+# One e2-standard-8 VM (8 vCPU, 32GB) hosts all scanner containers via Docker Compose.
 # The Cloud SQL Auth Proxy runs as a container alongside them.
 #
 # Redis instances (Memorystore):
@@ -15,9 +15,29 @@ locals {
   ar_base = "${var.region}-docker.pkg.dev/${var.project_id}/${google_artifact_registry_repository.main.repository_id}"
 }
 
+# Static internal IP for the scanner VM. Without this, the IP is ephemeral and
+# changes whenever the instance stops/starts (e.g. a machine_type change via
+# terraform apply). The main hakuna-api Cloud Run service has
+# `ignore_changes = [env]` on its lifecycle (cloudrun_api.tf), so a changed IP
+# silently leaves HAKUNA_SCANNER_URL / VM_SCANNER_URL pointing at nothing
+# until `deploy.sh` re-pushes env vars — observed 2026-05-25 after upsizing
+# the scanner VM from e2-standard-4 to e2-standard-8.
+resource "google_compute_address" "scanner_internal" {
+  name         = "hakuna-scanner-internal"
+  region       = var.region
+  subnetwork   = google_compute_subnetwork.main.id
+  address_type = "INTERNAL"
+}
+
 resource "google_compute_instance" "scanners" {
   name         = "hakuna-scanners"
-  machine_type = "e2-standard-4" # 4 vCPU, 16GB — handles both scanners + workers
+  # Sized for ~5 concurrent users running scans. The previous e2-standard-4
+  # (4 vCPU / 16GB) ran out of memory under 2 parallel EASM scans + vm-worker
+  # --concurrency=16: pthread_create / fork returned EAGAIN ("can't start new
+  # thread", "[Errno 11] Resource temporarily unavailable") from inside the
+  # easm-worker container. Doubling the box keeps both worker pools at their
+  # current concurrency without re-engineering the colocation.
+  machine_type = "e2-standard-8" # 8 vCPU, 32GB — handles both scanners + workers
   zone         = var.zone
 
   tags = ["allow-iap-ssh"]
@@ -32,6 +52,7 @@ resource "google_compute_instance" "scanners" {
 
   network_interface {
     subnetwork = google_compute_subnetwork.main.id
+    network_ip = google_compute_address.scanner_internal.address
     # No access_config block = no public IP. Outbound internet via Cloud NAT.
   }
 
@@ -208,8 +229,8 @@ resource "google_compute_instance" "scanners" {
         # task spends most of its 600s wall-clock waiting on HTTP), and on prod
         # ~100% of tasks ride the SCAN_TIMEOUT_SECONDS cap. With 4 workers a
         # short burst of dispatch is enough to back the queue up past the
-        # 20-min orphan threshold; 16 keeps the e2-standard-4 (4 vCPU / 16GB)
-        # below the CPU ceiling for IO-bound work.
+        # 20-min orphan threshold; 16 fits comfortably on the e2-standard-8
+        # (8 vCPU / 32GB) alongside easm-worker for IO-bound work.
         command: celery -A scanner.vm.celery_app:celery_app worker --loglevel=info --concurrency=16 -Q vm_queue
         environment:
           DATABASE_URL: "postgresql://hakuna:$${DB_PASS}@cloud-sql-proxy:5432/hakuna"
