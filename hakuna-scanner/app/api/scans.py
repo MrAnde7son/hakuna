@@ -95,15 +95,29 @@ async def trigger_scan(
     org_str = str(org_id)
     run_str = str(scan_run.id)
 
-    if body.scan_type == "discovery":
-        result = run_discovery_chain.delay(org_str, run_str)
-    elif body.scan_type == "enrichment":
-        result = run_enrichment_chain.delay(org_str, run_str)
-    else:  # full
-        result = run_discovery_chain.apply_async(
-            args=[org_str, run_str],
-            link=run_enrichment_chain.si(org_str, run_str),
-        )
+    # The ScanRun row is already committed as `queued`. If the broker enqueue
+    # below fails (e.g. Redis/Memorystore reset), the row would otherwise be
+    # durably orphaned in `queued` with no Celery message — exactly the state
+    # that left scans stuck for days during the 2026-05-27 worker outage. Mark
+    # the row `failed` and surface a 503 so the caller can retry, rather than
+    # leaving a silent ghost for the recovery beat task to eventually reap.
+    try:
+        if body.scan_type == "discovery":
+            result = run_discovery_chain.delay(org_str, run_str)
+        elif body.scan_type == "enrichment":
+            result = run_enrichment_chain.delay(org_str, run_str)
+        else:  # full
+            result = run_discovery_chain.apply_async(
+                args=[org_str, run_str],
+                link=run_enrichment_chain.si(org_str, run_str),
+            )
+    except Exception as exc:
+        logger.exception("Failed to enqueue scan %s for org %s", run_str, org_str)
+        scan_run.status = "failed"
+        scan_run.error = f"Failed to enqueue scan: {exc}"
+        scan_run.finished_at = datetime.utcnow()
+        await db.commit()
+        raise HTTPException(503, "Scan queue unavailable, please retry") from exc
 
     # Persist the chain's task_id so cancel_scan can revoke a hung worker.
     # Stored separately from `id` because Celery's chain id is opaque to us.
