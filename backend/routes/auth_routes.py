@@ -842,11 +842,17 @@ async def invite_user(
 async def list_users(
     user: User = Depends(require_role("superadmin", "org_admin")),
     db: Session = Depends(get_db),
+    org_ids: Optional[list] = Depends(get_accessible_org_ids),
 ):
-    """List all users in the current org (or all for superadmin)."""
+    """List users in the selected org context.
+
+    Honors the ``X-Org-Context`` sidebar selector via ``get_accessible_org_ids``:
+    a superadmin/MSSP scoped to a single org sees only that org's users, while a
+    superadmin with no context selected (``org_ids is None``) sees everyone.
+    """
     q = db.query(User)
-    if user.role != "superadmin":
-        q = q.filter(User.org_id == user.org_id)
+    if org_ids is not None:
+        q = q.filter(User.org_id.in_(org_ids))
     users = q.order_by(User.created_at.desc()).all()
 
     results = []
