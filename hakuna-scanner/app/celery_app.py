@@ -44,8 +44,36 @@ celery.conf.update(
     # ghosts within hours and no new work drains. Set to match the
     # longest per-task override (14700s on `discovery.run_discovery_chain`
     # and `enrichment.*`).
-    broker_transport_options={"visibility_timeout": 14700},
-    result_backend_transport_options={"visibility_timeout": 14700},
+    # ── Redis connection resilience ──────────────────────────────────────
+    # Memorystore resets idle TCP connections during maintenance/failover.
+    # On 2026-05-27 a "connection reset by peer" on the result backend raised
+    # an unhandled ConnectionError that wedged the worker's consumer loop; the
+    # container stayed "Up" (PID 1 alive but not consuming) for 13 days with no
+    # auto-restart, so every queued scan piled up behind a dead worker (4.4k
+    # broker messages, recovery beat tasks among them never ran). These options
+    # make redis-py detect a stale socket via TCP keepalive + a periodic
+    # health-check PING and transparently reconnect instead of dying. Paired
+    # with the worker `healthcheck` + autoheal in terraform/compute_scanners.tf
+    # as defense-in-depth.
+    broker_connection_retry_on_startup=True,
+    redis_socket_keepalive=True,
+    redis_socket_connect_timeout=30,
+    redis_retry_on_timeout=True,
+    # `health_check_interval` is a redis-py connection kwarg (not a top-level
+    # Celery setting); it goes in the transport-options dicts so it reaches the
+    # broker AND result-backend connection pools. redis-py PINGs a connection
+    # idle longer than this before reusing it, so a silently-dropped Memorystore
+    # socket is detected and reconnected instead of erroring mid-command.
+    broker_transport_options={
+        "visibility_timeout": 14700,
+        "socket_keepalive": True,
+        "health_check_interval": 30,
+        "retry_on_timeout": True,
+    },
+    result_backend_transport_options={
+        "visibility_timeout": 14700,
+        "health_check_interval": 30,
+    },
     beat_schedule={},  # populated by scheduler module
 )
 

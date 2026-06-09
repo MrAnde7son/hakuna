@@ -188,6 +188,18 @@ resource "google_compute_instance" "scanners" {
           cloud-sql-proxy:
             condition: service_healthy
         restart: always
+        # A wedged consumer (see 2026-05-27 Redis-reset outage) keeps PID 1
+        # alive, so `restart: always` never fires. This probe round-trips a
+        # Celery control ping through the broker; if the worker stops consuming
+        # it goes unhealthy and the autoheal sidecar restarts it.
+        healthcheck:
+          test: ["CMD-SHELL", "celery -A app.celery_app inspect ping -t 20 >/dev/null 2>&1 || exit 1"]
+          interval: 60s
+          timeout: 30s
+          retries: 3
+          start_period: 180s
+        labels:
+          - "autoheal=true"
 
       easm-beat:
         image: $${AR_BASE}/hakuna-scanner:latest
@@ -255,6 +267,15 @@ resource "google_compute_instance" "scanners" {
           cloud-sql-proxy:
             condition: service_healthy
         restart: always
+        # See easm-worker: detect a wedged consumer and let autoheal restart it.
+        healthcheck:
+          test: ["CMD-SHELL", "celery -A scanner.vm.celery_app:celery_app inspect ping -t 20 >/dev/null 2>&1 || exit 1"]
+          interval: 60s
+          timeout: 30s
+          retries: 3
+          start_period: 180s
+        labels:
+          - "autoheal=true"
 
       vm-beat:
         image: $${AR_BASE}/vm-scanner:latest
@@ -267,6 +288,22 @@ resource "google_compute_instance" "scanners" {
         depends_on:
           cloud-sql-proxy:
             condition: service_healthy
+        restart: always
+
+      # ── autoheal ─────────────────────────────────────────────────────────
+      # Docker's `restart: always` only restarts containers that EXIT — it does
+      # nothing for a container that is "Up" but unhealthy (the exact failure
+      # mode of the 2026-05-27 wedged-worker outage, which ran for 13 days).
+      # This sidecar watches the Docker socket and restarts any container
+      # labelled `autoheal=true` once its healthcheck reports unhealthy.
+      autoheal:
+        image: willfarrell/autoheal:1.2.0
+        environment:
+          AUTOHEAL_CONTAINER_LABEL: "autoheal"
+          AUTOHEAL_INTERVAL: "30"
+          AUTOHEAL_START_PERIOD: "180"
+        volumes:
+          - /var/run/docker.sock:/var/run/docker.sock
         restart: always
     COMPOSE
 
