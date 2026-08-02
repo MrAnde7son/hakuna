@@ -11,6 +11,7 @@ from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 from passlib.context import CryptContext
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from core.database import get_db
@@ -451,6 +452,14 @@ async def relay_websocket(ws: WebSocket, db: Session = Depends(get_db)):
             db.commit()
     except WebSocketDisconnect:
         logger.info("Relay agent %s (%s) disconnected", agent.name, agent.id)
+    except OperationalError:
+        # The DB session is held open for this connection's whole lifetime;
+        # a server-closed idle connection here just means the underlying
+        # socket died before the client did. Expected, not an app error —
+        # pool_pre_ping can't catch this because the session was already
+        # checked out. See ws/relay/cloud incident 2026-08-02.
+        db.rollback()
+        logger.info("Relay agent %s (%s): DB connection dropped mid-session", agent.name, agent.id)
     except Exception as e:
         logger.exception("Relay WebSocket error for agent %s", agent.id)
     finally:
@@ -462,4 +471,8 @@ async def relay_websocket(ws: WebSocket, db: Session = Depends(get_db)):
         if not broker.is_connected(agent.id):
             agent.status = "disconnected"
             agent.last_seen_at = datetime.utcnow()
-            db.commit()
+            try:
+                db.commit()
+            except OperationalError:
+                logger.info("Relay agent %s (%s): DB connection already dropped, skipping status commit", agent.name, agent.id)
+                db.rollback()

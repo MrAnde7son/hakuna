@@ -27,6 +27,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket
 from pydantic import BaseModel
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from core.auth import require_internal_token
@@ -285,6 +286,14 @@ async def cloud_relay_websocket(ws: WebSocket, db: Session = Depends(get_db)):
             db.commit()
     except WebSocketDisconnect:
         logger.info("Cloud relay agent %s disconnected", agent.id)
+    except OperationalError:
+        # DB session is held open for this connection's whole lifetime (up to
+        # Cloud Run's 300s timeout); a server-closed idle connection here just
+        # means the underlying socket died before the client did. Expected,
+        # not an app error — pool_pre_ping can't catch this because the
+        # session was already checked out. See incident 2026-08-02.
+        db.rollback()
+        logger.info("Cloud relay agent %s: DB connection dropped mid-session", agent.id)
     except Exception:
         logger.exception("Cloud relay WebSocket error for agent %s", agent.id)
     finally:
