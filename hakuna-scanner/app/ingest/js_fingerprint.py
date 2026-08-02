@@ -262,7 +262,20 @@ async def _render_with_browser(url: str) -> tuple[str | None, list[dict]]:
             browser = await pw.chromium.launch(
                 executable_path=_CHROMIUM_PATH,
                 headless=True,
-                args=["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage"],
+                # --disable-crash-reporter / --disable-breakpad: crashpad handler
+                # subprocesses survive their parent renderer and, with no init
+                # process reaping orphans in the container, accumulate as zombies
+                # until the container's cgroup pids ceiling is hit (EAGAIN /
+                # "can't start new thread" on every subsequent fork). See
+                # easm-worker's `init: true` in terraform/compute_scanners.tf for
+                # the reaping side of this fix.
+                args=[
+                    "--no-sandbox",
+                    "--disable-gpu",
+                    "--disable-dev-shm-usage",
+                    "--disable-crash-reporter",
+                    "--disable-breakpad",
+                ],
             )
             try:
                 page = await browser.new_page(

@@ -32,11 +32,17 @@ resource "google_compute_address" "scanner_internal" {
 resource "google_compute_instance" "scanners" {
   name         = "hakuna-scanners"
   # Sized for ~5 concurrent users running scans. The previous e2-standard-4
-  # (4 vCPU / 16GB) ran out of memory under 2 parallel EASM scans + vm-worker
-  # --concurrency=16: pthread_create / fork returned EAGAIN ("can't start new
+  # (4 vCPU / 16GB) hit pthread_create / fork EAGAIN ("can't start new
   # thread", "[Errno 11] Resource temporarily unavailable") from inside the
-  # easm-worker container. Doubling the box keeps both worker pools at their
-  # current concurrency without re-engineering the colocation.
+  # easm-worker container under load. Doubling the box was originally
+  # attributed to memory sizing, but the real cause (found 2026-08-02) is a
+  # zombie-process leak: easm-worker has no init process reaping orphaned
+  # Chromium/crashpad children (see js_fingerprint.py's browser-render
+  # fallback), so they accumulate until the container's cgroup pids ceiling
+  # (~15% of host threads-max, itself derived from RAM) is hit. Doubling RAM
+  # only doubled that ceiling, delaying — not preventing — recurrence. The
+  # actual fix is `init: true` on easm-worker below, which reaps zombies
+  # continuously regardless of leak rate.
   machine_type = "e2-standard-8" # 8 vCPU, 32GB — handles both scanners + workers
   zone         = var.zone
 
@@ -175,6 +181,13 @@ resource "google_compute_instance" "scanners" {
       easm-worker:
         image: $${AR_BASE}/hakuna-scanner:latest
         command: celery -A app.celery_app worker --loglevel=info --concurrency=4
+        # PID 1 in this container is the Celery worker itself — it never reaps
+        # orphaned grandchildren (Chromium/crashpad zombies from the browser
+        # fingerprint fallback in js_fingerprint.py). init: true runs Docker's
+        # built-in tini as PID 1 instead, which continuously reaps zombies so
+        # they can never fill the container's cgroup pids ceiling again (see
+        # machine_type comment above — 2026-08-02 incident).
+        init: true
         environment:
           DATABASE_URL: "postgresql+asyncpg://hakuna_scanner:$${SCANNER_DB_PASS}@cloud-sql-proxy:5432/hakuna_easm"
           DATABASE_URL_SYNC: "postgresql://hakuna_scanner:$${SCANNER_DB_PASS}@cloud-sql-proxy:5432/hakuna_easm"
@@ -244,6 +257,11 @@ resource "google_compute_instance" "scanners" {
         # 20-min orphan threshold; 16 fits comfortably on the e2-standard-8
         # (8 vCPU / 32GB) alongside easm-worker for IO-bound work.
         command: celery -A scanner.vm.celery_app:celery_app worker --loglevel=info --concurrency=16 -Q vm_queue
+        # Same PID-1-never-reaps-zombies gap as easm-worker (2026-08-02
+        # incident) — nuclei is well-behaved today, but this is cheap
+        # insurance against the same failure mode for any future subprocess
+        # tooling added here.
+        init: true
         environment:
           DATABASE_URL: "postgresql://hakuna:$${DB_PASS}@cloud-sql-proxy:5432/hakuna"
           CELERY_BROKER_URL: "redis://$${VM_REDIS_HOST}:$${VM_REDIS_PORT}/0"
