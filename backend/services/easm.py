@@ -3663,6 +3663,19 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
                 )
                 db.rollback()
 
+            # `findings_created` only counts rows this finalize pass inserted.
+            # Every mid-scan incremental import wrote its findings under the
+            # same scan_id, so by the time we get here _generate_easm_findings
+            # sees each plugin_id as existing and updates it in place —
+            # returning 0. Meanwhile `created` is a full upsert count, which is
+            # why completion notifications read "N assets, 0 findings processed"
+            # on scans that had in fact produced findings. Keep the honest
+            # per-run delta here; the scan-wide total is counted after
+            # post-ingest below (dedup can merge rows) and is what we report.
+            new_findings_this_run = findings_created + (
+                meta.get("incremental_finding_count") or 0
+            )
+
             now = datetime.utcnow()
             scan.raw_metadata = {
                 **meta,
@@ -3703,6 +3716,19 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
                     "SBOM pipeline failed for EASM scan %d (non-fatal)", scan.id
                 )
                 db.rollback()
+
+            # Scan-wide finding total, counted after post-ingest so dedup/merge
+            # is reflected. This — not the finalize-pass delta — is what the
+            # completion notification reports, mirroring the asset count.
+            total_findings = (
+                db.query(Finding).filter(Finding.scan_id == scan.id).count()
+            )
+            scan.raw_metadata = {
+                **(scan.raw_metadata or {}),
+                "finding_count": total_findings,
+                "new_finding_count": new_findings_this_run,
+            }
+            db.commit()
 
             # Threat intel enrichment: HIBP breach check + GLEIF corporate structure
             try:
@@ -3819,12 +3845,13 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
                 create_notification(
                     db, org.id, "scan_complete",
                     f"EASM scan '{scan_label}' completed",
-                    body=f"{created} assets, {findings_created} findings processed",
+                    body=f"{created} assets, {total_findings} findings processed",
                     link=f"/findings?scan_id={scan.id}",
                     entity_type="scan", entity_id=scan.id,
                     metadata={
                         "assets": created,
-                        "findings": findings_created,
+                        "findings": total_findings,
+                        "new_findings": new_findings_this_run,
                         "scan_name": scan_label,
                         "domain": domain,
                         "source_type": "easm",
@@ -3861,9 +3888,20 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
                 logger.exception(f"EASM completion notification failed for '{domain}' (non-fatal)")
                 db.rollback()
 
-            logger.info(f"EASM scan completed for '{domain}': assets={created}, findings={findings_created} (scan_id={scan.id})")
+            logger.info(
+                f"EASM scan completed for '{domain}': assets={created}, "
+                f"findings={total_findings} (new this run={new_findings_this_run}, "
+                f"finalize pass={findings_created}) (scan_id={scan.id})"
+            )
 
-            return {"scan_id": scan.id, "status": "completed", "created": created, "findings_created": findings_created, "domain": domain}
+            return {
+                "scan_id": scan.id,
+                "status": "completed",
+                "created": created,
+                "findings": total_findings,
+                "findings_created": new_findings_this_run,
+                "domain": domain,
+            }
         except Exception as exc:
             db.rollback()
             logger.exception(f"EASM import failed for '{domain}' (scan_id={scan.id}), marking as failed")
