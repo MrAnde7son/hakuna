@@ -14,6 +14,7 @@ import pytest
 
 from app.ingest import liveness
 from app.ingest.liveness import (
+    _LIVENESS_ALIVE_FLOOR,
     _LIVENESS_BUMP_ALIVE,
     _LIVENESS_DECAY_DEAD,
     _LIVENESS_DECAY_UNCONFIRMED,
@@ -103,6 +104,7 @@ def _captured_updates(session: _RecordingSession) -> list[dict]:
                     "did_resolve": params[f"did_resolve_{i}"],
                     "cloud_provider": params[f"cloud_provider_{i}"],
                     "score_delta": params[f"score_delta_{i}"],
+                    "score_floor": params[f"score_floor_{i}"],
                 })
                 i += 1
             return updates
@@ -132,6 +134,21 @@ def test_score_bumps_on_confirmed_alive():
     params = _captured_update(session)
     assert params["state"] == "confirmed_alive"
     assert params["score_delta"] == _LIVENESS_BUMP_ALIVE
+    # A host we just reached is floored at the suppression threshold so a
+    # previously ratcheted-down score can't keep it suppressed.
+    assert params["score_floor"] == _LIVENESS_ALIVE_FLOOR
+    assert _LIVENESS_ALIVE_FLOOR >= _LIVENESS_SUPPRESS_THRESHOLD
+
+
+def test_alive_bump_outpaces_a_single_miss():
+    """Recovery must not be slower than decay, or the score ratchets to 0.
+
+    The original calibration (+5 vs -15/-25) meant one flaky probe cost
+    three clean cycles to undo, so hosts that were confirmed_alive every
+    cycle still drifted below the suppression threshold and had all their
+    EASM findings suppressed.
+    """
+    assert _LIVENESS_BUMP_ALIVE >= _LIVENESS_DECAY_UNCONFIRMED
 
 
 def test_score_decays_on_unconfirmed():

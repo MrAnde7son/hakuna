@@ -316,34 +316,54 @@ async def decay_unseen_assets(
     org_id: uuid.UUID,
     decay: int = 10,
     lookback_scans: int = 1,
+    scan_run_id: str | uuid.UUID | None = None,
 ) -> int:
     """Decay liveness_score for assets that weren't validated this cycle.
 
     Counterpart to ``validate_and_update_assets`` (which bumps/decays the
     score for assets that *did* run a liveness probe). An asset whose
-    last_validated_at is older than the most recent finished scan got
-    skipped — usually because liveness only validates a sample on large
-    scans — so we decay by a small fixed amount per skipped cycle. Floor
-    at 0 so the score is never negative.
+    last_validated_at predates this cycle got skipped — usually because
+    liveness only validates a sample on large scans — so we decay by a
+    small fixed amount per skipped cycle. Floor at 0 so the score is
+    never negative.
+
+    The cutoff is this run's ``started_at`` when ``scan_run_id`` is given.
+    Deriving it from the most recently *finished* run instead is wrong for
+    an org running concurrent scans: run B finishing mid-flight becomes the
+    cutoff for run A and decays the assets run A validated seconds earlier.
+
+    Assets first seen after the cutoff are left alone — they were
+    discovered during this cycle and have not had a chance to be
+    validated yet, so decaying them penalizes brand-new inventory.
 
     Returns the number of rows touched.
     """
-    result = await db.execute(
-        text(
-            """
-            SELECT finished_at FROM scan_runs
-            WHERE org_id = :org_id AND status = 'done'
-            ORDER BY finished_at DESC
-            LIMIT 1 OFFSET :offset
-            """
-        ),
-        {"org_id": org_id, "offset": lookback_scans - 1},
-    )
-    cutoff_row = result.fetchone()
-    if not cutoff_row or not cutoff_row.finished_at:
-        return 0
+    cutoff = None
+    if scan_run_id is not None:
+        result = await db.execute(
+            text("SELECT started_at FROM scan_runs WHERE id = :id"),
+            {"id": scan_run_id},
+        )
+        row = result.fetchone()
+        cutoff = row.started_at if row else None
 
-    cutoff = cutoff_row.finished_at
+    if cutoff is None:
+        result = await db.execute(
+            text(
+                """
+                SELECT finished_at FROM scan_runs
+                WHERE org_id = :org_id AND status = 'done'
+                ORDER BY finished_at DESC
+                LIMIT 1 OFFSET :offset
+                """
+            ),
+            {"org_id": org_id, "offset": lookback_scans - 1},
+        )
+        cutoff_row = result.fetchone()
+        if not cutoff_row or not cutoff_row.finished_at:
+            return 0
+        cutoff = cutoff_row.finished_at
+
     res = await db.execute(
         text(
             """
@@ -351,6 +371,7 @@ async def decay_unseen_assets(
                 liveness_score = GREATEST(0, COALESCE(liveness_score, 100) - :decay)
             WHERE org_id = :org_id
               AND (last_validated_at IS NULL OR last_validated_at < :cutoff)
+              AND (first_seen IS NULL OR first_seen < :cutoff)
             """
         ),
         {"org_id": org_id, "cutoff": cutoff, "decay": decay},

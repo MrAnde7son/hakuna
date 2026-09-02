@@ -951,7 +951,9 @@ def run_discovery_chain(self, org_id: str, scan_run_id: str | None = None) -> di
         # reflects this scan's outcome before downstream consumers read it.
         sf2 = get_task_session()
         async with sf2() as db:
-            decayed = await decay_unseen_assets(db, uuid.UUID(org_id))
+            decayed = await decay_unseen_assets(
+                db, uuid.UUID(org_id), scan_run_id=scan_run_id,
+            )
             results["liveness_decayed"] = decayed
             gone = await detect_gone_assets(db, uuid.UUID(org_id))
             results["gone_assets"] = gone
