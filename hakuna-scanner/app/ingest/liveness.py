@@ -23,14 +23,27 @@ logger = logging.getLogger(__name__)
 
 # Liveness score (0–100, capped). Bumped on a confirmed_alive check,
 # decayed on missed/failed checks. Values calibrated so a single bad
-# scan doesn't suppress an asset (one miss = -15, recovery = +5 each
-# pass) but a sustained outage does (~5 consecutive misses = below the
-# 30 suppression threshold). The decay applied to assets that aren't
-# validated at all this cycle is in app.ingest.delta.decay_unseen_assets.
-_LIVENESS_BUMP_ALIVE = 5
+# scan doesn't suppress an asset but a sustained outage does (~4
+# consecutive misses = below the 30 suppression threshold). The decay
+# applied to assets that aren't validated at all this cycle is in
+# app.ingest.delta.decay_unseen_assets.
+#
+# The bump must not be much smaller than the decays. It originally was
+# (+5 against -15/-25), which made the score a one-way ratchet: any host
+# with an occasionally flaky probe — CDN-fronted hosts that drop SYN, a
+# rate-limited httpx batch — lost ground faster than it could recover and
+# eventually pinned at 0 while still being confirmed_alive every cycle.
+# That drove 85% of production assets under the suppression threshold.
+_LIVENESS_BUMP_ALIVE = 20
 _LIVENESS_DECAY_UNCONFIRMED = 15
 _LIVENESS_DECAY_DEAD = 25
 _LIVENESS_SUPPRESS_THRESHOLD = 30
+
+# Floor applied when a check comes back confirmed_alive. A host we just
+# reached is by definition not stale, so its score may never sit below
+# the suppression threshold — the score and the state can't contradict
+# each other. Decay from here still suppresses after a few clean misses.
+_LIVENESS_ALIVE_FLOOR = _LIVENESS_SUPPRESS_THRESHOLD
 
 # Path to the takeover fingerprint database. Loaded lazily so tests can
 # reload it (see `reload_takeover_db`).
@@ -351,14 +364,17 @@ async def validate_and_update_assets(
             new_state = "confirmed_alive"
             new_failures = 0
             score_delta = _LIVENESS_BUMP_ALIVE
+            score_floor = _LIVENESS_ALIVE_FLOOR
             summary["confirmed_alive"] += 1
         elif checks_passed == 1:
             new_state = "unconfirmed"
             new_failures = old_failures + 1
             score_delta = -_LIVENESS_DECAY_UNCONFIRMED
+            score_floor = 0
             summary["unconfirmed"] += 1
         else:
             new_failures = old_failures + 1
+            score_floor = 0
             if new_failures >= 3:
                 new_state = "likely_dead"
                 score_delta = -_LIVENESS_DECAY_DEAD
@@ -397,6 +413,7 @@ async def validate_and_update_assets(
             "did_resolve": dns_ok,
             "cloud_provider": cloud_provider,
             "score_delta": score_delta,
+            "score_floor": score_floor,
         })
 
     # One UPDATE per chunk via a VALUES-driven join. cloud_provider is only
@@ -417,7 +434,8 @@ async def validate_and_update_assets(
                 f"CAST(:failures_{i} AS int), CAST(:tags_{i} AS text[]), "
                 f"CAST(:did_resolve_{i} AS bool), "
                 f"CAST(:cloud_provider_{i} AS text), "
-                f"CAST(:score_delta_{i} AS int))"
+                f"CAST(:score_delta_{i} AS int), "
+                f"CAST(:score_floor_{i} AS int))"
             )
             params[f"id_{i}"] = u["id"]
             params[f"state_{i}"] = u["state"]
@@ -426,6 +444,7 @@ async def validate_and_update_assets(
             params[f"did_resolve_{i}"] = u["did_resolve"]
             params[f"cloud_provider_{i}"] = u["cloud_provider"]
             params[f"score_delta_{i}"] = u["score_delta"]
+            params[f"score_floor_{i}"] = u["score_floor"]
 
         sql = f"""
             UPDATE assets SET
@@ -435,10 +454,11 @@ async def validate_and_update_assets(
                 tags = v.tags,
                 cloud_provider = CASE WHEN v.did_resolve
                     THEN v.cloud_provider ELSE assets.cloud_provider END,
-                liveness_score = LEAST(100, GREATEST(0,
+                liveness_score = LEAST(100, GREATEST(v.score_floor,
                     COALESCE(assets.liveness_score, 100) + v.score_delta))
             FROM (VALUES {', '.join(values_parts)})
-                AS v(id, state, failures, tags, did_resolve, cloud_provider, score_delta)
+                AS v(id, state, failures, tags, did_resolve, cloud_provider,
+                     score_delta, score_floor)
             WHERE assets.id = v.id
         """
         await db.execute(text(sql), params)

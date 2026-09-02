@@ -1225,7 +1225,6 @@ def _build_easm_data(ea: dict) -> dict:
         "cloud_provider": ea.get("cloud_provider"),
         "attribution": ea.get("attribution") or {},
         "liveness_score": ea.get("liveness_score", 100),
-        "liveness_state": ea.get("liveness_state"),
         "waf": ea.get("waf"),
         "dns_records": ea.get("dns_records") or {},
         "banner_findings": banner_findings,
@@ -1325,14 +1324,27 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
     Returns ``(count, new_finding_ids)`` so callers can drive finalize_batch
     over the exact rows that were inserted this call.
     """
-    # Suppress finding generation for stale assets (liveness_score below
-    # threshold). The asset record is still imported and visible in the
-    # inventory with its current state — we just stop emitting *new*
-    # exposure findings for hosts that haven't been confirmed alive in
-    # several scan cycles. Existing findings remain open so historical
-    # exposure isn't lost.
+    # Suppress finding generation for assets the scanner believes are gone.
+    # The asset record is still imported and visible in the inventory with
+    # its current state — we just stop emitting exposure findings for hosts
+    # that haven't been reachable in several scan cycles.
+    #
+    # Both liveness signals must agree before we suppress. The score alone
+    # is not a safe gate: it is a slow-moving counter (+bump per confirmed
+    # check, -15/-25 per miss) that ratchets down whenever a probe is flaky
+    # and takes several clean cycles to climb back, so a host that is
+    # confirmed_alive *right now* can still carry a single-digit score.
+    # Gating on the score by itself suppressed ~85% of production assets,
+    # live ones included, and since finalize re-imports after
+    # _clear_scan_data the previously generated findings were deleted and
+    # never regenerated — every EASM scan reported 0 findings.
+    state = (ea.get("liveness_state") or "").lower()
     score = ea.get("liveness_score")
-    if score is not None and score < _LIVENESS_SUPPRESS_THRESHOLD:
+    if (
+        state == "likely_dead"
+        and score is not None
+        and score < _LIVENESS_SUPPRESS_THRESHOLD
+    ):
         return 0, []
 
     now = datetime.utcnow()
