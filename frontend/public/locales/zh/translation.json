@@ -1031,6 +1031,7 @@
       "tags": "标签与自动标记",
       "workflows": "工作流",
       "integrations": "集成",
+      "relayAgents": "中继代理",
       "exceptions": "全局例外",
       "sla": "SLA 跟踪",
       "ownership": "所有权与 RBAC",

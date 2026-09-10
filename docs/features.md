@@ -686,31 +686,52 @@ Build custom connectors without code. The multi-step wizard covers schema discov
 - Credential vault — credentials encrypted at rest, scoped per-org
 - Relay agent routing for on-prem sources
 
-### On-Prem Relay Agents
+### Relay Agents
 
-Connect to on-premises products (Jira Server/DC, ServiceNow, CrowdStrike GovCloud, etc.) that are not reachable from the cloud via lightweight relay agents.
+A relay agent is a lightweight container deployed inside a customer network. It opens a single **outbound** WebSocket connection to Hakuna (`wss://<host>/ws/relay`), giving the platform reach into systems that are not exposed to the internet — no inbound firewall rules, VPN, or public listener required.
+
+**What runs over a relay:**
+
+| Workload | Detail |
+|----------|--------|
+| On-prem integrations | Jira Data Center, ServiceNow on-prem, CrowdStrike GovCloud, internal REST APIs, SQL databases, LDAP/AD. Field mapping, scheduling, dedup, and upsert stay in the cloud — only the product connection is relayed |
+| Protocol audits | Every protocol audit executes from a relay: SMB, LDAP, SNMP, SSH, WMI, IPMI/BMC, exposed datastores, exposed AI services, anonymous protocols, NetBIOS/LLMNR/mDNS, and OT/ICS (passive and read-only active) |
+
+A relay is *not* needed for scan file imports, EASM discovery, VM audits against internet-reachable targets, cloud audits (AWS/Azure/GCP, `relay_method="none"`), or SaaS integrations Hakuna can reach directly.
+
+**Relay types:**
+
+| `relay_type` | Description |
+|--------------|-------------|
+| `agent` (default) | Customer-deployed container. Authenticates with an `hka_`-prefixed token on `/ws/relay`. Required for anything on private address space |
+| `cloud_scanner` | Hakuna-managed relay auto-provisioned per org, running in GCP and authenticating with `INTERNAL_SHARED_SECRET` on `/ws/relay/cloud`. Handles internet-reachable targets with no customer deployment. Surfaced read-only in the UI — rename, token rotation, deletion, and setup instructions are rejected |
 
 **How it works:**
 
-1. **Register an agent** in **Settings > Integrations > Relay Agents** — a one-time authentication token is generated
+1. **Register an agent** in **Settings > Relay Agents** — a one-time authentication token is generated (shown once)
 2. **Deploy the agent** as a Docker container inside your network
-3. The agent opens an outbound WebSocket connection to Hakuna (`wss://<host>/ws/relay`) — no inbound firewall rules required
-4. Integration traffic is routed through the agent transparently — field mapping, scheduling, and upsert logic remain in the cloud
+3. The agent connects outbound, then registers its version and the local subnets it is attached to
+4. Integration traffic and audit tasks are dispatched to the agent over that connection and results stream back
 
 **Credential modes:**
 
 | Mode | Description |
 |------|-------------|
-| `agent_local` (default) | Credentials are stored as environment variables on the agent container — secrets never leave your network |
+| `agent_local` (default) | Credentials are stored as environment variables on the agent container — secrets never leave your network. Discovered by prefix: `JIRA`, `SERVICENOW`, `CROWDSTRIKE`, `SPLUNK`, `NESSUS`, `QUALYS`, `TENABLE_SC`, `RAPID7` |
 | `cloud_managed` | Credentials are stored in Hakuna's credential vault and sent to the agent per-request over the encrypted WebSocket |
+
+Protocol-audit credentials (SSH keys, WMI accounts, SNMP communities) are separate — they come from auth profiles selected per audit run.
 
 **Agent management features:**
 
-- **Allowed hosts** — Restrict which on-prem hosts the agent can reach
-- **Labels** — Organize agents by site, environment, or team
-- **Token rotation** — Generate a new token without redeploying (old token is invalidated, agent disconnects)
-- **Live status** — Real-time connected/disconnected status via the WebSocket broker
+- **Labels** — Organize agents by site, environment, or team. The agent's reported subnets are stored here as `local_interfaces`
+- **Token rotation** — Generate a new token without recreating the agent (old token is invalidated and the agent disconnects until redeployed)
+- **Live status** — Real-time connected/disconnected status via the WebSocket broker, plus agent version, last-seen time, source IP, and linked-integration count
+- **Deletion guard** — Agents still referenced by an integration return `409` until those integrations are removed
 - **Setup instructions** — Docker run and Docker Compose examples with env var reference, available per-agent
+- **Allowed hosts** — Optional host list stored on the agent and sent in the connect handshake. It records intended scope; it is **not** enforced as a network allowlist today, so constrain agent reachability with firewall or network policy
+
+**LAN-local audits:** the agent reports its interface CIDRs at registration, and broadcast-domain audits (NetBIOS/LLMNR/mDNS) only dispatch to assets sharing a subnet with the relay. Deploy one agent per segment you want covered.
 
 **Deployment:**
 
@@ -724,6 +745,19 @@ docker run -d --restart=unless-stopped \
 
 For agent-local credentials, add product-specific env vars (e.g., `JIRA_BASE_URL`, `JIRA_USERNAME`, `JIRA_PASSWORD`).
 
+**Agent configuration:**
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `HAKUNA_AGENT_TOKEN` | Yes | — | Token issued at agent creation |
+| `HAKUNA_CLOUD_URL` | Yes | — | WebSocket URL, e.g. `wss://<host>/ws/relay` |
+| `HAKUNA_LOG_LEVEL` | No | `INFO` | `DEBUG`, `INFO`, `WARNING` |
+| `HAKUNA_RECONNECT_MAX` | No | `60` | Max reconnect backoff (seconds) |
+| `HAKUNA_HEARTBEAT_INTERVAL` | No | `30` | Keepalive ping interval (seconds) |
+| `HAKUNA_REQUEST_TIMEOUT` | No | `60` | Timeout for calls to local systems (seconds) |
+| `HAKUNA_BATCH_SIZE` | No | `200` | Records per streamed batch during syncs |
+| `HAKUNA_VERIFY_SSL` | No | `false` | Verify TLS of internal services (off by default for self-signed certs) |
+| `HAKUNA_CONFIG_FILE` | No | `/etc/hakuna/agent.yaml` | Optional YAML overriding any of the above |
 ---
 
 ## Internationalization

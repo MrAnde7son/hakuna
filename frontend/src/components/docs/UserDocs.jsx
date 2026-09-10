@@ -5,7 +5,7 @@ import {
   Target, Layers, Bot, BarChart3, ShieldAlert, Settings, Tag, Shield, Clock,
   Users, Workflow, Link2, FileDown, Key, Building2, Zap, AlertTriangle,
   ExternalLink, ArrowRight, CheckCircle2, Info, HelpCircle, Globe, BookMarked,
-  Network, ShieldCheck,
+  Network, ShieldCheck, Antenna,
 } from 'lucide-react'
 
 const SECTIONS = [
@@ -25,6 +25,7 @@ const SECTIONS = [
   { id: 'tags', labelKey: 'docs.sections.tags', icon: Tag },
   { id: 'workflows', labelKey: 'docs.sections.workflows', icon: Workflow },
   { id: 'integrations', labelKey: 'docs.sections.integrations', icon: Link2 },
+  { id: 'relay-agents', labelKey: 'docs.sections.relayAgents', icon: Antenna },
   { id: 'exceptions', labelKey: 'docs.sections.exceptions', icon: Shield },
   { id: 'sla', labelKey: 'docs.sections.sla', icon: Clock },
   { id: 'ownership', labelKey: 'docs.sections.ownership', icon: Users },
@@ -781,6 +782,92 @@ function DocContent() {
         <Tip type="info">Use the <strong>Test</strong> button on each built-in integration to verify connectivity before using it in workflows or agents.</Tip>
       </Section>
 
+      {/* Relay Agents */}
+      <Section id="relay-agents">
+        <Heading id="relay-agents"><Antenna size={22} /> Relay Agents</Heading>
+        <P>
+          A relay agent is a lightweight container you run inside your own network. It opens a single <strong>outbound</strong> WebSocket
+          connection to Hakuna, which lets the platform reach systems that are not exposed to the internet — with no inbound firewall
+          rules, no VPN, and no public listener on your side. Manage agents under <strong>Settings &gt; Relay Agents</strong>.
+        </P>
+
+        <SubHeading>When You Need One</SubHeading>
+        <Ul>
+          <li><strong>On-prem integrations</strong> — Pull data from products that only exist inside your network: Jira Data Center, ServiceNow on-prem, CrowdStrike GovCloud, internal REST APIs, SQL databases, or LDAP/Active Directory. Field mapping, scheduling, and dedup still run in the cloud; only the connection to the product is relayed.</li>
+          <li><strong>Protocol audits of internal assets</strong> — Every protocol audit (SMB, LDAP, SNMP, SSH, WMI, IPMI/BMC, exposed datastores, exposed AI services, anonymous protocols, NetBIOS/LLMNR/mDNS, OT/ICS) executes from a relay. The audit form on the <strong>Scans</strong> page asks you to pick one, and only connected relays can be selected.</li>
+        </Ul>
+        <P>
+          You do <em>not</em> need a relay for scan file uploads, EASM discovery, VM audits against internet-reachable targets, cloud
+          audits (AWS, Azure, GCP), or SaaS integrations Hakuna can reach directly.
+        </P>
+
+        <SubHeading>Hakuna Cloud Scanner (Managed Relay)</SubHeading>
+        <P>
+          Every organization also has a managed relay named <strong>Hakuna Cloud Scanner</strong>, shown in the agent list with a cloud
+          icon. It runs in Hakuna&apos;s own infrastructure and handles internet-reachable targets, so you can audit public assets before
+          deploying anything of your own. Because Hakuna operates it, it cannot be renamed, rotated, or deleted, and it has no setup
+          guide. Targets on private address space always require a relay you deploy yourself.
+        </P>
+
+        <SubHeading>Deploying an Agent</SubHeading>
+        <P>Prerequisites: a host inside your network with Docker (or Docker Compose), outbound HTTPS/WSS access to your Hakuna instance, and network reachability to the systems you want the agent to talk to.</P>
+        <Ul>
+          <li><strong>1. Create the agent</strong> — <strong>Settings &gt; Relay Agents &gt; New Agent</strong>. Give it a name that identifies the site or network segment (e.g. <em>DC-East</em>) and pick a credential mode.</li>
+          <li><strong>2. Copy the token</strong> — The token (prefixed <Code>hka_</Code>) is displayed once, immediately after creation. Store it in your secret manager before closing the dialog.</li>
+          <li><strong>3. Deploy the container</strong> — Open <strong>Setup Guide</strong> on the agent row for copy-paste <Code>docker run</Code> and Docker Compose snippets pre-filled with your instance URL.</li>
+          <li><strong>4. Verify</strong> — The agent row flips to <strong>Connected</strong> within a few seconds and shows the agent version, last-seen time, and source IP.</li>
+          <li><strong>5. Use it</strong> — Select the relay when building an integration in the Integration Builder, or when launching a protocol audit from the Scans page.</li>
+        </Ul>
+        <CodeBlock>{`docker run -d --restart=unless-stopped \\
+  --name hakuna-relay-agent \\
+  -e HAKUNA_AGENT_TOKEN=<your-agent-token> \\
+  -e HAKUNA_CLOUD_URL=wss://<your-hakuna-host>/ws/relay \\
+  <relay-agent-image>`}</CodeBlock>
+        <Tip type="warning">The agent token is shown only once at creation. If it is lost, use <strong>Rotate Token</strong> to issue a new one — the old token stops working immediately and the running container disconnects until you restart it with the new value.</Tip>
+
+        <SubHeading>Credential Modes</SubHeading>
+        <Ul>
+          <li><strong>Agent-local</strong> (default) — Product credentials live only on the agent container, as environment variables (for example <Code>JIRA_BASE_URL</Code>, <Code>JIRA_USERNAME</Code>, <Code>JIRA_PASSWORD</Code>). Hakuna never receives them. Recognized prefixes include <Code>JIRA</Code>, <Code>SERVICENOW</Code>, <Code>CROWDSTRIKE</Code>, <Code>SPLUNK</Code>, <Code>NESSUS</Code>, <Code>QUALYS</Code>, <Code>TENABLE_SC</Code>, and <Code>RAPID7</Code>.</li>
+          <li><strong>Cloud-managed</strong> — Credentials are stored in Hakuna&apos;s encrypted credential vault and sent to the agent per request over the WebSocket. Easier to rotate centrally; choose it when your policy allows secrets to be held by the platform.</li>
+        </Ul>
+        <P>
+          Credentials used by protocol audits (SSH keys, WMI accounts, SNMP communities) are selected per audit run from
+          <strong> Settings &gt; Scans &gt; Authentication Profiles</strong> and are independent of the mode above.
+        </P>
+
+        <SubHeading>Managing Agents</SubHeading>
+        <Ul>
+          <li><strong>Live status</strong> — Connected / disconnected is tracked from the WebSocket itself, alongside agent version, last-seen timestamp, source IP, and how many integrations use the agent.</li>
+          <li><strong>Token rotation</strong> — Issues a new token and invalidates the old one without recreating the agent or its integration links.</li>
+          <li><strong>Labels</strong> — Free-form key/value metadata (site, environment, owning team) for organizing a fleet of agents.</li>
+          <li><strong>Allowed hosts</strong> — An optional list of hosts recorded on the agent and sent to it when it connects. Treat it as documentation of intended scope: it is not enforced as a network allowlist today, so restrict what the agent can reach with your own firewall or network policy.</li>
+          <li><strong>Deletion</strong> — An agent that is still referenced by one or more integrations cannot be deleted; detach or delete those integrations first.</li>
+          <li><strong>LAN-local audits</strong> — The agent reports the network ranges it is attached to. Broadcast-domain audits (NetBIOS, LLMNR, mDNS) only run against assets that share a subnet with the agent, so place an agent in each segment you want covered.</li>
+        </Ul>
+
+        <SubHeading>Configuration Reference</SubHeading>
+        <Ul>
+          <li><Code>HAKUNA_AGENT_TOKEN</Code> — Required. The token issued at agent creation.</li>
+          <li><Code>HAKUNA_CLOUD_URL</Code> — Required. WebSocket URL of your Hakuna instance, e.g. <Code>wss://your-host/ws/relay</Code>.</li>
+          <li><Code>HAKUNA_LOG_LEVEL</Code> — <Code>DEBUG</Code>, <Code>INFO</Code> (default), or <Code>WARNING</Code>.</li>
+          <li><Code>HAKUNA_RECONNECT_MAX</Code> — Maximum backoff between reconnect attempts, in seconds. Default 60.</li>
+          <li><Code>HAKUNA_HEARTBEAT_INTERVAL</Code> — Seconds between keepalive pings. Default 30.</li>
+          <li><Code>HAKUNA_REQUEST_TIMEOUT</Code> — Timeout for calls the agent makes to local systems, in seconds. Default 60.</li>
+          <li><Code>HAKUNA_BATCH_SIZE</Code> — Records per streamed batch during integration syncs. Default 200.</li>
+          <li><Code>HAKUNA_VERIFY_SSL</Code> — Set to <Code>true</Code> to verify TLS certificates presented by internal systems. Default <Code>false</Code> to accommodate internal self-signed certificates.</li>
+        </Ul>
+
+        <SubHeading>Troubleshooting</SubHeading>
+        <Ul>
+          <li><strong>Agent stays disconnected</strong> — Confirm outbound 443/WSS egress to your Hakuna host is permitted (including through any proxy), and that <Code>HAKUNA_CLOUD_URL</Code> uses <Code>wss://</Code> and ends in <Code>/ws/relay</Code>. Container logs show the rejection reason.</li>
+          <li><strong>&quot;Server rejected&quot; in the agent logs</strong> — The token is wrong or was rotated. Rotate it again and redeploy with the new value.</li>
+          <li><strong>Relay missing from the audit form</strong> — Only connected relays can be selected; disconnected ones appear greyed out.</li>
+          <li><strong>Integration works from the cloud but not through the relay</strong> — The agent host itself must resolve and reach the product hostname; check DNS and routing from that host.</li>
+          <li><strong>Audit fails with a credential error</strong> — In agent-local mode the credentials must exist as environment variables on the container; restart it after changing them.</li>
+        </Ul>
+        <Tip type="info">Deploy one agent per network segment you need to reach. Agents are cheap to run and each one keeps its own outbound connection, so a fleet gives you both coverage and redundancy.</Tip>
+      </Section>
+
       {/* Exceptions */}
       <Section id="exceptions">
         <Heading id="exceptions"><Shield size={22} /> Global Exceptions</Heading>
@@ -1023,6 +1110,17 @@ Headers: Authorization: Bearer eyJ...`}</CodeBlock>
           ['GET', '/api/integrations', 'List integration configurations'],
           ['PUT', '/api/integrations/:provider', 'Configure an integration'],
           ['POST', '/api/integrations/:provider/test', 'Test integration connectivity'],
+        ]} />
+
+        <SubHeading>Relay Agents</SubHeading>
+        <ApiTable rows={[
+          ['GET', '/api/relay-agents', 'List relay agents and live status'],
+          ['POST', '/api/relay-agents', 'Create an agent (returns the token once)'],
+          ['GET', '/api/relay-agents/:id', 'Get agent details'],
+          ['PUT', '/api/relay-agents/:id', 'Update name, labels, allowed hosts, credential mode'],
+          ['DELETE', '/api/relay-agents/:id', 'Delete an agent (blocked while integrations use it)'],
+          ['POST', '/api/relay-agents/:id/rotate-token', 'Issue a new token and invalidate the old one'],
+          ['GET', '/api/relay-agents/:id/setup', 'Deployment instructions and env var reference'],
         ]} />
 
         <SubHeading>Reports & Analytics</SubHeading>

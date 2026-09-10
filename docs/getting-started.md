@@ -65,13 +65,14 @@ After your first login, consider completing these steps:
 2. **Set up SLAs** — Define remediation deadlines per severity in Settings > SLA
 3. **Create tags** — Organize assets and findings with hierarchical tags
 4. **Set up auto-tag rules** — Automatically tag new findings on upload (including passthrough from integration source values)
-5. **Configure integrations** — Connect Jira, ServiceNow, Slack, Teams, Email, Tenable.io, or CrowdStrike. Build custom connectors with the Integration Builder (Settings > Integration Builder). For on-prem products, deploy a relay agent (Settings > Integrations > Relay Agents).
-6. **Add auth profiles for authenticated VM scans** — Settings > Scans > Authentication Profiles. Use static credentials or Playwright form-login flows with optional TOTP.
-7. **Set up SIEM ingest** — Create webhook or Splunk HEC endpoints in Settings > Event Ingest, then author detection rules in `/siem/rules` (custom, Sigma import, or built-in templates).
-8. **Invite team members** — Add analysts and viewers in Settings > Users. Assign built-in team roles (IT, DevOps, SOC, VM) to scope what each user sees.
-9. **Review asset type rules** — Check Settings > Asset Type Rules to customize how assets are classified (host, web app, API endpoint, cloud instance, etc.)
-10. **Create your first campaign** — Group related findings into a remediation campaign with a blast-radius preview
-11. **Configure SSO** — Settings > SSO for SAML or OIDC if you require enterprise identity
+5. **Configure integrations** — Connect Jira, ServiceNow, Slack, Teams, Email, Tenable.io, or CrowdStrike. Build custom connectors with the Integration Builder (Settings > Integration Builder).
+6. **Deploy a relay agent** — Settings > Relay Agents. Required to reach anything not exposed to the internet: on-prem products (Jira DC, ServiceNow on-prem) and every protocol audit (SMB, LDAP, SNMP, SSH, WMI, IPMI, datastore/AI-service exposure, OT). The agent connects outbound only, so no inbound firewall rules are needed. Internet-reachable targets are covered by the managed Hakuna Cloud Scanner relay with no deployment. See [Relay Agents](features.md#relay-agents).
+7. **Add auth profiles for authenticated VM scans** — Settings > Scans > Authentication Profiles. Use static credentials or Playwright form-login flows with optional TOTP.
+8. **Set up SIEM ingest** — Create webhook or Splunk HEC endpoints in Settings > Event Ingest, then author detection rules in `/siem/rules` (custom, Sigma import, or built-in templates).
+9. **Invite team members** — Add analysts and viewers in Settings > Users. Assign built-in team roles (IT, DevOps, SOC, VM) to scope what each user sees.
+10. **Review asset type rules** — Check Settings > Asset Type Rules to customize how assets are classified (host, web app, API endpoint, cloud instance, etc.)
+11. **Create your first campaign** — Group related findings into a remediation campaign with a blast-radius preview
+12. **Configure SSO** — Settings > SSO for SAML or OIDC if you require enterprise identity
 
 ## Navigation
 
