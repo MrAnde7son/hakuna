@@ -416,8 +416,10 @@ jobs:
             --wait
 
       - name: Run scanner migrations
+        # vm-ssh-retry.sh starts the scanner VM if the fleet is stopped and
+        # recovers from IAP 4003 "failed to connect to backend". `compose up
+        # -d easm-api` ensures the container is running (VM may have just
+        # booted) before we exec alembic inside it.
         run: |
-          gcloud compute ssh hakuna-scanners --zone="${{ env.ZONE }}" --tunnel-through-iap \
-            --ssh-key-expire-after=10m \
-            --command="cd /opt/hakuna-scanners && sudo docker compose exec -T -e PYTHONPATH=/app easm-api alembic upgrade head" \
-            --quiet
+          .github/scripts/vm-ssh-retry.sh hakuna-scanners "${{ env.ZONE }}" \
+            "cd /opt/hakuna-scanners && sudo docker compose up -d easm-api && sudo docker compose exec -T -e PYTHONPATH=/app easm-api alembic upgrade head"
