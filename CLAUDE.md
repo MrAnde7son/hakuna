@@ -201,6 +201,7 @@ Standard query parameters: `page`, `page_size`, `search`, `sort_by`, `order`, pl
 | `VITE_POSTHOG_KEY` | No | Frontend product analytics (same key as backend) |
 | `VITE_POSTHOG_HOST` | No | Frontend PostHog host |
 | `SHODAN_API_KEY` | No | Threat intel enrichment |
+| `VM_SCANNER_PRIVATE_TARGETS` | No | How VM scans treat non-routable targets (RFC1918/loopback/CGNAT): `allow`, `warn` (default), or `block`. A cloud-hosted scanner cannot reach private space — set `block` there. |
 
 ## Testing Strategy
 

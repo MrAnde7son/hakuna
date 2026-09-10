@@ -15,7 +15,12 @@ from core.subscription import check_scan_limit
 from models.models import Organization, User
 from models.models import Scan
 from services.vm_scanner import start_vm_scan, rescan_vm_scan, refresh_vm_scan, get_vm_health
-from services.target_expander import expand_cidr_targets
+from services.target_expander import (
+    expand_cidr_targets,
+    find_unroutable_targets,
+    private_target_policy,
+    unroutable_target_message,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/vm", tags=["vm-scanner"])
@@ -66,6 +71,28 @@ async def get_active_org(
     return org
 
 
+def _gate_unroutable_targets(targets: List[str]) -> List[str]:
+    """Apply the deployment's non-routable-target policy to `targets`.
+
+    Returns the warning messages to surface on the response (empty when there
+    is nothing to say). Raises HTTPException(400) under the `block` policy.
+
+    Runs before CIDR expansion so the message names the subnet the caller
+    typed rather than every host it expands to.
+    """
+    policy = private_target_policy()
+    if policy == "allow":
+        return []
+    flagged = find_unroutable_targets(targets)
+    if not flagged:
+        return []
+    if policy == "block":
+        raise HTTPException(400, unroutable_target_message(flagged, blocked=True))
+    message = unroutable_target_message(flagged)
+    logger.warning("vm scan dispatched with non-routable targets: %s", flagged)
+    return [message]
+
+
 @router.post("/scan", dependencies=[Depends(check_scan_limit)])
 async def create_vm_scan(
     body: VmScanRequest,
@@ -78,6 +105,8 @@ async def create_vm_scan(
     targets = [t.strip() for t in body.targets if t.strip()]
     if not targets:
         raise HTTPException(400, "No valid targets provided")
+
+    warnings = _gate_unroutable_targets(targets)
 
     # Expand CIDR subnets when the caller isn't pairing targets 1:1 with
     # existing asset_ids — asset-paired flows can't be expanded without
@@ -112,6 +141,8 @@ async def create_vm_scan(
         actor=user,
     )
     db.commit()
+    if warnings:
+        result["warnings"] = warnings
     return result
 
 
@@ -158,7 +189,9 @@ async def rescan(
     # Rescan edit-and-rerun: expand CIDRs in the override list before the
     # service layer stores them on the scan record.
     targets_override = body.targets if body else None
+    rescan_warnings: List[str] = []
     if targets_override:
+        rescan_warnings = _gate_unroutable_targets(targets_override)
         try:
             targets_override = expand_cidr_targets(targets_override)
         except ValueError as e:
@@ -187,7 +220,21 @@ async def rescan(
         actor=user,
     )
     db.commit()
+    if rescan_warnings:
+        result["warnings"] = rescan_warnings
     return result
+
+
+@router.get("/target-policy")
+async def target_policy(user: User = Depends(require_auth)):
+    """Report how this deployment treats non-internet-routable targets.
+
+    The scan panel reads this to warn (or disable the button) before
+    dispatch. Deliberately does not touch the scanner container: the panel
+    still needs the policy when the scanner is down, and a 502 here would
+    leave the UI unable to warn at all.
+    """
+    return {"private_targets": private_target_policy()}
 
 
 @router.get("/health")

@@ -19,6 +19,7 @@ import {
 } from '../../api.js'
 import { Card, PageHeader, Button, Spinner, useConfirm, useToast } from '../shared/ui.jsx'
 import { getAssetDisplayName, getAssetTarget } from '../../utils/assetDisplay.js'
+import { findUnroutableTargets } from '../../utils/targetRoutability.js'
 
 
 // ── Source type metadata ─────────────────────────────────────────────
@@ -673,6 +674,9 @@ function VmScannerPanel({ onClose, onBack, onVmScan }) {
   const AGENT_CATEGORIES = ['injection', 'xss', 'ssrf', 'authn', 'authz', 'csrf', 'files']
   const [enableAgents, setEnableAgents] = useState(true)
   const [agentCategories, setAgentCategories] = useState(null)
+  // allow | warn | block — how this deployment treats targets the scanner
+  // cannot reach from its own network location.
+  const [targetPolicy, setTargetPolicy] = useState('allow')
 
   const toggleAgentCategory = (cat) => {
     setAgentCategories(prev => {
@@ -687,6 +691,15 @@ function VmScannerPanel({ onClose, onBack, onVmScan }) {
     import('../../api.js').then(api => api.listAuthProfiles())
       .then(rows => setAuthProfiles(Array.isArray(rows) ? rows : []))
       .catch(() => setAuthProfiles([]))
+  }, [])
+
+  // Starts at 'allow' so the advisory only appears once the real policy is
+  // known — a flash of "unreachable" on a self-hosted scanner that legitimately
+  // scans 10/8 would be worse than showing the warning a beat late.
+  useEffect(() => {
+    import('../../api.js').then(api => api.getVmTargetPolicy())
+      .then(setTargetPolicy)
+      .catch(() => setTargetPolicy('warn'))
   }, [])
 
   // Debounce search input
@@ -812,8 +825,17 @@ function VmScannerPanel({ onClose, onBack, onVmScan }) {
     return total
   })()
   const targetCountExceedsCap = expandedTargetCount > CIDR_PREVIEW_CAP
+  // The scanner reaches targets from its own network location, so a cloud-hosted
+  // scanner can't reach RFC1918 and every expanded host fails preflight. The
+  // backend gates this authoritatively; warning here matters because the panel
+  // unmounts on submit and would never render a warning sent on the response.
+  // Computed inline rather than memoized: `manualTargets` is rebuilt on every
+  // render, so a useMemo keyed on it would recompute anyway. Matches how
+  // `expandedTargetCount` above handles the same input.
+  const unroutableTargets = targetPolicy === 'allow' ? [] : findUnroutableTargets(manualTargets)
+  const targetsBlocked = targetPolicy === 'block' && unroutableTargets.length > 0
   const canScan = tab === 'manual'
-    ? manualTargets.length > 0 && !targetCountExceedsCap
+    ? manualTargets.length > 0 && !targetCountExceedsCap && !targetsBlocked
     : selectedAssets.size > 0
 
   const tabStyle = (active) => ({
@@ -877,6 +899,29 @@ function VmScannerPanel({ onClose, onBack, onVmScan }) {
             {targetCountExceedsCap && (
               <div style={{ color: '#dc2626', marginTop: 4, fontWeight: 600 }}>
                 Expansion exceeds the {CIDR_PREVIEW_CAP}-host cap. Narrow your subnet.
+              </div>
+            )}
+            {unroutableTargets.length > 0 && (
+              <div style={{
+                marginTop: 6, padding: '8px 10px', borderRadius: 6,
+                border: `1px solid ${targetsBlocked ? '#dc2626' : '#d97706'}`,
+                background: targetsBlocked ? 'rgba(220,38,38,0.08)' : 'rgba(217,119,6,0.08)',
+                color: targetsBlocked ? '#dc2626' : '#b45309',
+              }}>
+                <div style={{ fontWeight: 600 }}>
+                  {targetsBlocked
+                    ? 'Internal targets are not scannable from this deployment'
+                    : 'These targets may not be reachable'}
+                </div>
+                <div style={{ marginTop: 3, fontFamily: 'monospace' }}>
+                  {unroutableTargets.slice(0, 5).join(', ')}
+                  {unroutableTargets.length > 5 && ` (+${unroutableTargets.length - 5} more)`}
+                </div>
+                <div style={{ marginTop: 3 }}>
+                  The scanner reaches targets from its own network location. If it runs
+                  in the cloud, these private addresses will fail preflight as
+                  unreachable. Scan internal ranges from an on-prem scanner deployment.
+                </div>
               </div>
             )}
           </div>

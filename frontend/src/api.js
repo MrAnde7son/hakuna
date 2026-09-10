@@ -1383,6 +1383,11 @@ export const rescanVmScan = (scanId, overrides = null) => request(`/vm/rescan/${
 })
 
 export const getVmHealth = () => request('/vm/health').catch(() => null)
+// Deployment policy for non-internet-routable scan targets: allow | warn | block.
+// Falls back to 'warn' so a failed request still surfaces the advisory.
+export const getVmTargetPolicy = () => request('/vm/target-policy')
+  .then(r => r?.private_targets || 'warn')
+  .catch(() => 'warn')
 
 // ── Protocol Audits (credentialed ReAct audits per protocol) ─
 export const listAuditProtocols = () => request('/audits/protocols')

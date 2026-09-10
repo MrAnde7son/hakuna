@@ -50,6 +50,13 @@ services:
       # compose service hostname. Default in services/vm_scanner.py is
       # localhost:8002 which only works when the backend runs on the host.
       - VM_SCANNER_URL=${VM_SCANNER_URL:-http://vm-api:8002}
+      # How the VM scan endpoints treat targets that aren't internet-routable
+      # (RFC1918, loopback, CGNAT). The scanner reaches targets from its own
+      # network location, so this depends on where vm-api is deployed:
+      #   allow — scanner sits inside the network being scanned (on-prem, lab)
+      #   warn  — dispatch but flag them (default; safe for every deployment)
+      #   block — refuse with 400; correct for a cloud-hosted scanner
+      - VM_SCANNER_PRIVATE_TARGETS=${VM_SCANNER_PRIVATE_TARGETS:-allow}
       # EASM scanner API. easm-api runs in hakuna-scanner/docker-compose.yml
       # and joins hakuna_default (external) under that network alias, so the
       # backend reaches it by hostname. Default in services/easm.py is
