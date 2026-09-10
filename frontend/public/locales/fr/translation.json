@@ -1031,6 +1031,7 @@
       "tags": "Tags et auto-tagging",
       "workflows": "Workflows",
       "integrations": "Intégrations",
+      "relayAgents": "Agents relais",
       "exceptions": "Exceptions globales",
       "sla": "Suivi SLA",
       "ownership": "Propriété et RBAC",

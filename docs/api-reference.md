@@ -321,7 +321,7 @@ No-code connector platform for custom data sources.
 
 ## Relay Agents
 
-Manage on-prem relay agents for connecting to products behind firewalls.
+Manage relay agents — the outbound-only bridge used for on-prem integrations and for every protocol audit (SMB, LDAP, SNMP, SSH, WMI, IPMI, datastore/AI-service exposure, OT). See [Relay Agents](features.md#relay-agents) for the deployment model.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
@@ -347,6 +347,10 @@ Manage on-prem relay agents for connecting to products behind firewalls.
 ```
 
 **Credentials modes:** `agent_local` (default — agent loads creds from env vars), `cloud_managed` (Hakuna sends creds per-request)
+
+**Relay types:** responses carry `relay_type`. `agent` is a customer-deployed container; `cloud_scanner` is the Hakuna-managed relay auto-provisioned per org for internet-reachable targets — update, delete, rotate-token, and setup return `400` for those rows.
+
+**Note:** `allowed_hosts` is stored and echoed to the agent in the connect handshake, but is not enforced as a network allowlist — scope agent reachability with firewall or network policy.
 
 ## Threat Intelligence
 

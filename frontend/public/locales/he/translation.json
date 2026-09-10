@@ -1031,6 +1031,7 @@
       "tags": "תגיות ותיוג אוטומטי",
       "workflows": "תהליכי עבודה",
       "integrations": "אינטגרציות",
+      "relayAgents": "סוכני ממסר",
       "exceptions": "חריגים גלובליים",
       "sla": "מעקב SLA",
       "ownership": "בעלות ובקרת גישה",

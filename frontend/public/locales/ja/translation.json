@@ -1031,6 +1031,7 @@
       "tags": "タグと自動タグ付け",
       "workflows": "ワークフロー",
       "integrations": "連携",
+      "relayAgents": "リレーエージェント",
       "exceptions": "グローバル例外",
       "sla": "SLAトラッキング",
       "ownership": "オーナーシップとRBAC",
